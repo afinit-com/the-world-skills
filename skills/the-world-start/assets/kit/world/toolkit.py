@@ -443,7 +443,7 @@ def make_read_finding(home: Path, read_roots: tuple[str, ...]):
         "read_finding",
         "Read a markdown finding file written by another agent. This is the ONLY "
         f"way you can read files — you have no Read tool. Allowed paths: {_roots_desc(read_roots)}. "
-        "`path` is relative to the harness root (e.g. 'findings/lumen/2026-07-09.md').",
+        "`path` is relative to the harness root (e.g. 'tasks/20261010-8e0b/work/report.md').",
         {"path": str},
     )
     async def read_finding(args: dict) -> dict:

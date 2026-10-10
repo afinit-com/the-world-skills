@@ -8,7 +8,7 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .types import MentionTrigger, ScheduleTrigger
+from .types import MentionTrigger, PollTrigger, ScheduleTrigger
 
 
 def _portrait(home: Path, filename: str) -> str:
@@ -39,6 +39,23 @@ def _tool_group(label: str, tools) -> dict:
     }
 
 
+def _runs(trigger) -> str:
+    """When the job runs, in the words STATUS.md uses, so the two pages agree."""
+    if isinstance(trigger, ScheduleTrigger):
+        sched = trigger.schedule
+        at = f"{sched.hour:02d}:{sched.minute:02d} ({sched.tz})"
+        if sched.kind == "weekly":
+            return f"매주 {'월화수목금토일'[sched.weekday or 0]}요일 {at}"
+        if sched.kind == "monthly":
+            return f"매월 {sched.day or 1}일 {at}"
+        return f"매일 {at}"
+    if isinstance(trigger, MentionTrigger):
+        return "멘션 또는 넘겨받을 때"
+    if isinstance(trigger, PollTrigger):
+        return "변화가 생길 때"
+    return "조건이 맞으면"
+
+
 def world_map_data(harness) -> dict:
     personas = harness.personas
     relationships = []
@@ -54,13 +71,9 @@ def world_map_data(harness) -> dict:
         for agent in harness.agents:
             if harness.persona_for_agent(agent.name).key != key:
                 continue
-            trigger = "조건이 맞으면"
-            if isinstance(agent.trigger, ScheduleTrigger):
-                trigger = "정해진 시간에"
-            elif isinstance(agent.trigger, MentionTrigger):
-                trigger = "대화용 선언 · 실제 대화 툴은 아래 별도 표시"
             jobs.append({
-                "name": agent.name, "trigger": trigger,
+                "name": agent.name, "trigger": _runs(agent.trigger),
+                "watches": list(agent.watches), "mutates": agent.mutates,
                 "write_scope": list(agent.write_scope),
                 "tools": _tool_group("작업에 등록된 tool", agent.tools),
                 "extensions": {"shell": agent.allow_bash, "subagents": agent.task_allowed,
