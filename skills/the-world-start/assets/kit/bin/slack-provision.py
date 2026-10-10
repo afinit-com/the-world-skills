@@ -344,6 +344,20 @@ def logged_in_teams(slack: str) -> list[str]:
     return list(dict.fromkeys(TEAM_ID.findall(out.stdout + out.stderr)))
 
 
+def has_terminal() -> bool:
+    """Whether a person can answer a prompt on stdin. On Windows `isatty()` is also true
+    for NUL, which is what an agent's shell or Claude Code's `!` hands a child, so a real
+    console is told apart by having a size."""
+    if not sys.stdin.isatty():
+        return False
+    if os.name == "nt":
+        try:
+            os.get_terminal_size(sys.stdin.fileno())
+        except OSError:
+            return False
+    return True
+
+
 def resolve_team(team: str | None, slack: str | None) -> str | None:
     """The workspace to deploy to; SpecError when none can be chosen.
 
@@ -351,7 +365,7 @@ def resolve_team(team: str | None, slack: str | None) -> str | None:
     with no terminal (an agent's shell, Claude Code's `!`) dies on that prompt with
     prompt_error. So off a terminal one logged-in workspace is taken as the answer, and
     several are an error that names them."""
-    if team or slack is None or sys.stdin.isatty():
+    if team or slack is None or has_terminal():
         return team
     teams = logged_in_teams(slack)
     if len(teams) == 1:
