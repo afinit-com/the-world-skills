@@ -144,7 +144,7 @@ def render_status(harness: "Harness", state: dict) -> str:
                   f"- pid {process.get('pid')}, up since "
                   f"{time.strftime('%Y-%m-%d %H:%M', time.localtime(process.get('started', now)))}",
                   f"- channel: {process.get('channel', 'unknown')}",
-                  f"- log: {harness.run_log_path.relative_to(harness.home)}", ""]
+                  f"- log: {harness.run_log_path.relative_to(harness.home).as_posix()}", ""]
     lines += ["## Agent pulse", ""]
     for agent in harness.agents:
         agent_state = state["agents"].get(agent.name, {})

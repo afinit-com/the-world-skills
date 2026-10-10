@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -56,6 +57,7 @@ class CodexContractTests(unittest.TestCase):
 
 
 class CodexRunnerProcessTests(unittest.IsolatedAsyncioTestCase):
+    @unittest.skipIf(os.name == "nt", "the fake CLI is a POSIX shell script; Linux and macOS run this")
     async def test_fake_cli_contract_normalizes_result(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

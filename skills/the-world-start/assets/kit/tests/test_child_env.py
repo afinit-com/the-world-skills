@@ -82,7 +82,7 @@ class ChildEnvTests(LoadedEnvCase):
                 self.assertNotIn(key, child, (provider, key))
             self.assertNotIn(SECRET, json.dumps(child))
             self.assertEqual(child["PATH"], os.environ["PATH"])
-            self.assertEqual(child["HOME"], os.environ["HOME"])
+            self.assertEqual(child.get("HOME"), os.environ.get("HOME"))  # none on Windows
             self.assertEqual(child["WORLD_AGENT"], "watch")
             self.assertEqual(child["WORLD_ENV_FILE"], str(self.env_file))
 
@@ -154,12 +154,13 @@ class RunnerChildEnvTests(LoadedEnvCase):
         self.assertEqual(child["DEMO_SLACK_BOT_TOKEN"], "")
         self.assertNotIn(SECRET, json.dumps(child))
         self.assertEqual(child["PATH"], os.environ["PATH"])
-        self.assertEqual(child["HOME"], os.environ["HOME"])
+        self.assertEqual(child.get("HOME"), os.environ.get("HOME"))  # none on Windows
         self.assertEqual(child["WORLD_AGENT"], "watch")
         self.assertEqual(child["WORLD_HEADLESS"], "1")
 
 
 class CodexRunnerChildEnvTests(LoadedEnvCase):
+    @unittest.skipIf(os.name == "nt", "the fake CLI is a POSIX shell script; Linux and macOS run this")
     def test_codex_child_process_sees_no_harness_token(self):
         out = Path(self.dir.name) / "child-env.json"
         fake = Path(self.dir.name) / "fake-codex"
@@ -220,6 +221,7 @@ class RealClaudeSdkTests(unittest.TestCase):
     environment, so the assertion is about what the SDK really spawns. A separate
     interpreter, because test_claude_contract replaces the SDK module in-process."""
 
+    @unittest.skipIf(os.name == "nt", "the fake CLI is a POSIX shell script; Linux and macOS run this")
     def test_real_sdk_child_sees_no_harness_token(self):
         try:
             import importlib.util
@@ -261,6 +263,7 @@ class RealClaudeSdkTests(unittest.TestCase):
         self.assertTrue(child.get("HOME"))
 
 
+@unittest.skipIf(os.name == "nt", "POSIX modes; Windows ACLs are tests/test_windows_env.py")
 class PermissionWarningTests(unittest.TestCase):
     def _load(self, mode: int) -> str:
         with tempfile.TemporaryDirectory() as raw:

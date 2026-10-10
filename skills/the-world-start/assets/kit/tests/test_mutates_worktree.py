@@ -132,6 +132,7 @@ class MutatesWorktreeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.harness.worktrees_dir, mutating.parent)
         self.assertEqual(self.root, plain)
 
+    @unittest.skipIf(os.name == "nt", "the fake CLI is a POSIX shell script; Linux and macOS run this")
     async def test_codex_runner_dash_c_is_the_worktree_only_for_mutates(self) -> None:
         argv = self.root.parent / "argv"
         fake = self.root.parent / "fake-codex"

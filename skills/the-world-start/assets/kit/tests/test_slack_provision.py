@@ -47,7 +47,7 @@ FAKE_SLACK = textwrap.dedent("""\
     os.environ.setdefault("SLACK_BOT_TOKEN", f"xoxb-secret-{{key}}-{{count}}")
     if manifest["settings"].get("socket_mode_enabled") and not os.environ.get("FAKE_SLACK_NO_XAPP"):
         os.environ.setdefault("SLACK_APP_TOKEN", f"xapp-secret-{{key}}-{{count}}")
-    sys.exit(subprocess.run(["sh", "-c", hooks["hooks"]["deploy"]]).returncode)
+    sys.exit(subprocess.run(hooks["hooks"]["deploy"], shell=True).returncode)  # sh, or cmd on Windows
 """)
 
 SPEC = {
@@ -70,6 +70,8 @@ class SlackProvisionTests(unittest.TestCase):
         fake = bindir / "slack"
         fake.write_text(FAKE_SLACK.format(python=sys.executable))
         fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
+        if os.name == "nt":  # how npm and the Slack installer put a CLI on PATH there
+            (bindir / "slack.cmd").write_text(f'@"{sys.executable}" "%~dp0slack" %*\r\n')
         self.log = self.tmp / "slack.log"
         self.spec = self.tmp / "slack-app" / "slack-apps.json"
         self.spec.parent.mkdir()
@@ -119,7 +121,8 @@ class SlackProvisionTests(unittest.TestCase):
         text = self.env_file.read_text()
         self.assertTrue(text.startswith("# keep me\n"))
         self.assertEqual(text.count("OBS_SLACK_BOT_TOKEN="), 1)  # replaced in place
-        self.assertEqual(stat.S_IMODE(self.env_file.stat().st_mode), 0o600)
+        if os.name != "nt":
+            self.assertEqual(stat.S_IMODE(self.env_file.stat().st_mode), 0o600)
         # never echo a token
         self.assertNotIn("secret", result.stdout + result.stderr)
 
@@ -244,7 +247,8 @@ class SlackProvisionTests(unittest.TestCase):
         self.env_file.unlink()
         result = self.run_script()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(stat.S_IMODE(self.env_file.stat().st_mode), 0o600)
+        if os.name != "nt":  # Windows gets a user-only ACL instead (test_windows_env)
+            self.assertEqual(stat.S_IMODE(self.env_file.stat().st_mode), 0o600)
         self.assertEqual(set(self.env_values()),
                          {"OBS_SLACK_BOT_TOKEN", "OBS_SLACK_APP_TOKEN", "OBS_PERSONA_WATCHER_TOKEN"})
 

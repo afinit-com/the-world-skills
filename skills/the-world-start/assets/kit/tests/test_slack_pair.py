@@ -38,7 +38,8 @@ class PairingTests(unittest.TestCase):
             self.assertIn("OBS_SLACK_CHANNEL=C0HOME", text)
             self.assertIn("APPROVER_SLACK_ID=U0HUMAN", text)
             self.assertNotIn("C0XXXXXXX", text)
-            self.assertEqual(0o600, stat.S_IMODE(os.stat(env).st_mode))
+            if os.name != "nt":  # Windows gets a user-only ACL instead (test_windows_env)
+                self.assertEqual(0o600, stat.S_IMODE(os.stat(env).st_mode))
 
 
 if __name__ == "__main__":

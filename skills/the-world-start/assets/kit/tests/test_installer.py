@@ -163,6 +163,7 @@ class InstallerOwnershipTests(unittest.TestCase):
             self.assertEqual(codex.read_text(), "mine")
 
 
+    @unittest.skipIf(os.name == "nt", "chmod cannot make a directory unwritable on Windows")
     def test_unwritable_codex_dir_fails_before_writing_anything(self) -> None:
         # Codex's workspace-write sandbox refuses writes under .codex/ and .agents/. The
         # installer copied file by file, so it used to die halfway: world/ and bin/ in
@@ -186,6 +187,7 @@ class InstallerOwnershipTests(unittest.TestCase):
             finally:
                 protected.chmod(0o755)
 
+    @unittest.skipIf(os.name == "nt", "chmod cannot make a directory unwritable on Windows")
     def test_scaffolder_refuses_unwritable_skill_root_before_writing_any_host(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "harness"
