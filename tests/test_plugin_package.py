@@ -39,6 +39,15 @@ class PluginPackageTests(unittest.TestCase):
             self.assertIn("disable-model-invocation: true", (skill / "SKILL.md").read_text())
             self.assertIn("allow_implicit_invocation: false", (skill / "agents/openai.yaml").read_text())
 
+    def test_start_skill_and_readme_agree_on_where_the_harness_lives(self) -> None:
+        # Without a rule the model improvised: one test install landed in the current
+        # directory, another in a made-up sibling. One rule, said the same way everywhere.
+        skill = " ".join((ROOT / "skills/the-world-start/SKILL.md").read_text().split())
+        self.assertIn("goes beside it as `<project>-world` (`~/code/my-app` → `~/code/my-app-world`)", skill)
+        for readme in ("README.md", "README.ko.md"):
+            self.assertIn("`~/code/my-app` → `~/code/my-app-world`", (ROOT / readme).read_text(), readme)
+        self.assertIn("nothing about the Slack plan", skill)  # LAB-323: one app, no app limit
+
     def test_start_skill_confirms_each_voice_and_keeps_facts_exact(self) -> None:
         text = " ".join((ROOT / "skills/the-world-start/SKILL.md").read_text().split())
         self.assertIn("Write it to `Persona(voice=...)` only after the user edits or approves it", text)

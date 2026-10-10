@@ -41,18 +41,22 @@ Then the skill is plain `/the-world-start`. More in the [plugin guide](docs/plug
 
 </details>
 
-**2. Say what you want done**, from the folder the bot should live in:
+**2. Say what you want done**, from the project you want it to work on:
 
 ```text
 /the-world-skills:the-world-start summarize this repo's changes every day at 9am
 ```
 
-In Codex it is `$the-world-start …`. The agent builds one bot, checks it locally, and
-tells you what it made. Want a world? Add it in the same sentence: "as a pirate crew", or
-your favorite anime's world.
+In Codex it is `$the-world-start …`. The bot gets its own folder next to the project
+(`~/code/my-app` → `~/code/my-app-world`); started from an empty folder, it lives there
+instead and you name the project in the sentence. The agent asks which world the characters
+live in, unless you said it already ("as a pirate crew", or your favorite anime's world),
+and shows each character's way of talking for your OK. Then it builds the bot, checks it
+locally, and tells you what it made.
 
-**3. Talk to it in Slack** (optional): say "connect Slack". The agent creates the Slack
-app for you; you say hello to the bot once in your channel and it is connected.
+**3. Talk to it in Slack** (optional): say "connect Slack". The agent asks which channel
+and who approves, creates the Slack app for you, and you say hello to the bot once in the
+channel to connect it.
 
 You need **Python 3.11+ and [uv](https://docs.astral.sh/uv/)**, and for step 3 the
 [Slack CLI](https://docs.slack.dev/tools/slack-cli) with `slack login` done once. Runs on

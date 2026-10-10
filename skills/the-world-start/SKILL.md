@@ -7,7 +7,9 @@ disable-model-invocation: true
 # the-world-start
 
 Turn a plain-language job into a harness: a process that runs agents on changes, on a
-schedule, or when mentioned in Slack. Respond in the user's language and keep the term
+schedule, or when mentioned in Slack. Respond in the language of the user's first message,
+without asking which they prefer, and write the questions, the reports, and the generated
+documents (`WORLD.md`, `README.md`) in it; switch only when they ask. Keep the term
 “하네스”. This is a hands-on learning kit, so the several characters working together are
 part of what the user came for. Do not merge characters to simplify setup.
 
@@ -22,11 +24,27 @@ prints, alongside the first question rather than instead of it. A missing item n
 up the questions or the design, but installing the kit and verifying wait until the script
 exits 0; rerun it before installing.
 
-In the same first reply, state the install profile (see "The profile" below) in one line
-of the user's words and let them correct it. They should not have to learn what a profile
-is. For a Korean-speaking user: `이 Mac에서 Codex로 실행하고, 봇과는 Slack에서 대화하도록 만들게요.
-다르게 하고 싶으면 말해주세요.` Don't turn it into a question unless something is genuinely
-unclear, and don't repeat it later unless it changed.
+In the same first reply, state the install profile (see "The profile" below) and where the
+harness will live (see "Where the harness lives") in one line of the user's words, and let
+them correct it. They should not have to learn what a profile is. For a Korean-speaking
+user: `이 Mac에서 Codex로 실행하고, 봇과는 Slack에서 대화하도록 만들게요. 하네스는
+~/code/my-app-world에 만들어요. 다르게 하고 싶으면 말해주세요.` Don't turn it into a question
+unless something is genuinely unclear, and don't repeat it later unless it changed.
+
+## Where the harness lives
+
+The harness is its own directory, never a folder inside the project it watches, and its
+place follows from where the user ran you:
+
+- **In the project** (the current directory is a repository or has files): "this repo"
+  means the current directory, and the harness goes beside it as `<project>-world`
+  (`~/code/my-app` → `~/code/my-app-world`). If that name is taken by something that is
+  not a harness, add a number rather than reuse it.
+- **In an empty directory**: the harness goes here. The project is the path named in the
+  request, or the first question asks for it.
+
+Put the harness inside the project only when the user asks for that. A harness that is
+already there (resuming) stays where it is.
 
 ## The first question
 
@@ -123,9 +141,11 @@ draft a style (말투) that fits the chosen world and the character: 존댓말 o
 habits, emoji use, message length. Show it to the user as two or three realistic Slack
 messages from that persona: starting a task, reporting a result, and asking for approval.
 Write it to `Persona(voice=...)` only after the user edits or approves it; no persona skips
-this, and silence is not approval. A style is tone only. Numbers, "unverified" markers,
-errors, and approval requests stay exact in every example, and the kit injects that same
-rule beside the voice into every prompt.
+this, and silence is not approval. The examples are in the conversation's language, and
+the same confirmation settles which language the personas speak: offer it as the choice
+"이대로 좋아요 / 다른 언어로 / 직접 고칠게요", never as a separate question. A style is tone
+only. Numbers, "unverified" markers, errors, and approval requests stay exact in every
+example, and the kit injects that same rule beside the voice into every prompt.
 
 **Every check says what it covers.** Before a worker depends on a source, confirm the
 source exists: the endpoint answers, the property ID is readable, the file is there. A
@@ -267,9 +287,10 @@ uv run python harness.py --once --dry-run --no-slack
 registered with the scope you declared.
 
 Defer Slack credentials and app provisioning until local verification passes, unless the
-user has them ready or asks for Slack now. When connecting, ask for the channel, the
-approver, and the Slack plan; on a free plan messages vanish past 90 days, so anything
-that must outlive that belongs in a file rather than a thread. One Slack app serves every
+user has them ready or asks for Slack now. When connecting, ask for the channel and the
+approver, and nothing about the Slack plan: one app serves every persona, so the free
+plan's app limit never matters. Say in one line that on a free plan messages vanish past 90
+days, and keep anything that must outlive that in a file rather than a thread. One Slack app serves every
 persona: it is the main persona, and the others post through it under their own name and
 `Persona.portrait` icon (an http(s) URL) with `chat:write.customize`, so a free plan's
 10-app limit never counts personas. Give a persona its own app (`bot_token_env`) only when

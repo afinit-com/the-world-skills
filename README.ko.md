@@ -42,18 +42,20 @@ npx skills add afinit-com/the-world-skills
 
 </details>
 
-**2. 맡길 일을 말하세요.** 봇을 둘 폴더에서:
+**2. 맡길 일을 말하세요.** 봇이 일할 프로젝트 폴더에서:
 
 ```text
-/the-world-skills:the-world-start 매일 오전 9시에 이 저장소 변경 사항 요약해줘
+/the-world-skills:the-world-start 매일 오전 9시에 이 레포 변경 사항 요약해줘
 ```
 
-Codex에서는 `$the-world-start …`입니다. 에이전트가 봇 하나를 만들고 로컬에서 확인한 뒤
-무엇을 만들었는지 알려 줍니다. 세계관을 원하면 같은 문장에 붙이세요. "해적단 테마로"나
-좋아하는 애니메이션 세계관도 좋습니다.
+Codex에서는 `$the-world-start …`입니다. 봇은 프로젝트 옆에 자기 폴더를 갖습니다
+(`~/code/my-app` → `~/code/my-app-world`). 빈 폴더에서 시작하면 그 폴더에 만들고, 프로젝트는
+문장에 경로로 알려주면 됩니다. 에이전트는 캐릭터들이 사는 세계관을 묻고("해적단
+테마로"나 좋아하는 애니메이션 세계관처럼 미리 말하면 생략), 캐릭터마다 말투를 보여 주며 괜찮은지
+확인합니다. 그다음 봇을 만들고 로컬에서 확인한 뒤 무엇을 만들었는지 알려 줍니다.
 
-**3. Slack에서 대화하기** (선택): "Slack 연결해줘"라고 하세요. 에이전트가 Slack 앱을
-만들어 주고, 채널에서 봇에게 한 번 인사하면 연결됩니다.
+**3. Slack에서 대화하기** (선택): "Slack 연결해줘"라고 하세요. 에이전트가 쓸 채널과
+승인할 사람을 묻고 Slack 앱을 만들어 줍니다. 채널에서 봇에게 한 번 인사하면 연결됩니다.
 
 필요한 것: **Python 3.11+와 [uv](https://docs.astral.sh/uv/)**, 3단계에는
 [Slack CLI](https://docs.slack.dev/tools/slack-cli)와 한 번의 `slack login`.
