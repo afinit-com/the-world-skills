@@ -154,7 +154,7 @@ Codex 전용 설치는 `claude-agent-sdk`를 제외하며, 이를 `both`로 바�
   (HMAC 서명으로) *전달*만 할 수 있고, 결코 스스로 결정을 만들지 않습니다.
 - **Claude 구독 과금만.** `ClaudeRunner`는 `ANTHROPIC_API_KEY`를 거부합니다. Codex 인증은
   별개이며 저장된 Codex CLI 로그인을 씁니다.
-- **exit-0 ≠ 완료.** `writes_finding` 에이전트의 진짜 완료는 해당 태스크의 `work/` 아래에
+- **exit-0 ≠ 완료.** `writes_report` 에이전트의 진짜 완료는 해당 태스크의 `work/` 아래에
   생긴 파일입니다. 파일 없이 exit-0이면 blocked로 기록되고 다시 발사됩니다. 일의 종류마다
   "끝났다"가 무엇인지는 누가 지정하는 상태가 아니라 `TaskType`의 완료 술어입니다.
 - **경계는 프롬프트가 아니라 코드에.** 스폰된 에이전트는 빈 기본 tool 세트(Bash 없음,

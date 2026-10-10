@@ -51,7 +51,7 @@ try:
             "allow_bash": bool(a.allow_bash),
             "mutates": bool(a.mutates),
             "task_allowed": bool(getattr(a, "task_allowed", False)),
-            "writes_finding": bool(a.writes_finding),
+            "writes_report": bool(a.writes_report),
             "persona": getattr(a.persona, "display", None),
             "tools": tools,
         }
@@ -107,7 +107,7 @@ AGENT = Agent(
     persona=Persona(key="watcher", display="Obs-Watcher",
                     flavor="밤새 무엇이 바뀌었는지 지켜보고 적는다",
                     bot_token_env="OBS_PERSONA_WATCHER_TOKEN"),
-    writes_finding=True,
+    writes_report=True,
     mutates=False,
     heartbeat_fields=["last_run"],
     write_scope=("tasks/{task}/work",),

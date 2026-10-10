@@ -117,8 +117,8 @@ def render_heartbeat(harness: "Harness", state: dict) -> str:
         for name, w in watched:
             lines.append(f"- **{name}** — {w}")
 
-    lines += ["", "## Recent findings", ""]
-    findings = list(reversed(state.get("recent_findings", [])))
+    lines += ["", "## Recent reports", ""]
+    findings = list(reversed(state.get("recent_reports", [])))
     if not findings:
         lines.append("(none yet)")
     for f in findings:

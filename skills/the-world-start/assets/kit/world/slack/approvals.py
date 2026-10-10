@@ -540,8 +540,8 @@ class ApprovalMixin:
         # the one button whose whole purpose is letting a human SEE what they are being
         # asked about would itself require being the approver — and anyone else in the
         # channel would get told off for trying to read.
-        if action_id == "world_show_finding":
-            await self.show_finding(value, thread_ts)
+        if action_id in ("world_show_report", "world_show_finding"):
+            await self.show_report(value, thread_ts)
             return
         # A link button opens its URL in the browser; Slack still reports the click.
         # Nothing to do, and no reason to tell a non-approver off for it.
@@ -590,8 +590,8 @@ class ApprovalMixin:
 
         # Dismissing a finding (drop its tracked thread; for a proposal also delete it and
         # block re-proposal) is a decision, so it too sits behind the approver gate.
-        if action_id == "world_dismiss_finding":
-            await self.dismiss_finding(value, thread_ts)
+        if action_id in ("world_dismiss_report", "world_dismiss_finding"):
+            await self.dismiss_report(value, thread_ts)
             await self._resolve_single_buttons(msg, msg_ts, f"🚫 무시됨 — <@{clicker}>")
             return
 

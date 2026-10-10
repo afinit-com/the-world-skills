@@ -97,7 +97,7 @@ def stamp_path(rel: str, ignore_prefixes: tuple[str, ...] = ()) -> tuple[str | N
         return None, (
             f"'{rel}' contains a date or timestamp you wrote yourself, and you have no "
             f"clock — no Bash, and nothing told you the time. Write '{TS_TOKEN}' where it "
-            f"goes (e.g. 'logs/agent/{TS_TOKEN}.md', 'findings/monitor/{TS_TOKEN}-http-5xx.md') "
+            f"goes (e.g. 'logs/agent/{TS_TOKEN}.md', 'tasks/{{task}}/work/{TS_TOKEN}-http-5xx.md') "
             "and this tool will substitute the real UTC time."
         )
     return rel.replace(TS_TOKEN, utc_stamp()), None
@@ -314,7 +314,7 @@ def make_handoff_tool(targets: dict[str, str], queue):
 # nowhere it can go. `write_roots` comes from the agent's own `Agent.write_scope`,
 # and no argument moves it.
 #
-# Without these tools, every `writes_finding=True` agent can exit successfully while
+# Without these tools, every `writes_report=True` agent can exit successfully while
 # writing nothing and remain classified BLOCKED. Keep one implementation in the kit.
 #
 # Deliberately NOT implemented: no delete, no move, no append, no mkdir outside a
@@ -390,7 +390,7 @@ def _resolve_in(home: Path, rel: str, roots: tuple[str, ...]) -> Path | None:
     return None
 
 
-def make_write_finding(home: Path, write_roots: tuple[str, ...]):
+def make_write_report(home: Path, write_roots: tuple[str, ...]):
     """A write tool that can only ever create files under `write_roots`.
 
     Parent directories are created, but only inside a root — so
@@ -398,16 +398,16 @@ def make_write_finding(home: Path, write_roots: tuple[str, ...]):
     `../../etc/x` has no reachable parent to create."""
 
     @tool(
-        "write_finding",
+        "write_report",
         "Write a markdown note to a file. This is the ONLY way you can write "
         f"anything — you have no Write/Edit tool. Allowed paths: {_roots_desc(write_roots)}. "
         f"`path` is relative to the harness root. You have no clock, so never type a date "
         f"or a timestamp: write '{TS_TOKEN}' where one belongs (e.g. 'logs/agent/{TS_TOKEN}.md', "
-        f"'findings/monitor/{TS_TOKEN}-http-5xx.md') and the real UTC time is substituted. "
+        f"'tasks/{{task}}/work/{TS_TOKEN}-http-5xx.md') and the real UTC time is substituted. "
         "Overwrites the file if it already exists.",
         {"path": str, "content": str},
     )
-    async def write_finding(args: dict) -> dict:
+    async def write_report(args: dict) -> dict:
         raw = _fill_task(str(args["path"]))
         # Containment BEFORE the timestamp scan. `{ts}` only ever names a file, never
         # which root the path lands in, so the order is safe — and it decides which
@@ -432,21 +432,21 @@ def make_write_finding(home: Path, write_roots: tuple[str, ...]):
         target.write_text(content, encoding="utf-8")
         return result(0, f"wrote {len(content)} chars to {target.relative_to(home.resolve())}")
 
-    return write_finding
+    return write_report
 
 
-def make_read_finding(home: Path, read_roots: tuple[str, ...]):
+def make_read_report(home: Path, read_roots: tuple[str, ...]):
     """A read tool bound to `read_roots` — typically another agent's findings dir.
     Output goes through `truncate`, so a runaway file can't blow the agent's context."""
 
     @tool(
-        "read_finding",
-        "Read a markdown finding file written by another agent. This is the ONLY "
+        "read_report",
+        "Read a markdown report written by another agent. This is the ONLY "
         f"way you can read files — you have no Read tool. Allowed paths: {_roots_desc(read_roots)}. "
         "`path` is relative to the harness root (e.g. 'tasks/20261010-8e0b/work/report.md').",
         {"path": str},
     )
-    async def read_finding(args: dict) -> dict:
+    async def read_report(args: dict) -> dict:
         rel = _fill_task(str(args["path"]))
         target = _resolve_in(home, rel, read_roots)
         if target is None:
@@ -455,10 +455,10 @@ def make_read_finding(home: Path, read_roots: tuple[str, ...]):
             return result(1, f"'{rel}' does not exist — re-check the path you were given")
         return result(0, truncate(target.read_text(errors="replace", encoding="utf-8")))
 
-    return read_finding
+    return read_report
 
 
-def make_list_findings(home: Path, read_roots: tuple[str, ...]):
+def make_list_reports(home: Path, read_roots: tuple[str, ...]):
     """Directory listing bound to `read_roots` — the scoped stand-in for Glob.
 
     Recursive and newest first: reports live in `tasks/<id>/work/`, so a listing of only
@@ -466,13 +466,13 @@ def make_list_findings(home: Path, read_roots: tuple[str, ...]):
     was no report when one had landed that morning."""
 
     @tool(
-        "list_findings",
+        "list_reports",
         "List the markdown files under one of your readable directories, subdirectories "
         "included, newest first, as paths relative to it. You have no Glob tool. Allowed "
         f"directories: {_roots_desc(read_roots)}.",
         {"directory": str},
     )
-    async def list_findings(args: dict) -> dict:
+    async def list_reports(args: dict) -> dict:
         rel = _fill_task(str(args["directory"]))
         target = _resolve_in(home, rel, read_roots)
         if target is None:
@@ -488,7 +488,14 @@ def make_list_findings(home: Path, read_roots: tuple[str, ...]):
             listing += f"\n... ({len(names) - MAX_LIST} more)"
         return result(0, listing)
 
-    return list_findings
+    return list_reports
+
+
+# The names before 0.2.7, when a run's output was a "finding". Harnesses written then
+# still import these; the tools they make carry the new names the model sees.
+make_write_finding = make_write_report
+make_read_finding = make_read_report
+make_list_findings = make_list_reports
 
 
 def make_write_ask(home: Path, *, thread_ts: str = ""):

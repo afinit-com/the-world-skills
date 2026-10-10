@@ -104,16 +104,16 @@ class WindowsPipeTests(unittest.IsolatedAsyncioTestCase):
                 new_handle(str(bridge.socket_path), pipe_security(), first=True)
 
     async def test_scoped_finding_preserves_korean_and_emoji(self):
-        from world.toolkit import make_write_finding
+        from world.toolkit import make_write_report
         with tempfile.TemporaryDirectory() as raw:
             home = Path(raw)
-            writer = make_write_finding(home, ("work",))
+            writer = make_write_report(home, ("work",))
             async with ToolBridge([writer]) as bridge:
                 written = await dispatch(bridge.socket_path, {"id": 1, "method": "tools/call",
-                    "params": {"name": "write_finding", "arguments": {
+                    "params": {"name": "write_report", "arguments": {
                         "path": "work/result.md", "content": "우라! 🐰\n원인: 미확인"}}})
                 denied = await dispatch(bridge.socket_path, {"id": 2, "method": "tools/call",
-                    "params": {"name": "write_finding", "arguments": {
+                    "params": {"name": "write_report", "arguments": {
                         "path": "outside.md", "content": "must not write"}}})
             self.assertFalse(written["result"]["isError"])
             self.assertEqual((home / "work/result.md").read_text(encoding="utf-8"),

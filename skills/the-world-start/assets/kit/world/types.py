@@ -405,10 +405,10 @@ class Agent:
                                     # cwd is not a sandbox: a tool bound to an absolute path
                                     # still writes there, so repo-editing tools should
                                     # resolve world.context.current_worktree().
-    writes_finding: bool = False    # completion contract: a real run MUST leave a file under
+    writes_report: bool = False     # completion contract: a real run MUST leave a file under
                                     # its task's work/ — exit-0 with no file is
-                                    # recorded as "blocked". Both output roots are checked
-                                    # so valid finding-only runs are not misclassified.
+                                    # recorded as "blocked".
+    writes_finding: bool = False    # the name before 0.2.7; read as writes_report
     # Provider-neutral ToolSpec values from world.toolkit. ClaudeRunner still accepts
     # historical Claude SDK tool objects as a compatibility shim; Codex fails closed.
     tools: list[Any] = field(default_factory=list)
@@ -423,7 +423,7 @@ class Agent:
     write_scope: tuple[str, ...] = ()  # repo-relative dirs this agent may write to.
                                     # PRIMARY enforcement is the agent's own scoped write
                                     # tool, whose roots are bound at construction — pass
-                                    # the same tuple to make_write_finding() that you set
+                                    # the same tuple to make_write_report() that you set
                                     # here. The world-scope-guard hook still reads this
                                     # as a backstop, but spawn.py removes Write/Edit
                                     # outright, so
@@ -464,6 +464,7 @@ class Agent:
                                     # no buttons at all; the kit adds none of its own.
 
     def __post_init__(self) -> None:
+        self.writes_report = self.writes_report or self.writes_finding
         self.buttons = tuple(self.buttons)
         if len(self.buttons) > MAX_BUTTONS:
             raise ValueError(f"{self.name}: at most {MAX_BUTTONS} buttons, got {len(self.buttons)}")
@@ -563,7 +564,7 @@ class SlackConfig:
         buttons, finding announcements, PR-ready pings. Reading `.approver`
         directly at a ping site is the bug this property exists to prevent: it
         splits the harness across two addressees, so the relay never sees half the
-        asks (found live: announce_finding and refresh_pending_prs
+        asks (found live: announce_report and refresh_pending_prs
         pinged the human directly while the buttons pinged the relay).
 
         This is the ASK side only. The ACCEPT side is `is_approver`, which stays
@@ -665,7 +666,7 @@ class RunResult:
     model: str = ""
     tools_available: int = 0
     # Provider-normalized permission refusals. Completion enforcement lives above the
-    # provider: a writes_finding agent that produced its file still completed even if an
+    # provider: a writes_report agent that produced its file still completed even if an
     # optional call was denied on the way, while a denial plus no output is blocked.
     permission_denials: tuple[str, ...] = ()
     # Files this run left behind, relative to the harness home. Computed by

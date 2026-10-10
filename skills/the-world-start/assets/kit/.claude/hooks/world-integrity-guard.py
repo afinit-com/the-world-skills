@@ -175,7 +175,7 @@ def main() -> None:
     if os.environ.get("WORLD_AGENT") or os.environ.get("WORLD_HEADLESS") == "1":
         deny(
             f"world-integrity-guard: an agent may not modify {what} — {why}. "
-            "If this genuinely needs to change, report it as a finding and let a human "
+            "If this genuinely needs to change, say so in your report and let a human "
             "make the change."
         )
     ask(what, why)

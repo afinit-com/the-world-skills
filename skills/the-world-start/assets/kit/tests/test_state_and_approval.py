@@ -39,7 +39,7 @@ class StateAndBackoffTests(unittest.IsolatedAsyncioTestCase):
     def test_blocked_result_sets_retry_backoff_without_marking_done(self):
         calls = []
         harness = SimpleNamespace(log=lambda text: calls.append(text))
-        state = {"recent_findings": []}
+        state = {"recent_reports": []}
         slot = {}
         signal = Signal("work", on_done=lambda _result: calls.append("done"))
         orchestrator._apply_agent_result(

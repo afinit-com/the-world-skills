@@ -153,7 +153,7 @@ The implementation decision, matrix, and residual risks are recorded in
   human decision (HMAC-signed), never originate one.
 - **Claude subscription billing only.** `ClaudeRunner` refuses `ANTHROPIC_API_KEY`; Codex
   authentication is independent and uses the saved Codex CLI login.
-- **exit-0 ≠ completion.** A `writes_finding` agent's real completion is a file under its
+- **exit-0 ≠ completion.** A `writes_report` agent's real completion is a file under its
   task's `work/`; exit-0 with no file is recorded blocked and refires. What "finished"
   means per kind of work is a `TaskType` completion predicate, not a status anyone assigns.
 - **Boundaries in code, not prompts.** Spawned agents get an empty base tool set (no Bash,

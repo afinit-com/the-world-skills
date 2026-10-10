@@ -103,7 +103,7 @@ The scanner's checks map onto these. Your reading fills the gaps it names.
    ledger; `env/harness.env` committed or not ignored; credentials a Bash-holding bot can
    read from its inherited environment; credentials each tool holds and whether they are
    the narrowest that work.
-7. **Silent failure.** Unattended workers with no artifact contract (`writes_finding`
+7. **Silent failure.** Unattended workers with no artifact contract (`writes_report`
    or a `task_type`), poll checks that mark input seen before `on_done`, swallowed
    exceptions, and whether concurrency still queues rather than drops (true while
    `world/` matches the kit).

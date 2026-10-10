@@ -128,7 +128,7 @@ def main() -> None:
         block(
             f"world-git-guard: headless world sessions can only run git commands that cannot "
             f"change anything, and {reason}. Use the git/PR tool this harness gave you "
-            "instead — if you don't have one for this, report it as a finding and let a "
+            "instead — if you don't have one for this, say so in your report and let a "
             "human make the change."
         )
     sys.exit(0)

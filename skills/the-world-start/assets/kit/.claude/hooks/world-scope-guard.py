@@ -5,7 +5,7 @@ BACKSTOP ONLY. world/process/spawn.py sets ClaudeAgentOptions(tools=[]) — an
 empty BASE TOOL SET — so a spawned session is offered no built-in tools at all, Write
 and Edit included. Verified live by asking a spawned model to enumerate its own
 tools. In normal operation this hook never fires: an agent writes through a scoped
-tool (make_write_finding and the like in world/toolkit.py) whose roots are bound at
+tool (make_write_report and the like in world/toolkit.py) whose roots are bound at
 construction, or it doesn't write.
 
 Keep it anyway: it costs nothing, and it still catches the case where someone adds a
@@ -155,7 +155,7 @@ def main() -> None:
     block(
         f"world-scope-guard: '{agent}' may only write inside {scope_desc} — "
         f"denied path: {target}. If a change outside that scope is genuinely "
-        "needed, report it as a finding instead and let a human make the change."
+        "needed, say so in your report instead and let a human make the change."
     )
 
 

@@ -261,12 +261,12 @@ class TaskScopedWriteTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_the_token_resolves_to_the_running_task_only(self) -> None:
         from world.context import reset_current_task, set_current_task
-        from world.toolkit import make_write_finding
+        from world.toolkit import make_write_report
 
         home = _home()
         mine = _make(home, slug="mine")
         other = _make(home, slug="other")
-        write = make_write_finding(home, ("tasks/{task}/work",))
+        write = make_write_report(home, ("tasks/{task}/work",))
 
         token = set_current_task(mine.id)
         try:
@@ -286,11 +286,11 @@ class TaskScopedWriteTests(unittest.IsolatedAsyncioTestCase):
         # The description is built outside any run. It used to resolve the root there
         # and say "(none right now)", so the agent was told it had nowhere to write.
         from world.context import reset_current_task, set_current_task
-        from world.toolkit import make_write_finding
+        from world.toolkit import make_write_report
 
         home = _home()
         mine = _make(home, slug="mine")
-        write = make_write_finding(home, ("tasks/{task}/work",))
+        write = make_write_report(home, ("tasks/{task}/work",))
         self.assertIn("tasks/{task}/work/", write.description)
         self.assertNotIn("none right now", write.description)
 
@@ -303,11 +303,11 @@ class TaskScopedWriteTests(unittest.IsolatedAsyncioTestCase):
             reset_current_task(token)
 
     async def test_outside_a_run_the_root_grants_nothing(self) -> None:
-        from world.toolkit import make_write_finding
+        from world.toolkit import make_write_report
 
         home = _home()
         made = _make(home)
-        write = make_write_finding(home, ("tasks/{task}/work",))
+        write = make_write_report(home, ("tasks/{task}/work",))
         denied = await write.handler(
             {"path": f"tasks/{made.id}/work/note.md", "content": "x"}
         )

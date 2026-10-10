@@ -124,7 +124,8 @@ class Harness:
         mention_model: str = "haiku",
         run_footer: bool = True,
         extra_personas: list[Persona] | None = None,
-        finding_footer: str | None = None,
+        report_footer: str | None = None,
+        finding_footer: str | None = None,  # the name before 0.2.7
         knowledge_proposal_agent: str | None = None,
         plugins: list["PluginMarketplace"] | None = None,
         plugin_refresh: str | int = "6h",
@@ -205,7 +206,7 @@ class Harness:
         # reply hint + the approval-doctrine reminder, in the harness's own voice. `{approver}`
         # is substituted with the addressee mention (or ""). Overridden per harness so the
         # announcement sounds like the bots, not like the kit.
-        self.finding_footer = finding_footer or (
+        self.report_footer = report_footer or finding_footer or (
             "이 스레드에 답장하면 대화로 이어갈 수 있습니다. 실제 발행/실행은 여전히 "
             "{approver}승인 후에만."
         )
@@ -248,7 +249,7 @@ class Harness:
 
         # Layout inside home:
         #   tasks/<id>/work/   what a run produced (world/process/task.py); the
-        #                      completion contract for writes_finding agents
+        #                      completion contract for writes_report agents
         #   logs/harness.jsonl one line per run, created on run()
         #   findings/<agent>/  promoted state changes, created only when one is written
         #   state.json         single source of truth

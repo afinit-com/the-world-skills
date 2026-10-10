@@ -337,7 +337,7 @@ class DiscordGateway:
         )
         threads[thread_id] = {
             "slug": record.slug or record.id, "origin": "task", "task_id": record.id,
-            "finding_path": (result.artifacts[0] if result and result.artifacts else ""),
+            "report_path": (result.artifacts[0] if result and result.artifacts else ""),
             "persona": persona.key, "channel": "discord", "starter": body[:1500],
             "created": time.time(), "last_message_ts": time.time(),
         }
@@ -527,7 +527,7 @@ class DiscordGateway:
         identity = persona.key
         agent = Agent(
             name="mention", trigger=MentionTrigger(), persona=persona,
-            mutates=False, writes_finding=False, tools=tools,
+            mutates=False, writes_report=False, tools=tools,
             model=self.harness.mention_model, allow_bash=False,
             allow_plugins=self.harness.mention_plugins and bool(self.harness.plugins),
         )

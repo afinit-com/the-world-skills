@@ -51,7 +51,7 @@ CLEAN_AGENT = '''\
 from pathlib import Path
 
 from world import Agent, Persona, PollTrigger, RunResult, Signal
-from world.toolkit import make_write_finding
+from world.toolkit import make_write_report
 
 HOME = Path(__file__).resolve().parents[2]
 SCOPE = ("tasks/{task}/work",)
@@ -73,9 +73,9 @@ AGENT = Agent(
     trigger=PollTrigger(check=check),
     prompt_file="abilities/watcher/prompt.md",
     persona=Persona(key="watcher", display="Obs-Watcher", flavor="지켜본다"),
-    writes_finding=True,
+    writes_report=True,
     write_scope=SCOPE,
-    tools=[make_write_finding(HOME, SCOPE)],
+    tools=[make_write_report(HOME, SCOPE)],
 )
 '''
 
@@ -84,7 +84,7 @@ FIXER_AGENT = CLEAN_AGENT.replace('name="watcher"', 'name="fixer"').replace(
     'state["agents"]["watcher"]', 'state["agents"]["fixer"]').replace(
     'key="watcher", display="Obs-Watcher"', 'key="fixer", display="Obs-Fixer"').replace(
     "abilities/watcher/", "abilities/fixer/").replace(
-    "    writes_finding=True,\n", "    writes_finding=True,\n    mutates=True,\n")
+    "    writes_report=True,\n", "    writes_report=True,\n    mutates=True,\n")
 SHELL_FIXER_AGENT = FIXER_AGENT.replace('"fixer"', '"shellfixer"').replace(
     "abilities/fixer/", "abilities/shellfixer/").replace(
     'key="fixer", display="Obs-Fixer"', 'key="shellfixer", display="Obs-Shellfixer"').replace(
@@ -117,7 +117,7 @@ SCRIBE_AGENT = '''\
 from pathlib import Path
 
 from world import Agent, MentionTrigger, Persona
-from world.toolkit import make_write_finding
+from world.toolkit import make_write_report
 
 from tools.publish import post_issue, read_note
 
@@ -127,9 +127,9 @@ AGENT = Agent(
     name="scribe",
     trigger=MentionTrigger(),
     persona=Persona(key="scribe", display="Obs-Scribe", flavor="기록한다"),
-    writes_finding=True,
+    writes_report=True,
     write_scope=("tasks/{task}/work",),
-    tools=[make_write_finding(HOME, ("tasks/{task}/work",)), post_issue, read_note],
+    tools=[make_write_report(HOME, ("tasks/{task}/work",)), post_issue, read_note],
 )
 '''
 

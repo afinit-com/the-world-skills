@@ -28,7 +28,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from .state import record_finding
+from .state import record_report
 
 if TYPE_CHECKING:
     from ..harness import Harness
@@ -332,7 +332,7 @@ async def sync_with_origin(harness: "Harness", state: dict, listener) -> None:
     commits origin doesn't have — the normal case, since a harness commits
     locally but never pushes on its own), don't auto-merge: a silent merge/rebase
     mid-tick is exactly the kind of git operation this project's doctrine says to
-    avoid automating. Just surface it (log + record_finding + Slack post) so a
+    avoid automating. Just surface it (log + record_report + Slack post) so a
     human resolves it. Only runs when the working tree is actually on
     `default_branch` — worktrees/other branches are untouched. A harness with no
     `origin` remote (local-only git_root) is a normal, static configuration, not
@@ -376,7 +376,7 @@ async def sync_with_origin(harness: "Harness", state: dict, listener) -> None:
         "to merge/rebase directly."
     )
     harness.log(msg)
-    record_finding(state, "origin-sync", msg)
+    record_report(state, "origin-sync", msg)
     if listener and listener.enabled:
         await listener.post(msg)
 

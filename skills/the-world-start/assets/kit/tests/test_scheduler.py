@@ -33,7 +33,7 @@ def _harness(*names: str, limit: int = 2) -> SimpleNamespace:
 
 
 def _state() -> dict:
-    return {"agents": {}, "recent_findings": [], "rate_limited_until": 0}
+    return {"agents": {}, "recent_reports": [], "rate_limited_until": 0}
 
 
 def _queue(harness, agent: str, **fields) -> tasks.Task:

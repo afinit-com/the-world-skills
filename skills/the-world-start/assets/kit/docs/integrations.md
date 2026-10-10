@@ -417,7 +417,7 @@ harness.register(Agent(
     persona=scout,
     watches=('Linear ENG issues labelled "harness"',),
     heartbeat_fields=["last_polled"],
-    writes_finding=True,
+    writes_report=True,
     write_scope=("tasks/{task}/work",),
 ))
 ```

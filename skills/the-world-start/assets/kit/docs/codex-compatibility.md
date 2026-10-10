@@ -15,7 +15,7 @@ path meets the required boundaries:
   pipe with an explicit current-user DACL and remote clients rejected.
 - JSONL provides final messages, MCP calls, errors, and token usage in a stable stream.
 
-The live probe is `bin/codex-spike.py`. It calls a scope-bound finding tool and verifies
+The live probe is `bin/codex-spike.py`. It calls a scope-bound report tool and verifies
 the expected file rather than accepting the model's final text as completion.
 
 Official interfaces used here:
@@ -33,15 +33,15 @@ Official interfaces used here:
 4. `apply_patch` and Bash hooks are backstops. The primary boundary does not depend on a
    project hook being trusted or firing.
 5. malformed Codex hook input and unparseable patch targets deny in headless sessions.
-6. an agent that promises a finding is successful only when the file exists.
+6. an agent that promises a report is successful only when the file exists.
 
 ## Compatibility matrix
 
 | Provider | Trigger | Slack path | Automated evidence |
 |---|---|---|---|
-| Claude | poll/schedule | finding announcement | core completion, schedule, state, installer tests; existing smoke |
+| Claude | poll/schedule | report announcement | core completion, schedule, state, installer tests; existing smoke |
 | Claude | mention | thread + one-shot approval | fake gateway approval test; Claude adapter compatibility contract |
-| Codex | poll/schedule | finding announcement | fake CLI contract, JSONL parser, live scoped-MCP spike |
+| Codex | poll/schedule | report announcement | fake CLI contract, JSONL parser, live scoped-MCP spike |
 | Codex | mention | thread + one-shot approval | same provider-neutral mention path and fake gateway approval test |
 
 Across the matrix, tests cover path escape, missing-output blocking, blocked and rate-limit

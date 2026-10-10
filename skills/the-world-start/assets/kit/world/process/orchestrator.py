@@ -35,7 +35,7 @@ from typing import TYPE_CHECKING
 
 from . import task as tasks
 from . import worktrees
-from .state import record_finding, save_state
+from .state import record_report, save_state
 from ..types import ScheduleTrigger, Signal
 
 if TYPE_CHECKING:
@@ -79,12 +79,12 @@ def _apply_agent_result(harness: "Harness", state: dict, agent, agent_state: dic
     if result.status == "ok":
         if signal.on_done:
             signal.on_done(result)
-        record_finding(state, agent.name, result.result_text[:300])
+        record_report(state, agent.name, result.result_text[:300])
         harness.log(f"{agent.name} done in {result.duration_s:.0f}s")
     elif result.status == "blocked":
         agent_state["blocked_until"] = now + BLOCKED_BACKOFF_SECONDS
         harness.log(f"{agent.name} BLOCKED (incomplete run, retry in 1h): {result.result_text[:300]}")
-        record_finding(state, agent.name, f"⚠️ blocked run: {result.result_text[:250]}")
+        record_report(state, agent.name, f"⚠️ blocked run: {result.result_text[:250]}")
     elif result.status == "error":
         harness.log(f"{agent.name} errored: {result.result_text[:300]}")
 

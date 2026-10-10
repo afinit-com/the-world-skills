@@ -95,11 +95,11 @@ class NamingTests(unittest.TestCase):
             self.assertIn("persona key 'haram' is both", found)
 
 
-class ListFindingsTests(unittest.IsolatedAsyncioTestCase):
+class ListReportsTests(unittest.IsolatedAsyncioTestCase):
     async def test_reports_under_task_folders_are_listed_newest_first(self) -> None:
         import os
 
-        from world.toolkit import make_list_findings
+        from world.toolkit import make_list_reports
 
         with tempfile.TemporaryDirectory() as raw:
             home = Path(raw)
@@ -108,11 +108,60 @@ class ListFindingsTests(unittest.IsolatedAsyncioTestCase):
                 work.mkdir(parents=True)
                 (work / "항해일지.md").write_text("x")
                 os.utime(work / "항해일지.md", (1000 + i, 1000 + i))
-            tool = make_list_findings(home, ("tasks",))
+            tool = make_list_reports(home, ("tasks",))
             out = await tool.handler({"directory": "tasks/"})
             text = out["content"][0]["text"]
             self.assertEqual(["[ok]", "20261010-bbbb/work/항해일지.md", "20261009-aaaa/work/항해일지.md"],
                              text.splitlines())
+
+
+class ReportRenameTests(unittest.IsolatedAsyncioTestCase):
+    """A run's output was a "finding" until 0.2.7. Harnesses written then keep working."""
+
+    def test_old_names_still_work(self) -> None:
+        import world
+        from world.process.state import load_state, record_finding, record_report
+
+        self.assertIs(world.make_write_finding, world.make_write_report)
+        self.assertIs(world.make_read_finding, world.make_read_report)
+        self.assertIs(world.make_list_findings, world.make_list_reports)
+        self.assertIs(record_finding, record_report)
+        agent = Agent(name="a", trigger=PollTrigger(lambda _s: None), writes_finding=True)
+        self.assertTrue(agent.writes_report)
+        tool = world.make_write_finding(Path("."), ("tasks/{task}/work",))
+        self.assertEqual("write_report", tool.name)  # the model sees the new name
+        with tempfile.TemporaryDirectory() as raw:
+            harness = Harness("t", home=Path(raw), finding_footer="old footer")
+            self.assertEqual("old footer", harness.report_footer)
+            harness.state_path.write_text(json.dumps({"recent_findings": [{"ts": 1, "agent": "a", "summary": "s"}]}))
+            state = load_state(harness)
+            self.assertEqual("s", state["recent_reports"][0]["summary"])
+            self.assertNotIn("recent_findings", state)
+
+    async def test_show_button_opens_a_task_report(self) -> None:
+        from world.slack.mentions import MentionMixin
+
+        with tempfile.TemporaryDirectory() as raw:
+            home = Path(raw)
+            report = home / "tasks" / "20261010-8e0b" / "work" / "항해일지.md"
+            report.parent.mkdir(parents=True)
+            report.write_text("배 4척 입항", encoding="utf-8")
+            (home / "secret.md").write_text("no")
+            posted: list[str] = []
+
+            class Probe(MentionMixin):
+                async def post(self, text, **_kw):
+                    posted.append(text)
+
+            probe = Probe()
+            probe.harness = Harness("t", home=home)
+            probe.state = {}
+            await probe.show_report("tasks/20261010-8e0b/work/항해일지.md", "1.0")
+            await probe.show_report("secret.md", "1.0")
+            await probe.show_report("tasks/20261010-8e0b/task.md", "1.0")
+        self.assertIn("배 4척 입항", posted[0])
+        self.assertIn("보고서가 아닙니다", posted[1])
+        self.assertIn("보고서가 아닙니다", posted[2])
 
 
 class WorldDocTests(unittest.TestCase):

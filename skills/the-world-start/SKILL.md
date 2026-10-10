@@ -153,7 +153,7 @@ The two creation words become real commands via
 `bin/scaffold-world-skill.py <word> agent|tool --universe ... --description ...`. Default
 to `recruit` and `equip` when the user has no preference. Honor explicit naming choices.
 
-**Exit 0 is not completion.** A worker that produces analysis (`writes_finding=True`) is
+**Exit 0 is not completion.** A worker that produces analysis (`writes_report=True`) is
 verified by a file landing in its task's `work/`, never by an exit code.
 
 **Report only what happened.** A dry run is not a Slack connection and not a real agent
@@ -228,7 +228,7 @@ h.main()                             # entry point
 
 AGENT = Agent(name=..., trigger=PollTrigger(check=check),   # or MentionTrigger()
               prompt_file=...,       # standing instructions, relative to home
-              persona=Persona(...), writes_finding=True, mutates=False,
+              persona=Persona(...), writes_report=True, mutates=False,
               write_scope=("tasks/{task}/work",), tools=[...], allow_bash=False,
               buttons=(Button.ask("원인 더 파봐", "<request to this worker's persona>"),
                        Button.link("Jenkins 열기", "https://..."),

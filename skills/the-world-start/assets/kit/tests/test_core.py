@@ -17,9 +17,9 @@ from types import SimpleNamespace
 from world.context import current_asker, reset_current_asker, set_current_asker
 from world.harness import Harness
 from world.process.spawn import enforce_completion, run_agent_oneshot
-from world.slack.mentions import MentionMixin, _finding_actions
+from world.slack.mentions import MentionMixin, _report_actions
 from world.slack.run_footer import footer_context, format_run_footer
-from world.toolkit import make_approval_gated, make_write_finding, result, tool
+from world.toolkit import make_approval_gated, make_write_report, result, tool
 from world.tools.spec import ToolSpec
 from world.types import Agent, PollTrigger, RunResult, Schedule
 
@@ -97,7 +97,7 @@ class CompletionContractTests(unittest.IsolatedAsyncioTestCase):
         self.agent = Agent(
             name="watcher",
             trigger=PollTrigger(check=lambda _state, _now: None),
-            writes_finding=True,
+            writes_report=True,
             write_scope=("findings/watcher",),
         )
 
@@ -147,7 +147,7 @@ class ToolBoundaryTests(unittest.IsolatedAsyncioTestCase):
     async def test_scoped_writer_rejects_path_escape(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
-            writer = make_write_finding(home, ("findings/watcher",))
+            writer = make_write_report(home, ("findings/watcher",))
             denied = await writer.handler({"path": "../escape.md", "content": "no"})
             allowed = await writer.handler(
                 {"path": "findings/watcher/{ts}-ok.md", "content": "yes"}
@@ -229,7 +229,7 @@ class WorldNeutralityTests(unittest.TestCase):
             self.assertFalse(mixin._is_knowledge_proposal(proposal))
             self.assertNotIn(
                 "world_promote_knowledge",
-                [button["action_id"] for button in _finding_actions(proposal)],
+                [button["action_id"] for button in _report_actions(proposal)],
             )
 
             mixin.harness.knowledge_proposal_agent = "knowledge-curator"
@@ -238,7 +238,7 @@ class WorldNeutralityTests(unittest.TestCase):
                 "world_promote_knowledge",
                 [
                     button["action_id"]
-                    for button in _finding_actions(proposal, knowledge_proposal=True)
+                    for button in _report_actions(proposal, knowledge_proposal=True)
                 ],
             )
 

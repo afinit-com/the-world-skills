@@ -32,7 +32,7 @@ def default_state(harness: "Harness") -> dict:
     return {
         "agents": {agent.name: {} for agent in harness.agents}
         | {"worktree-sweep": {"last_run": 0}},
-        "recent_findings": [],   # [{ts, agent, summary}], most recent last
+        "recent_reports": [],   # [{ts, agent, summary}], most recent last
         "rate_limited_until": 0,
         # thread_ts -> {slug, worktree, branch, created, last_message_ts, origin,
         # retries, session_id, identity} — threads are the unit of work; surviving
@@ -79,6 +79,8 @@ def load_state(harness: "Harness") -> dict:
         return defaults
     with harness.state_path.open(encoding="utf-8") as f:
         state = json.load(f)
+    if "recent_findings" in state:  # renamed in 0.2.7
+        state.setdefault("recent_reports", []).extend(state.pop("recent_findings"))
     for key, value in defaults["agents"].items():
         state.setdefault("agents", {}).setdefault(key, value)
     for key, value in defaults.items():
@@ -95,16 +97,19 @@ def save_state(harness: "Harness", state: dict) -> None:
     write_heartbeat(harness, state)
 
 
-def record_finding(state: dict, agent: str, summary: str, limit: int = 20) -> None:
-    state["recent_findings"].append({"ts": time.time(), "agent": agent, "summary": summary})
-    state["recent_findings"] = state["recent_findings"][-limit:]
+def record_report(state: dict, agent: str, summary: str, limit: int = 20) -> None:
+    state["recent_reports"].append({"ts": time.time(), "agent": agent, "summary": summary})
+    state["recent_reports"] = state["recent_reports"][-limit:]
+
+
+record_finding = record_report  # the name before 0.2.7
 
 
 # --- state GC ----------------------------------------------------------------
 #
 # state.json is rewritten WHOLE every tick (save_state), so a key that only grows is a
 # file that only grows — rewritten every 60s forever. Most collections here are already
-# bounded (recent_findings[-20], pending_approvals[-50], relay_nonces[-200]). Two are
+# bounded (recent_reports[-20], pending_approvals[-50], relay_nonces[-200]). Two are
 # not, and these prune them:
 #   - threads: one entry per mention/finding/relay thread, kept forever with no cleanup.
 #   - approved_threads: a grant that is approved but never consumed (a thread that asked,
@@ -227,8 +232,8 @@ def pending_approvals_snippet(state: dict, limit: int = 10) -> str:
 def recent_context_snippet(state: dict, limit: int = 5) -> str:
     """Cross-agent context handoff: newly-spawned agents get the last few findings
     so they can cross-reference known issues instead of rediscovering them."""
-    findings = state["recent_findings"][-limit:]
+    findings = state["recent_reports"][-limit:]
     if not findings:
-        return "(no prior findings recorded yet)"
+        return "(no prior reports recorded yet)"
     lines = [f"- [{f['agent']}] {f['summary']}" for f in findings]
-    return "Recent harness findings (most recent last):\n" + "\n".join(lines)
+    return "Recent harness reports (most recent last):\n" + "\n".join(lines)

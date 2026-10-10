@@ -114,7 +114,7 @@ KIT_INVARIANTS = (
     ("authority", "world/runners/codex.py", '"--sandbox", "read-only"',
      "Codex spawns run in a read-only sandbox"),
     ("silent", "world/process/spawn.py", 'status="blocked"',
-     "a writes_finding run with no artifact is recorded as blocked, not done"),
+     "a writes_report run with no artifact is recorded as blocked, not done"),
 )
 
 
@@ -551,7 +551,8 @@ def check_authority(h: Harness, out: list[Finding]) -> dict[str, dict]:
 
         writers = [c for _, node in h.resolve(agent.module, agent.kw.get("tools"))
                    for c in ast.walk(node)
-                   if isinstance(c, ast.Call) and callee(c) == "make_write_finding"]
+                   if isinstance(c, ast.Call)
+                   and callee(c) in ("make_write_report", "make_write_finding")]  # 0.2.6 name
         other_writers = [t for t in f["held"] if re.search(r"write|edit|create|save|put",
                                                            t.name, re.I)]
         if f["scope"] and not writers and not other_writers:
@@ -562,7 +563,7 @@ def check_authority(h: Harness, out: list[Finding]) -> dict[str, dict]:
                                "through something the scope does not describe.",
                                [agent.where],
                                f"Read its `tools=` at {agent.where}: no "
-                               "make_write_finding(...) bound to these roots."))
+                               "make_write_report(...) bound to these roots."))
         for call in writers:
             roots = call.args[1] if len(call.args) > 1 else None
             declared = agent.kw.get("write_scope")
@@ -577,7 +578,7 @@ def check_authority(h: Harness, out: list[Finding]) -> dict[str, dict]:
                                    f"{list(f['scope'])}. The tool is what enforces; the "
                                    "declaration is what people read.",
                                    [f"{agent.module.rel}:{call.lineno}"],
-                                   "Call its write_finding with a path under a root the "
+                                   "Call its write_report with a path under a root the "
                                    "tool has and the scope lacks."))
             elif roots_value is UNKNOWN and not same_source:
                 out.append(Finding("authority", "write tool bound to scope", "not_verified",
@@ -1237,18 +1238,20 @@ def check_silent(h: Harness, facts: dict, out: list[Finding]) -> None:
         trigger = agent.kw.get("trigger")
         if trigger is not None and callee(trigger) == "MentionTrigger":
             continue
-        writes = h.value(agent, "writes_finding")
+        writes = h.value(agent, "writes_report")
+        if writes is None:
+            writes = h.value(agent, "writes_finding")  # the 0.2.6 name
         task_type = h.value(agent, "task_type")
         if writes is True:
             continue
         if task_type:
             out.append(Finding("silent", "exit 0 counted as done", "not_verified",
-                               f"`{name}` has no writes_finding but a task_type "
+                               f"`{name}` has no writes_report but a task_type "
                                f"`{task_type}`; read that type's completion predicate.",
                                [agent.where]))
         else:
             out.append(Finding("silent", "exit 0 counted as done", "open",
-                               f"`{name}` runs unattended with writes_finding=False and no "
+                               f"`{name}` runs unattended with writes_report=False and no "
                                "task_type. Only a permission denial marks its run blocked, "
                                "so a run that gives up in prose and exits 0 is recorded as "
                                "done and its on_done bookkeeping fires.",

@@ -58,7 +58,7 @@ AGENT = Agent(
         flavor="밤새 저장소에 무엇이 바뀌었는지 지켜보고 적는다",
         bot_token_env="OBS_PERSONA_WATCHER_TOKEN",
     ),
-    writes_finding=True,
+    writes_report=True,
     mutates=False,
     heartbeat_fields=["last_run"],
     write_scope=("tasks/{task}/work",),

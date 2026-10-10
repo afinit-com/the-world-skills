@@ -49,7 +49,7 @@ writes there, so a tool that edits or commits repo files resolves
 **Exit-0 is not completion.** A headless run can be blocked by a permission
 denial and still exit 0 — the subprocess doesn't know the difference between
 "finished" and "gave up quietly." Agents that produce analysis
-(`writes_finding=True`) are verified by checking a file actually landed in
+(`writes_report=True`) are verified by checking a file actually landed in
 its task's `work/`, not by the exit code.
 
 **No silent caps.** Concurrency limits queue and announce; they don't drop
@@ -59,7 +59,7 @@ never silently give up.
 
 **Suspect injected context before the agent.** When multiple agents
 misbehave in the same way at once, the shared cause is almost always
-upstream — a poisoned finding, a bad state read, contaminated context fed to
+upstream — a poisoned report, a bad state read, contaminated context fed to
 all of them — not simultaneous unrelated bugs in each agent. Origin: a
 misclassified "blocked" alert got written back into shared state and then
 re-read by every other thread, which each independently escalated to
@@ -67,7 +67,7 @@ requesting broad emergency permissions.
 
 **No self-reconfiguration.** An agent thread never proposes changes to its
 own settings, allowlist, hooks, or harness code — not even via an approval
-request. Denied commands become findings for a human to act on; tuning the
+request. Denied commands become reports for a human to act on; tuning the
 harness is operator work, never something the harness talks itself into.
 
 **Naming is not free — check for collision with meaning and existing

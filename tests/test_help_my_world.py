@@ -44,7 +44,7 @@ class CollectEnvTests(unittest.TestCase):
                 "keeper = Persona(key='haram', display='하람', voice='VOICE-TEXT')\n"
                 "h = Harness(name='t', main_persona=keeper)\n"
                 "h.register(Agent(name='saebyeok', trigger=PollTrigger(check=c), prompt_file='p.md',\n"
-                "                 persona=Persona(key='saebyeok', display='새벽'), writes_finding=True))\n")
+                "                 persona=Persona(key='saebyeok', display='새벽'), writes_report=True))\n")
             out = subprocess.run([sys.executable, str(COLLECTOR), str(home)], capture_output=True,
                                  encoding="utf-8", check=True).stdout
         self.assertIn("personas: haram (하람), saebyeok (새벽)", out)

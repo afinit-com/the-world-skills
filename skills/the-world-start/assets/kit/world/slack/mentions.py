@@ -41,16 +41,16 @@ FINDING_MAX_BYTES = 60_000  # a finding that big is a bug in the agent, not a me
 MAX_BATCH_BUTTONS = 15
 
 
-def finding_button(rel_path: str) -> dict:
+def report_button(rel_path: str) -> dict:
     """A '본문 보기' button carrying the finding's harness-relative path.
 
     The path is the button's `value`, which means it arrives back from Slack as
     untrusted input — Slack will deliver whatever a crafted interaction payload puts
-    there, not only what we rendered. `show_finding` resolves it under findings_dir
+    there, not only what we rendered. `show_report` resolves it under findings_dir
     and refuses anything that lands outside; do not read the value directly."""
     return {
         "type": "button",
-        "action_id": "world_show_finding",
+        "action_id": "world_show_report",
         "text": {"type": "plain_text", "text": "📄 본문 보기"},
         "value": rel_path[:1900],  # Slack caps button values at 2000 chars
     }
@@ -77,17 +77,17 @@ def dismiss_button(rel_path: str) -> dict:
     digest won't re-propose it."""
     return {
         "type": "button",
-        "action_id": "world_dismiss_finding",
+        "action_id": "world_dismiss_report",
         "text": {"type": "plain_text", "text": "🚫 무시"},
         "value": rel_path[:1900],
     }
 
 
-def _finding_actions(rel_path: str, *, knowledge_proposal: bool = False) -> list[dict]:
+def _report_actions(rel_path: str, *, knowledge_proposal: bool = False) -> list[dict]:
     """The knowledge-proposal flow's own buttons (본문 보기, 채택, 무시). Only a harness
     that configures `knowledge_proposal_agent` gets them; every other announcement
     carries its agent's declared `buttons` and nothing else (see `task_buttons`)."""
-    buttons = [finding_button(rel_path)]
+    buttons = [report_button(rel_path)]
     if knowledge_proposal:
         buttons.append(promote_button(rel_path))
     buttons.append(dismiss_button(rel_path))
@@ -115,9 +115,9 @@ def task_buttons(agent, task_id: str, primary: str) -> list[dict]:
         elif not primary:
             continue
         elif button.kind == "show":
-            element |= {"action_id": "world_show_finding", "value": primary[:1900]}
+            element |= {"action_id": "world_show_report", "value": primary[:1900]}
         else:  # dismiss
-            element |= {"action_id": "world_dismiss_finding", "value": primary[:1900]}
+            element |= {"action_id": "world_dismiss_report", "value": primary[:1900]}
         out.append(element)
     return out
 
@@ -141,8 +141,8 @@ class MentionTurn(NamedTuple):
 
         A non-"ok" status alone does NOT qualify — usually it just means some tool call
         got denied, and the blocked/denial heuristic behind it is tuned for poll agents'
-        writes_finding completion contract, a poor fit for this conversational,
-        non-writes_finding agent. Found live: a single denied Bash `ls`
+        writes_report completion contract, a poor fit for this conversational,
+        non-writes_report agent. Found live: a single denied Bash `ls`
         classified an otherwise-complete decision-brief + APPROVAL_REQUEST as "blocked"
         and discarded it. So the marker wins; only its absence lets the status decide."""
         return self.approval_summary is None and self.result.status != "ok"
@@ -179,17 +179,25 @@ class MentionMixin:
         target = (self.harness.home / rel_path).resolve(strict=False)
         return target.suffix == ".md" and target.is_relative_to(root)
 
-    async def show_finding(self, rel_path: str, thread_ts: str) -> None:
-        """Post a finding's full text into the thread its button was clicked in.
+    def _is_report(self, target) -> bool:
+        tasks = (self.harness.home / "tasks").resolve()
+        if target.is_relative_to(tasks):
+            parts = target.relative_to(tasks).parts
+            return len(parts) >= 3 and parts[1] == "work"
+        return target.is_relative_to(self.harness.findings_dir.resolve())
 
-        The whole reason this exists: the batched announcement lists file paths, and a
-        path is unreadable from a phone. Reading is harmless, so it is not
-        approver-gated — but the path still has to be proven to be a finding, because
-        `rel_path` comes off a button value (see finding_button)."""
-        root = self.harness.findings_dir.resolve()
+    async def show_report(self, rel_path: str, thread_ts: str) -> None:
+        """Post a report's full text into the thread its button was clicked in.
+
+        The whole reason this exists: an announcement names a file, and a path is
+        unreadable from a phone. Reading is harmless, so it is not approver-gated — but
+        the path still has to be proven to be a report, because `rel_path` comes off a
+        button value (see report_button). A report is a .md under a task's work/
+        (tasks/<id>/work/…), or under findings/ for the knowledge-proposal flow. Before
+        0.2.7 only findings/ was accepted, so "본문 보기" refused every task report."""
         target = (self.harness.home / rel_path).resolve(strict=False)
-        if not (target == root or target.is_relative_to(root)) or target.suffix != ".md":
-            await self.post(f"`{rel_path}` 는 finding이 아닙니다.", thread_ts=thread_ts)
+        if target.suffix != ".md" or not self._is_report(target):
+            await self.post(f"`{rel_path}` 는 보고서가 아닙니다.", thread_ts=thread_ts)
             return
         if not target.is_file():
             await self.post(f"`{rel_path}` 가 더는 없습니다 (지워졌거나 이동됨).", thread_ts=thread_ts)
@@ -229,7 +237,7 @@ class MentionMixin:
         self.save_state()
         await self.post(f"📥 지식으로 채택했습니다 — `{rel_dest}`.", thread_ts=thread_ts)
 
-    async def dismiss_finding(self, rel_path: str, thread_ts: str) -> None:
+    async def dismiss_report(self, rel_path: str, thread_ts: str) -> None:
         """Dismiss a finding on a '🚫 무시' click. Drops its thread from state["threads"]
         (the finding no longer counts toward the tracked-thread set that otherwise only
         grows), keyed by both the clicked message's thread and any thread pointing at this
@@ -242,7 +250,7 @@ class MentionMixin:
         threads = self.state.get("threads", {})
         removed = [
             ts for ts, meta in list(threads.items())
-            if ts == thread_ts or meta.get("finding_path") == rel_path
+            if ts == thread_ts or rel_path in (meta.get("report_path"), meta.get("finding_path"))
         ]
         for ts in removed:
             threads.pop(ts, None)
@@ -269,22 +277,22 @@ class MentionMixin:
         adding a third footer site cannot forget to honour `Harness(run_footer=)`."""
         return footer_context(last) if self.harness.run_footer else None
 
-    def _finding_badge(self, agent_name: str) -> str:
+    def _report_badge(self, agent_name: str) -> str:
         return next((a.badge for a in self.harness.agents if a.name == agent_name and a.badge), "")
 
-    def _finding_header(self, rel_path: str) -> str:
+    def _report_header(self, rel_path: str) -> str:
         """The one-line label an announcement leads with, so a human can tell WHO found it
         and WHAT kind it is at a glance: '<badge> *지식 후보* · `curator`' for a
-        proposal, '<badge> *finding* · `monitor`' for a plain finding."""
+        proposal, '<badge> *보고서* · `monitor`' for a plain report."""
         agent = _agent_of(rel_path)
-        badge = self._finding_badge(agent)
-        kind = "지식 후보" if self._is_knowledge_proposal(rel_path) else "finding"
+        badge = self._report_badge(agent)
+        kind = "지식 후보" if self._is_knowledge_proposal(rel_path) else "보고서"
         return f"{(badge + ' ') if badge else ''}*{kind}* · `{agent}`"
 
     async def announce_task(self, record, result, persona: "Persona") -> str:
         """Open the thread a task is reviewed in, and register it for replies.
 
-        Replaces announce_finding and its batched sibling. Those existed because
+        Replaces announce_report and its batched sibling. Those existed because
         findings reached Slack by SCANNING findings/** a tick after the fact: the
         announcer held no RunResult (so the run footer had to guess "that agent's last
         run"), could not say which task a file belonged to, and got N unrelated files at
@@ -315,7 +323,7 @@ class MentionMixin:
         primary = result.artifacts[0] if (result and result.artifacts) else ""
         blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": body}}]
         if primary and self._is_knowledge_proposal(primary):
-            elements = _finding_actions(primary, knowledge_proposal=True)
+            elements = _report_actions(primary, knowledge_proposal=True)
         else:
             agent = next((a for a in self.harness.agents if a.name == record.agent), None)
             elements = task_buttons(agent, record.id, primary)
@@ -337,7 +345,7 @@ class MentionMixin:
             "slug": record.slug or record.id,
             "origin": "task",
             "task_id": record.id,
-            "finding_path": primary,
+            "report_path": primary,
             "persona": persona.key,
             "created": time.time(),
             "last_message_ts": time.time(),
@@ -662,7 +670,7 @@ class MentionMixin:
             # work. A thread that edits code gets ITS worktree from the harness's own
             # mention_tools factory (see approvals.thread_worktree), and with no Bash and
             # no raw Write/Edit this turn has no other way to write to the checkout.
-            mutates=False, writes_finding=False,
+            mutates=False, writes_report=False,
             tools=tools,
             model=self.harness.mention_model,
             allow_bash=False,

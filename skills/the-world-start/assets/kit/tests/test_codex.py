@@ -47,11 +47,11 @@ class CodexContractTests(unittest.TestCase):
         events.feed({"type": "item.completed", "item": {"type": "agent_message", "text": "done"}})
         events.feed({
             "type": "item.completed",
-            "item": {"type": "mcp_tool_call", "tool": "write_finding", "arguments": {"x": 1}},
+            "item": {"type": "mcp_tool_call", "tool": "write_report", "arguments": {"x": 1}},
         })
         events.feed({"type": "turn.completed", "usage": {"input_tokens": 12, "output_tokens": 3}})
         self.assertEqual(events.text, "done")
-        self.assertEqual(events.tool_calls, [("write_finding", {"x": 1})])
+        self.assertEqual(events.tool_calls, [("write_report", {"x": 1})])
         self.assertEqual(events.usage["input_tokens"], 12)
 
 

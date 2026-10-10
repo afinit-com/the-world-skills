@@ -23,10 +23,10 @@ async def main() -> None:
         allowed = Path(raw).resolve()
         finding = allowed / "finding.md"
 
-        @tool("write_finding", "Write the required verification finding", {"text": str})
-        async def write_finding(args):
+        @tool("write_report", "Write the required verification report", {"text": str})
+        async def write_report(args):
             finding.write_text(args["text"], encoding="utf-8")
-            return {"content": [{"type": "text", "text": "finding written"}], "is_error": False}
+            return {"content": [{"type": "text", "text": "report written"}], "is_error": False}
 
         root = Path.cwd().resolve()
         harness = SimpleNamespace(git_root=root, home=root, codex_model="gpt-5.6-luna")
@@ -47,13 +47,13 @@ async def main() -> None:
         agent = Agent(
             "codex-spike",
             PollTrigger(lambda *_: None),
-            tools=[write_finding],
-            writes_finding=True,
+            tools=[write_report],
+            writes_report=True,
             write_scope=(str(allowed),),
         )
         result = await runner.run(
             agent,
-            "Call write_finding exactly once with text 'world-codex-mcp-ok', then reply done.",
+            "Call write_report exactly once with text 'world-codex-mcp-ok', then reply done.",
         )
         if result.status != "ok" or not finding.exists():
             raise SystemExit(f"FAILED: status={result.status} text={result.result_text}")

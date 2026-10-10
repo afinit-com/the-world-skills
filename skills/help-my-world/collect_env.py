@@ -130,9 +130,9 @@ def world_shape(home: Path) -> list[str]:
         trigger = scan.segment(agent.module, kw["trigger"]) if "trigger" in kw else "?"
         persona = kw.get("persona")
         persona = scan.segment(agent.module, persona) if persona is not None else "main"
-        flags = [f for f in ("mutates", "allow_bash", "writes_finding", "task_allowed")
+        flags = [f for f in ("mutates", "allow_bash", "writes_report", "writes_finding", "task_allowed")
                  if scan.lit(kw.get(f)) is True]
-        tools = sorted(scan.idents(kw.get("tools")) - {"make_write_finding", "writer"})
+        tools = sorted(scan.idents(kw.get("tools")) - {"make_write_report", "make_write_finding", "writer"})
         lines.append(f"- agent `{agent.name}` ({agent.where}): trigger {_short(trigger)}; "
                      f"persona {_short(persona, 40)}; tools {', '.join(tools) or 'none'}"
                      + (f"; {', '.join(flags)}" if flags else ""))

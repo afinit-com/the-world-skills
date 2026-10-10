@@ -154,7 +154,7 @@ async def run_agent_oneshot(
         worktree_token = set_current_worktree(str(workdir))
 
     try:
-        before = _snapshot_outputs(harness, agent) if agent.writes_finding else None
+        before = _snapshot_outputs(harness, agent) if agent.writes_report else None
         # `cwd` is passed only when there is one. A runner that does not take it fails
         # with a TypeError — loud, and still not in the main checkout — instead of
         # silently spawning at git_root, which is what ignoring it would amount to.

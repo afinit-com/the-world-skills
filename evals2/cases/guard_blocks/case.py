@@ -111,7 +111,7 @@ AGENT = Agent(
     persona=Persona(key="watcher", display="Obs-Watcher",
                     flavor="밤새 무엇이 바뀌었는지 지켜보고 적는다",
                     bot_token_env="OBS_PERSONA_WATCHER_TOKEN"),
-    writes_finding=True,
+    writes_report=True,
     mutates=False,
     write_scope=("tasks/{task}/work",),
     tools=[],
