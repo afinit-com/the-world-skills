@@ -5,53 +5,74 @@
 
 세계관 속 여러 캐릭터에게 `tool`을 붙이고, 서로 협력하게 하면서 하네스를 배웁니다.
 일정이나 변화에 따라 Claude Code 또는 Codex 에이전트를 실행하고 Slack에서 캐릭터와
-대화할 수 있습니다. Codex · Claude Code · Cursor용 플러그인으로 제공합니다.
+대화할 수 있습니다. Claude Code · Codex용 플러그인으로 제공합니다.
 
 ## 빠르게 시작하기
 
-원하는 일을 한 문장으로 설명하면, 에이전트가 봇 하나와 실행 프로젝트를 만듭니다.
-처음부터 세계관, 명령어 이름, Slack 토큰을 준비할 필요는 없습니다.
+**1. 설치.** 쓰는 앱을 고르세요.
 
-1. [플러그인 설치 안내](docs/plugins.ko.md)에서 사용하는 코딩 도구를 선택합니다.
-2. 프로젝트를 둘 위치에서 `the-world-start` 스킬을 호출하고 원하는 일을 덧붙입니다.
-3. 에이전트가 기본 이름과 설정으로 첫 봇을 만들고 로컬 검증을 실행합니다.
-4. Slack에서도 쓰려면 같은 프로젝트에서 "Slack 연결 이어서"라고 요청합니다.
-   [Slack CLI](https://docs.slack.dev/tools/slack-cli)를 설치하고 `slack login`을 한 번 해두면,
-   에이전트가 하네스의 Slack 앱 하나를 만들고 토큰까지 채워 넣습니다(`bin/slack-provision.py`).
-   캐릭터들은 그 앱 하나로 각자 이름을 달고 말합니다. 채널에서 `@봇 안녕`을 한 번 하면
-   `bin/slack-pair.py`가 채널 ID와 내 멤버 ID를 알아서 받아 둡니다.
-   CLI가 없으면 api.slack.com에 매니페스트를 붙여 넣는 방식으로 진행합니다.
-
-예: "매일 오전 9시에 이 저장소의 변경 사항을 요약하는 봇 만들어줘."
-세계관을 원하면 "해적단 테마로"나 좋아하는 애니메이션 세계관처럼 함께 말하면 됩니다. 기존 프로젝트에서는 설정을 이어갑니다.
-
-필요한 도구는 **Python 3.11+와 uv**입니다. 의존성을 받는 데 인터넷이 필요할 수 있습니다.
-첫 로컬 검증에는 Slack 토큰이나 모델 로그인이 필요하지 않습니다. 이 검증은 봇 등록과
-실행 준비를 확인하며, 실제 AI 요약이나 Slack 응답은 연결 후 별도로 확인합니다.
-
-macOS, Linux, 네이티브 Windows(WSL 불필요)에서 동작합니다. 에이전트가 하네스를 돌릴 OS,
-봇 실행기, 채널을 묻고 그것만 설치하며, 선택은 `project-profile.json`에 기록됩니다
-([프로필](docs/harness-guide.ko.md#프로필-os--실행기--채널)).
-
-## 설치
-
-저장소 자체가 마켓플레이스라서 Claude Code와 Codex는 두 줄로 설치합니다.
+<details open>
+<summary><b>Claude Code</b></summary>
 
 ```bash
 claude plugin marketplace add afinit-com/the-world-skills
 claude plugin install the-world-skills@the-world
+```
 
+</details>
+
+<details>
+<summary><b>Codex</b></summary>
+
+```bash
 codex plugin marketplace add afinit-com/the-world-skills
 codex plugin add the-world-skills@the-world
 ```
 
-Cursor에는 이 명령이 없습니다. 팀 마켓플레이스 가져오기와 로컬 설치는
-[플러그인 문서](docs/plugins.ko.md)를 보세요. Cursor에서도 하네스를 만들 수 있고, 생성된
-봇은 Claude Code 또는 Codex로 실행합니다.
+</details>
 
-플러그인 없이 스킬만 쓰려면 `npx skills add afinit-com/the-world-skills` 후, 하네스를 둘
-디렉터리에서 `/the-world-start`를 실행합니다. (플러그인으로 설치하면 같은 스킬이 Claude
-Code에서는 `/the-world-skills:the-world-start`, Codex에서는 `$the-world-start`입니다.)
+<details>
+<summary><b>다른 에이전트 (스킬만)</b></summary>
+
+```bash
+npx skills add afinit-com/the-world-skills
+```
+
+이때 스킬 이름은 그냥 `/the-world-start`입니다. 자세한 내용은 [플러그인 문서](docs/plugins.ko.md).
+
+</details>
+
+**2. 맡길 일을 말하세요.** 봇을 둘 폴더에서:
+
+```text
+/the-world-skills:the-world-start 매일 오전 9시에 이 저장소 변경 사항 요약해줘
+```
+
+Codex에서는 `$the-world-start …`입니다. 에이전트가 봇 하나를 만들고 로컬에서 확인한 뒤
+무엇을 만들었는지 알려 줍니다. 세계관을 원하면 같은 문장에 붙이세요. "해적단 테마로"나
+좋아하는 애니메이션 세계관도 좋습니다.
+
+**3. Slack에서 대화하기** (선택): "Slack 연결해줘"라고 하세요. 에이전트가 Slack 앱을
+만들어 주고, 채널에서 봇에게 한 번 인사하면 연결됩니다.
+
+필요한 것: **Python 3.11+와 [uv](https://docs.astral.sh/uv/)**, 3단계에는
+[Slack CLI](https://docs.slack.dev/tools/slack-cli)와 한 번의 `slack login`.
+macOS, Linux, 네이티브 Windows에서 동작합니다. 막히면 `/the-world-skills:help-my-world`.
+
+<details>
+<summary>각 단계에서 일어나는 일</summary>
+
+- 에이전트가 하네스를 돌릴 OS, 봇 실행기, 채널을 묻고 그것만 설치하며, 선택은
+  `project-profile.json`에 기록됩니다([프로필](docs/harness-guide.ko.md#프로필-os--실행기--채널)).
+- 첫 확인에는 Slack 토큰이나 모델 로그인이 필요 없습니다. 봇 등록과 실행 준비를
+  확인하며, 실제 AI 실행과 Slack 응답은 연결한 뒤에 확인합니다.
+- Slack: `bin/slack-provision.py`가 Slack CLI로 하네스의 Slack 앱 하나를 만들고 토큰을
+  채웁니다. 캐릭터들은 그 앱으로 각자 이름을 달고 말합니다. `bin/slack-pair.py`가 인사
+  메시지에서 채널과 내 멤버 ID를 받아 둡니다. CLI가 없으면 api.slack.com에 매니페스트를
+  붙여 넣는 방식으로 진행합니다.
+- 기존 프로젝트에서는 하던 설정을 이어갑니다.
+
+</details>
 
 ## 네 개의 스킬
 

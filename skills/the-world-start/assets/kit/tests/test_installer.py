@@ -121,28 +121,28 @@ class InstallerOwnershipTests(unittest.TestCase):
             self.assertEqual(user_file.read_text(), "mine")
             self.assertEqual(user_hook.read_text(), "mine")
 
-    def test_cursor_authoring_host_is_independent_of_runtime(self) -> None:
+    def test_authoring_host_is_independent_of_runtime(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "harness"
             self.run_installer(target, "codex")
             command = [
                 "python3", str(target / "bin/scaffold-world-skill.py"), "recruit", "agent",
-                "--provider", "codex", "--host", "cursor",
+                "--provider", "codex", "--host", "claude",
                 "--universe", "Crew", "--description", "Recruit a collaborator",
             ]
             subprocess.run(command, check=True, capture_output=True)
-            cursor = target / ".cursor/skills/recruit/SKILL.md"
-            self.assertIn("docs/philosophy.md", cursor.read_text())
+            claude = target / ".claude/skills/recruit/SKILL.md"
+            self.assertIn("docs/philosophy.md", claude.read_text())
             self.assertFalse((target / ".agents/skills/recruit/SKILL.md").exists())
             self.assertTrue((target / ".codex/hooks.json").exists())
-            self.assertFalse((target / ".cursor/hooks.json").exists())
-            cursor.write_text("mine")
+            claude.write_text("mine")
             command[command.index("--host") + 1] = "all"
             subprocess.run(command, check=True, capture_output=True)
-            self.assertEqual(cursor.read_text(), "mine")
-            claude = target / ".claude/skills/recruit/SKILL.md"
+            self.assertEqual(claude.read_text(), "mine")
             codex = target / ".agents/skills/recruit/SKILL.md"
-            self.assertEqual(claude.read_text(), codex.read_text())
+            self.assertIn("docs/philosophy.md", codex.read_text())
+            command[command.index("--host") + 1] = "cursor"  # not an authoring host any more
+            self.assertNotEqual(0, subprocess.run(command, capture_output=True).returncode)
 
     def test_world_skill_scaffolder_writes_both_discovery_paths_and_preserves_edits(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -204,7 +204,6 @@ class InstallerOwnershipTests(unittest.TestCase):
                 self.assertIn("sandbox", result.stderr)
                 self.assertNotIn("Traceback", result.stderr)
                 self.assertFalse((target / ".claude").exists())
-                self.assertFalse((target / ".cursor").exists())
                 self.assertEqual([], list(protected.iterdir()))
             finally:
                 protected.chmod(0o755)

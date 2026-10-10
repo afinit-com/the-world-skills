@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build a self-contained local marketplace for Codex, Claude Code, and Cursor."""
+"""Build a self-contained local marketplace for Codex and Claude Code."""
 
 from __future__ import annotations
 
@@ -10,10 +10,9 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-MANIFESTS = ("plugin.json", ".codex-plugin/plugin.json",
-             ".claude-plugin/plugin.json", ".cursor-plugin/plugin.json")
-# The four manifests are separate files because each app reads its own and accepts its own
-# extra keys (`skills`, Codex's `interface`, Cursor's `displayName`/`keywords`); no two are
+MANIFESTS = ("plugin.json", ".codex-plugin/plugin.json", ".claude-plugin/plugin.json")
+# The three manifests are separate files because each app reads its own and accepts its own
+# extra keys (`skills`, Codex's `interface`); no two are
 # copies, so they cannot be one file or a symlink. These are the fields they must agree on.
 SHARED = ("name", "version", "description", "author", "repository", "license")
 # The repository root is itself a marketplace, so a public checkout installs in two lines:
@@ -43,10 +42,8 @@ def write_json(path: Path, value: dict) -> None:
 
 
 def marketplaces(manifest: dict, market: str, source: str, display: str) -> dict[str, dict]:
-    """The three catalog files, keyed by path relative to the marketplace root.
-
-    Claude and Cursor share one shape; Codex wraps the source in an object.
-    """
+    """The two catalog files, keyed by path relative to the marketplace root. Codex wraps
+    the source in an object; Claude takes it as a string."""
     name = manifest["name"]
     common = {
         "name": market,
@@ -56,7 +53,6 @@ def marketplaces(manifest: dict, market: str, source: str, display: str) -> dict
     }
     return {
         ".claude-plugin/marketplace.json": common,
-        ".cursor-plugin/marketplace.json": common,
         ".agents/plugins/marketplace.json": {
             "name": market,
             "interface": {"displayName": display},

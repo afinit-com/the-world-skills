@@ -55,7 +55,7 @@ def main() -> None:
     parser.add_argument("flow", choices=("agent", "tool"))
     parser.add_argument("--provider", choices=("claude", "codex", "both"),
                         default=profile_provider(Path(__file__).resolve().parents[1]))
-    parser.add_argument("--host", choices=("claude", "codex", "cursor", "all"),
+    parser.add_argument("--host", choices=("claude", "codex", "all"),
                         help="Authoring app; overrides the legacy --provider wrapper destinations")
     parser.add_argument("--universe", required=True)
     parser.add_argument("--description", required=True)
@@ -78,8 +78,8 @@ def main() -> None:
 
     providers = ("claude", "codex") if args.provider == "both" else (args.provider,)
     if args.host:
-        providers = ("claude", "codex", "cursor") if args.host == "all" else (args.host,)
-    roots = {"claude": ".claude/skills", "codex": ".agents/skills", "cursor": ".cursor/skills"}
+        providers = ("claude", "codex") if args.host == "all" else (args.host,)
+    roots = {"claude": ".claude/skills", "codex": ".agents/skills"}
     destinations = [root / roots[provider] / args.word / "SKILL.md" for provider in providers]
     blocked = unwritable_dirs([d.parent for d in destinations if not d.exists()])
     if blocked:

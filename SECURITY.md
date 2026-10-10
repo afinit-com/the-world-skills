@@ -26,7 +26,7 @@ reports are about the parts that are supposed to hold a boundary:
 
 Out of scope: a harness *you* configured to have a wide scope is working as designed;
 plugin loading (`Agent.allow_plugins` with a `PluginMarketplace`, Claude runner only) is
-documented as an explicit full-trust path and is not a vulnerability; and the providers' own products (Claude Code, Codex, Cursor, Slack) should
+documented as an explicit full-trust path and is not a vulnerability; and the providers' own products (Claude Code, Codex, Slack) should
 go to those vendors.
 
 ## What to expect
@@ -53,7 +53,7 @@ yours unless you'd rather not have it.
 범위 밖: 사용자가 직접 넓게 설정한 하네스 범위는 의도된 동작이고,
 플러그인 로딩(`Agent.allow_plugins` + `PluginMarketplace`, Claude 러너 전용)은 완전 신뢰
 경로임을 문서에 명시한 것이라 취약점이 아닙니다. 제공사
-제품(Claude Code, Codex, Cursor, Slack) 자체의 문제는 해당 벤더로 보내주세요.
+제품(Claude Code, Codex, Slack) 자체의 문제는 해당 벤더로 보내주세요.
 
 관리자는 한 명입니다. 제보를 확인하고 실제 문제인지 회신드리며, 맞다면 수정과 기록이
 따릅니다. 버그 바운티는 없고 기한을 약속드리긴 어렵습니다. 공개 전 적절한 유예를

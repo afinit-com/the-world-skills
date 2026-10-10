@@ -52,8 +52,7 @@ skills/help-my-world/
 | yours | `harness.py` `WORLD.md` `AGENTS.md` if present `abilities/` `tools/` `slack-app/` `env/harness.env` provider skill wrappers | never touched |
 
 **The harness ends up self-contained.** Phase 3 step 7 scaffolds each world-word as
-`.claude/skills/<word>/SKILL.md`, `.agents/skills/<word>/SKILL.md`, and/or
-`.cursor/skills/<word>/SKILL.md`, and that wrapper
+`.claude/skills/<word>/SKILL.md` and/or `.agents/skills/<word>/SKILL.md`, and that wrapper
 points at `WORLD.md` and `docs/philosophy.md` inside the harness. Clone it onto another
 machine and `/recruit` still works with nothing installed globally. That is also why the
 guidance lives in the kit payload rather than as sibling skills here: a command whose logic sits

@@ -1,6 +1,6 @@
 ---
 name: the-world-start
-description: Create or resume a World harness from Codex, Claude Code, or Cursor, using Claude Code or Codex as the bot runtime. Build collaborating characters, their tools and relationship map, verify locally, then connect Slack. Use for "the world start", "world init", "하네스 만들어", "감시 봇 만들어", or continuing this harness's setup; not for arbitrary Slack bot development.
+description: Create or resume a World harness from Claude Code or Codex, which also runs the bots. Build collaborating characters, their tools and relationship map, verify locally, then connect Slack. Use for "the world start", "world init", "하네스 만들어", "감시 봇 만들어", or continuing this harness's setup; not for arbitrary Slack bot development.
 disable-model-invocation: true
 ---
 
@@ -247,8 +247,7 @@ survives restarts, and `on_done` runs only after a verified-complete run.
 `ScheduleTrigger(Schedule.daily(9, 0, "Asia/Seoul"))` is the wall-clock alternative. On a
 harness's first start it adopts the current occurrence as already done and waits for the
 next one, so a dry run is not a first real run and the report should say when that is.
-`Harness(provider=...)` takes `claude` or `codex` and never `cursor`: Cursor is an
-authoring host, not a runtime.
+`Harness(provider=...)` takes `claude` or `codex`.
 
 `mutates=True` makes each task run in its own git worktree (the kit cuts it at spawn
 and refuses the run if it cannot), so leave it `False` unless the worker edits the repo.

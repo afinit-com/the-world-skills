@@ -20,7 +20,7 @@ class PluginPackageTests(unittest.TestCase):
             (ROOT / "skills/the-world-start/assets/kit/world/LICENSE").read_text(),
             (ROOT / "LICENSE").read_text(),
         )
-        for host in ("claude", "codex", "cursor"):
+        for host in ("claude", "codex"):
             with self.subTest(host=host):
                 manifest = json.loads((ROOT / f".{host}-plugin/plugin.json").read_text())
                 for field in ("name", "version", "description", "author", "repository", "license"):
@@ -45,12 +45,11 @@ class PluginPackageTests(unittest.TestCase):
         self.assertIn('Numbers, "unverified" markers, errors, and approval requests stay exact', text)
 
     def test_sync_restores_shared_fields_without_touching_app_specific_ones(self) -> None:
-        # The four manifests cannot be one file or a symlink — each app reads its own and
+        # The three manifests cannot be one file or a symlink — each app reads its own and
         # carries its own extra keys — so --sync is what keeps their shared half honest.
         paths = [ROOT / "plugin.json"] + [ROOT / f".{host}-plugin/plugin.json"
-                                          for host in ("claude", "codex", "cursor")]
+                                          for host in ("claude", "codex")]
         catalogs = [ROOT / relative for relative in (".claude-plugin/marketplace.json",
-                                                     ".cursor-plugin/marketplace.json",
                                                      ".agents/plugins/marketplace.json")]
         originals = [path.read_text() for path in paths + catalogs]
         script = [sys.executable, str(ROOT / "scripts/build-plugin.py")]
@@ -64,17 +63,16 @@ class PluginPackageTests(unittest.TestCase):
             self.assertIn("--sync", drifted.stderr)
             synced = subprocess.run(script + ["--sync"], check=True,
                                     capture_output=True, text=True)
-            # three manifests take the new version, and so do the Claude and Cursor catalogs;
+            # two manifests take the new version, and so does the Claude catalog;
             # the Codex catalog carries no version, so a version bump leaves it alone
-            self.assertEqual(len(synced.stdout.strip().splitlines()), 5)
-            for path in catalogs[:2]:
+            self.assertEqual(len(synced.stdout.strip().splitlines()), 3)
+            for path in catalogs[:1]:
                 self.assertEqual(json.loads(path.read_text())["metadata"]["version"], "9.9.9")
             for path in paths[1:]:
                 manifest = json.loads(path.read_text())
                 self.assertEqual(manifest["version"], "9.9.9")
                 self.assertEqual(manifest["skills"], "./skills/")
             self.assertIn("interface", json.loads(paths[2].read_text()))
-            self.assertIn("keywords", json.loads(paths[3].read_text()))
             again = subprocess.run(script + ["--sync"], check=True,
                                    capture_output=True, text=True)
             self.assertIn("Already in sync", again.stdout)
@@ -90,7 +88,7 @@ class PluginPackageTests(unittest.TestCase):
         # the repository root, so each must list this plugin at "./", and the root must
         # carry the manifest each app looks for there.
         manifest = json.loads((ROOT / "plugin.json").read_text())
-        for relative in (".claude-plugin/marketplace.json", ".cursor-plugin/marketplace.json"):
+        for relative in (".claude-plugin/marketplace.json",):
             with self.subTest(catalog=relative):
                 catalog = json.loads((ROOT / relative).read_text())
                 self.assertEqual(catalog["name"], "the-world")
@@ -100,7 +98,7 @@ class PluginPackageTests(unittest.TestCase):
         codex = json.loads((ROOT / ".agents/plugins/marketplace.json").read_text())
         self.assertEqual(codex["name"], "the-world")
         self.assertEqual(codex["plugins"][0]["source"], {"source": "local", "path": "./"})
-        for host in ("claude", "codex", "cursor"):
+        for host in ("claude", "codex"):
             self.assertTrue((ROOT / f".{host}-plugin/plugin.json").is_file())
 
     def test_package_leaves_out_everything_a_harness_ignores(self) -> None:
@@ -127,7 +125,7 @@ class PluginPackageTests(unittest.TestCase):
             command = [sys.executable, str(ROOT / "scripts/build-plugin.py"), str(output)]
             subprocess.run(command, check=True, capture_output=True, cwd=temporary)
             plugin = output / "plugins/the-world-skills"
-            for host in ("claude", "cursor"):
+            for host in ("claude",):
                 catalog = json.loads((output / f".{host}-plugin/marketplace.json").read_text())
                 self.assertEqual((output / catalog["plugins"][0]["source"]).resolve(), plugin)
             codex = json.loads((output / ".agents/plugins/marketplace.json").read_text())

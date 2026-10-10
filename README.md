@@ -4,62 +4,76 @@
 
 Give the characters of a world their own `tool`s, let them work together, and learn the
 harness by doing it. Runs Claude Code or Codex agents on a schedule or on a change, and
-lets you talk to the characters from Slack. Ships as a plugin for Codex, Claude Code, and
-Cursor.
+lets you talk to the characters from Slack. Ships as a plugin for Claude Code and Codex.
 
 ## Quick start
 
-Describe the job you want done in one sentence, and the agent scaffolds a single bot and a
-project that runs it. You don't need a world, command names, or Slack tokens up front.
+**1. Install.** Pick your app.
 
-1. Pick your coding tool in the [plugin install guide](docs/plugins.md).
-2. From the directory where the project should live, invoke the `the-world-start` skill and
-   add what you want done.
-3. The agent creates the first bot with default names and settings, then runs local
-   verification.
-4. To use it from Slack too, ask in the same project to "continue with the Slack
-   connection".
-   With the [Slack CLI](https://docs.slack.dev/tools/slack-cli) installed and `slack login`
-   done once, the agent creates the harness's one Slack app and fills in the tokens for
-   you (`bin/slack-provision.py`); every character posts through it under its own name.
-   Then say hello to the bot once in your channel (e.g. `@<bot> hi`) and `bin/slack-pair.py` picks up the
-   channel and your member ID. Without the CLI, it falls back to pasting a manifest at
-   api.slack.com.
-
-Example: "build me a bot that summarizes this repo's changes every day at 9am."
-Want a world? Say it in the same breath — "a pirate crew", or your favorite anime's world. In an existing project the
-agent picks up the configuration where it left off.
-
-You need **Python 3.11+ and uv**. Fetching dependencies may require internet access. The
-first local verification needs no Slack token and no model login. That verification
-confirms the bot is registered and ready to run; the actual AI summary and the Slack reply
-are checked separately, after you connect them.
-
-It runs on macOS, Linux, and native Windows (no WSL). The agent asks which OS, bot
-runtime, and channel the harness is for, and installs only those; the choice is recorded
-in `project-profile.json` ([profiles](docs/harness-guide.md#profiles-os-runtime-channel)).
-
-
-## Install
-
-The repository is its own marketplace, so Claude Code and Codex install it in two lines:
+<details open>
+<summary><b>Claude Code</b></summary>
 
 ```bash
 claude plugin marketplace add afinit-com/the-world-skills
 claude plugin install the-world-skills@the-world
+```
 
+</details>
+
+<details>
+<summary><b>Codex</b></summary>
+
+```bash
 codex plugin marketplace add afinit-com/the-world-skills
 codex plugin add the-world-skills@the-world
 ```
 
-Cursor has no command for this: see [the plugin guide](docs/plugins.md) for the team
-marketplace import and the local install. You can build a harness from Cursor too; the
-bots it creates run on Claude Code or Codex, your choice.
+</details>
 
-Skills only, without the plugin: `npx skills add afinit-com/the-world-skills`, then run
-`/the-world-start` in the directory the harness should live in. (Installed as a plugin, the
-same skill is `/the-world-skills:the-world-start` in Claude Code and `$the-world-start` in
-Codex.)
+<details>
+<summary><b>Other agents (skills only)</b></summary>
+
+```bash
+npx skills add afinit-com/the-world-skills
+```
+
+Then the skill is plain `/the-world-start`. More in the [plugin guide](docs/plugins.md).
+
+</details>
+
+**2. Say what you want done**, from the folder the bot should live in:
+
+```text
+/the-world-skills:the-world-start summarize this repo's changes every day at 9am
+```
+
+In Codex it is `$the-world-start …`. The agent builds one bot, checks it locally, and
+tells you what it made. Want a world? Add it in the same sentence: "as a pirate crew", or
+your favorite anime's world.
+
+**3. Talk to it in Slack** (optional): say "connect Slack". The agent creates the Slack
+app for you; you say hello to the bot once in your channel and it is connected.
+
+You need **Python 3.11+ and [uv](https://docs.astral.sh/uv/)**, and for step 3 the
+[Slack CLI](https://docs.slack.dev/tools/slack-cli) with `slack login` done once. Runs on
+macOS, Linux, and native Windows. Stuck? `/the-world-skills:help-my-world`.
+
+<details>
+<summary>What happens in each step</summary>
+
+- The agent asks which OS, bot runtime, and channel the harness is for, installs only
+  those, and records the choice in `project-profile.json`
+  ([profiles](docs/harness-guide.md#profiles-os-runtime-channel)).
+- The first check needs no Slack token and no model login. It confirms the bot is
+  registered and ready; the real AI run and the Slack reply are checked after you connect
+  them.
+- Slack: `bin/slack-provision.py` creates the harness's one Slack app through the Slack CLI
+  and fills in the tokens; every character posts through it under its own name.
+  `bin/slack-pair.py` picks up the channel and your member ID from the hello. Without the
+  CLI, you paste a manifest at api.slack.com instead.
+- In an existing project, the agent picks up the setup where it left off.
+
+</details>
 
 ## The four skills
 

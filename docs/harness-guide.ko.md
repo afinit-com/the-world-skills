@@ -53,8 +53,7 @@ skills/help-my-world/
 | 당신 것 | `harness.py` `WORLD.md` 있으면 `AGENTS.md` `abilities/` `tools/` `slack-app/` `env/harness.env` 프로바이더 스킬 래퍼 | 건드리지 않음 |
 
 **결과적으로 하네스는 자급자족합니다.** Phase 3 step 7이 세계관 단어마다
-`.claude/skills/<word>/SKILL.md`, `.agents/skills/<word>/SKILL.md`,
-`.cursor/skills/<word>/SKILL.md`를 만들고, 그 래퍼는 하네스 안의 `WORLD.md`와
+`.claude/skills/<word>/SKILL.md`와 `.agents/skills/<word>/SKILL.md`를 만들고, 그 래퍼는 하네스 안의 `WORLD.md`와
 `docs/philosophy.md`를 가리킵니다. 다른 머신에 클론해도 전역 설치 없이 `/recruit`가 그대로
 동작합니다. 그 지침을 여기 별도 스킬로 두지 않고 키트 페이로드에 넣은 이유도
 같습니다. 로직이 하네스 바깥에 있는 명령어는, 하네스가 옮겨지는 순간 깨지는 명령어입니다.
