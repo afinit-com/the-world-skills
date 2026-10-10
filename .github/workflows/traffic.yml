@@ -1,0 +1,42 @@
+name: traffic
+
+# GitHub keeps 14 days of views, clones, referrers and paths. This keeps them on the
+# `metrics` branch, which holds only data. Needs the TRAFFIC_TOKEN secret: a fine-grained
+# token for this repository with Administration: read (GITHUB_TOKEN cannot read traffic).
+on:
+  schedule:
+    - cron: "30 0 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: switch to the metrics branch
+        run: |
+          cp .github/scripts/traffic.py "$RUNNER_TEMP/traffic.py"
+          if git ls-remote --exit-code --heads origin metrics >/dev/null; then
+            git checkout metrics
+          else
+            git checkout --orphan metrics && git rm -rf --quiet .
+          fi
+      - name: snapshot
+        env:
+          GH_TOKEN: ${{ secrets.TRAFFIC_TOKEN }}
+        run: python "$RUNNER_TEMP/traffic.py" "$GITHUB_REPOSITORY" traffic
+      - name: commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add traffic
+          git diff --cached --quiet || git commit -q -m "traffic: $(date -u +%F)"
+          git push origin metrics
