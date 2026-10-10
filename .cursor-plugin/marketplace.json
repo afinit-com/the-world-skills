@@ -1,0 +1,17 @@
+{
+  "name": "the-world",
+  "owner": {
+    "name": "Afinit"
+  },
+  "metadata": {
+    "description": "Learn harnesses by building a world of collaborating bot characters and tools.",
+    "version": "0.2.6"
+  },
+  "plugins": [
+    {
+      "name": "the-world-skills",
+      "source": "./",
+      "description": "Learn harnesses by building a world of collaborating bot characters and tools."
+    }
+  ]
+}

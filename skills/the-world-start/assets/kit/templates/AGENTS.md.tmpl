@@ -1,0 +1,17 @@
+# WORLD project guidance
+
+- Treat `WORLD.md` and `docs/philosophy.md` as the agent/tool guidance; skill wrappers point there.
+- `WORLD.md` is the world only (cast, relations, vocabulary, scope in the world's words): it is
+  sent with every mention turn. Commands, paths, schedules, and current state go in `README.md`,
+  `settings.json`, or the generated `STATUS.md`.
+- Treat `world/`, `bin/`, `docs/`, `templates/`, and `.codex/hooks/` as kit-owned; fix the source kit and
+  rerun the installer instead of forking installed copies. If the kit fails on this machine,
+  fix the minimum in `world/`, list it in a note outside `world/`, and report it upstream;
+  never add a `kit-source/` checkout or a `patches/` pipeline to the harness.
+- `project-profile.json` records the OS, runtime, and channel this harness was installed for;
+  keep `harness.py` within it, and re-run the installer with a flag to change it.
+- Agent authority comes from `Agent.tools`, scoped handler closures, read-only sandboxing,
+  and generated `.the-world/agent-scope.json`, never from prompt promises.
+- Outward side effects require the existing one-shot approval gate.
+- A successful process is not completion when an agent promises a finding; verify the
+  expected file exists.

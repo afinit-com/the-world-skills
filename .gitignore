@@ -1,0 +1,31 @@
+__pycache__/
+*.pyc
+.venv/
+.ruff_cache/
+.DS_Store
+.pytest_cache/
+dist/
+
+# eval 실행 결과 (로컬 전용)
+evals/results/
+
+# evals2 체커 venv (로컬 전용)
+evals2/.venv/
+
+# 하네스 산출물 — 이 저장소에서 `claude --plugin-dir "$PWD"`로 하네스를 띄워 시험할 때
+# 생기는 것들. 키트가 하네스에 심는 templates/gitignore.tmpl과 같은 목록입니다.
+.env
+env/harness.env
+env/*
+!env/*.example
+env/.harness.env.*
+# 키트 디렉터리 등 어디서 시험하든 토큰 파일과 그 임시 파일은 추적하지 않습니다.
+harness.env
+.harness.env.*
+ledger.jsonl
+.the-world/
+state.json
+HEARTBEAT.md
+WORLD.html
+logs/
+.slack/

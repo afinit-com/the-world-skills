@@ -1,0 +1,66 @@
+name: Bug · 버그
+description: Something in the-world-skills or a harness it built did not work. · the-world-skills나 그것으로 만든 하네스가 동작하지 않을 때.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        `/the-world-skills:help-my-world` (Claude Code) or `$help-my-world` (Codex) fills this
+        form for you, environment included. A security problem goes to SECURITY.md, not here.
+
+        help-my-world가 환경 정보까지 이 양식을 채워 줍니다. 보안 문제는 여기 말고 SECURITY.md를 보세요.
+  - type: textarea
+    id: what_happened
+    attributes:
+      label: What happened
+      description: What you saw, with the exact error text or the bot's reply. Not a diagnosis. · 본 그대로, 오류 문구나 봇의 답을 함께.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The command or message that started it, the step it failed at, and whether it happens again. · 시작한 명령이나 메시지, 멈춘 단계, 다시 해도 그런지.
+    validations:
+      required: true
+  - type: textarea
+    id: tried
+    attributes:
+      label: What I tried
+  - type: input
+    id: version
+    attributes:
+      label: the-world-skills version
+      placeholder: "0.2.5"
+    validations:
+      required: true
+  - type: dropdown
+    id: runtime
+    attributes:
+      label: Runtime
+      options: [Claude Code, Codex, Both]
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: OS
+      options: [macOS, Windows, Linux]
+    validations:
+      required: true
+  - type: dropdown
+    id: channel
+    attributes:
+      label: Channel
+      options: [Slack, Discord, None, Not connected yet]
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment report
+      description: Output of collect_env.py from help-my-world, run from the harness directory. It masks tokens and the home directory; read it before pasting. · 토큰과 홈 경로는 가려집니다. 붙이기 전에 읽어 보세요.

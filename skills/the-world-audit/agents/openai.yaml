@@ -1,0 +1,4 @@
+interface:
+  display_name: "The World Audit"
+  short_description: "Read-only risk review of a World harness"
+  default_prompt: "Use $the-world-audit to review this harness and report what is closed, open, and not verified."

@@ -1,0 +1,79 @@
+# This harness's install of the world runtime, which /the-world-start unpacked into world/ beside
+# this file. Install it editable into the harness's own venv and `from world import Harness`
+# resolves to that copy:
+#
+#     uv venv .venv
+#     uv pip install -e .
+#
+# A fix to world/ lands immediately — no reinstall. But world/ is kit-owned: re-running
+# install-kit.py replaces it, so fix the kit, not this copy.
+#
+# No `readme =` on purpose: a harness has no README.md when /the-world-start installs the kit,
+# and a missing readme is a hard build error, not a warning.
+[project]
+name = "world"
+version = "0.3.0"
+description = "The World — Codex runner with Slack-native watchdog orchestration"
+requires-python = ">=3.11"
+dependencies = [
+    # 3.41 is world's own floor (assistant_threads_setStatus, world/slack/post.py).
+    "slack-sdk>=3.43.0",
+    "aiohttp>=3.9.0",
+    # Native Windows: the Codex tool bridge is a named pipe whose DACL admits only the
+    # current user (world/tools/windows_pipe.py), and env/harness.env is locked the same
+    # way. Windows also ships no IANA time zone database, so Schedule's zoneinfo needs one.
+    "pywin32>=306; sys_platform == 'win32'",
+    "tzdata>=2024.1; sys_platform == 'win32'",
+]
+
+[project.optional-dependencies]
+# The [tool.ruff] block below is tuned against world/'s measured complexity and line
+# widths; a config nothing installs is a config nothing runs. The upper bound on ruff
+# is deliberate: a minor release that adds a rule to a selected group turns this repo
+# red without a line of it changing. Raise it on purpose, read the new rules, raise again.
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff>=0.15,<0.16"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+# world/ sits at the repo root, not under src/. world/env.py resolves the harness env file as
+# parents[1] of world/env.py, which is exactly this directory.
+packages = ["world"]
+
+[tool.ruff]
+# The target width to write to; p99 of world/ is 97 columns.
+line-length = 100
+
+[tool.ruff.lint.pycodestyle]
+# But E501 only fires past 120. Every line over 100 here is a string literal, an
+# `Annotated` description, or an f-string — things no formatter can split without
+# hurting the line. 120 catches the genuinely runaway ones.
+max-line-length = 120
+
+[tool.ruff.lint]
+select = [
+    "E", "W",  # pycodestyle
+    "N",       # pep8-naming
+    "I",       # isort
+    "C4",      # flake8-comprehensions
+    "SIM",     # flake8-simplify
+    "PERF",    # perflint
+    "C901",    # mccabe
+]
+
+[tool.ruff.lint.isort]
+# A harness runs with its own directory on sys.path, so `tools.*` and `abilities.*` are
+# local packages — name them so they sort below first-party world, not next to aiohttp.
+known-first-party = ["world"]
+known-local-folder = ["abilities", "scripts", "tools"]
+relative-imports-order = "closest-to-furthest"
+
+[tool.ruff.lint.mccabe]
+max-complexity = 15
+
+[tool.ruff.lint.per-file-ignores]
+# Agents import after the Harness is constructed, because registration needs `h`.
+"*_harness.py" = ["E402"]
+"harness.py" = ["E402"]

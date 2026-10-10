@@ -1,0 +1,18 @@
+{
+  "description": "WORLD capability-boundary backstops for Codex sessions.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|apply_patch|Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$(git rev-parse --show-toplevel)/.codex/hooks/world-guard.py\"",
+            "timeout": 10,
+            "statusMessage": "Checking WORLD capability boundary"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,31 @@
+name: Feature · 기능 제안
+description: It works, and it should do more or do it differently. · 동작은 하는데, 더 하거나 다르게 했으면 할 때.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: What I want to do
+      description: The job, in your words, not the feature you imagine for it. · 떠올린 기능보다, 하려는 일을 적어 주세요.
+    validations:
+      required: true
+  - type: textarea
+    id: now
+    attributes:
+      label: What happens now
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: Idea
+  - type: input
+    id: version
+    attributes:
+      label: the-world-skills version
+      placeholder: "0.2.5"
+  - type: dropdown
+    id: runtime
+    attributes:
+      label: Runtime
+      options: [Claude Code, Codex, Both]

@@ -1,0 +1,18 @@
+{
+  "name": "the-world-skills",
+  "displayName": "The World",
+  "version": "0.2.6",
+  "license": "MIT",
+  "description": "Learn harnesses by building a world of collaborating bot characters and tools.",
+  "author": {
+    "name": "Afinit"
+  },
+  "repository": "https://github.com/afinit-com/the-world-skills",
+  "skills": "./skills/",
+  "keywords": [
+    "harness",
+    "learning",
+    "characters",
+    "skills"
+  ]
+}

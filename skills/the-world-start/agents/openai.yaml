@@ -1,0 +1,6 @@
+interface:
+  display_name: "The World Start"
+  short_description: "Bootstrap a Claude or Codex World harness"
+  default_prompt: "Use $the-world-start to survey and scaffold a provider-aware Slack-native World harness."
+policy:
+  allow_implicit_invocation: false

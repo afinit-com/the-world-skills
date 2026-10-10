@@ -1,0 +1,51 @@
+name: Help · 도와주세요
+description: Stuck, confused, or a bot doing something odd. No technical words needed. · 막혔거나, 헷갈리거나, 봇이 이상할 때. 기술 용어 없이 써도 됩니다.
+labels: [question]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The easiest way: type `/the-world-skills:help-my-world` (Claude Code) or `$help-my-world` (Codex)
+        and say what happened. It fills this form, environment included, and shows it to you first.
+
+        가장 쉬운 방법: Claude Code에서 `/the-world-skills:help-my-world`, Codex에서 `$help-my-world`를
+        입력하고 무슨 일이 있었는지 말하세요. 환경 정보까지 이 양식을 채워서 먼저 보여 줍니다.
+  - type: textarea
+    id: goal
+    attributes:
+      label: What I wanted to do
+      description: In your own words. · 하려던 일을 편하게 적어 주세요.
+    validations:
+      required: true
+  - type: textarea
+    id: what_happened
+    attributes:
+      label: What happened instead
+      description: What you saw, or what the bot said. A screenshot is fine. · 본 것, 또는 봇이 한 말. 스크린샷도 좋습니다.
+    validations:
+      required: true
+  - type: textarea
+    id: tried
+    attributes:
+      label: What I tried
+      description: Optional. · 해 본 것이 있으면 적어 주세요.
+  - type: input
+    id: version
+    attributes:
+      label: the-world-skills version
+      description: Leave empty if you don't know. · 모르면 비워 두세요.
+  - type: dropdown
+    id: runtime
+    attributes:
+      label: Runtime
+      options: [Claude Code, Codex, Both, Not sure]
+  - type: dropdown
+    id: os
+    attributes:
+      label: OS
+      options: [macOS, Windows, Linux]
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment report
+      description: help-my-world fills this. · help-my-world가 채웁니다.

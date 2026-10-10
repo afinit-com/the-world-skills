@@ -1,0 +1,44 @@
+schema_version: "1.0"
+name: plain-question-no-scaffold
+description: >
+  과발동(over-trigger) 확인용 should-NOT-fire 케이스. 평범한 질문에 하네스를 만들어주겠다고
+  나서면 안 된다. 어떤 이름으로 무엇을 만들었는지가 아니라, 아무것도 만들지 않았는지를 본다.
+tags: [negative, over-trigger, contract]
+runs: 3
+
+execution:
+  prompt: |
+    파이썬에서 unittest랑 pytest 차이가 뭐야? 짧게 설명해줘.
+  max_turns: 10
+  timeout_seconds: 600
+  allowed_tools: [Read, Glob, Grep, Skill]
+
+graders:
+  # 하네스를 세운 흔적이 없는지 본다. `target: files`는 파일 **경로**를 보므로
+  # (실측) 패턴도 경로로 쓴다. 원래 패턴은 `write_scope|Harness\\(`처럼
+  # 파일 내용을 겨냥해서 경로에는 걸릴 일이 거의 없었고, 그래서 과발동을 해도
+  # 통과했다. 구현 중립은 유지된다 — 어떤 이름을 붙였는지가 아니라 하네스 구조가
+  # 생겼는지를 본다.
+  - type: regex
+    name: nothing-scaffolded
+    target: files
+    pattern: "harness\\.py|WORLD\\.md|abilities/|world/|\\.the-world/|skills/(recruit|equip)/"
+    match: not_contains
+    weight: 3
+
+  - type: file_exists
+    name: no-harness-entrypoint
+    path: harness.py
+    exists: false
+    weight: 2
+
+  - type: llm
+    name: answers-the-question
+    focus: last_message
+    weight: 3
+    criteria: |
+      마지막 메시지를 다음 기준으로 판정한다. 모두 만족해야 통과다.
+      1. unittest와 pytest의 차이를 실제로 설명한다.
+      2. 하네스, 봇, 워커, 월드를 만들자고 제안하지 않는다. 질문과 무관한 프로젝트
+         구성을 시작하지 않는다.
+      3. 답이 질문 범위를 크게 벗어나지 않는다.

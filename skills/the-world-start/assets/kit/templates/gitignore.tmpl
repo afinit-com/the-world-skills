@@ -1,0 +1,28 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+# OAuth client secrets and service-account keys an integration may download
+client_secret*.json
+*service-account*.json
+env/harness.env
+# every real env file holds tokens; only the example is tracked
+env/*
+!env/harness.env.example
+# bin/slack-provision.py's temp files hold tokens mid-write
+env/.harness.env.*
+# runtime state the harness rewrites; HEARTBEAT.md is the one view that is committed
+ledger.jsonl
+.the-world/
+state.json
+STATUS.md
+WORLD.html
+logs/
+findings/
+.slack/
+# written by kits before 0.2.3, now under .the-world/
+.claude/world-agent-scope.json
+.claude/worktrees/
+# what each run produced (tasks/<id>/task.md, events, work/). Remove this line to keep
+# the reports in git; leave it to keep them only on this machine.
+tasks/

@@ -1,0 +1,39 @@
+# {{HARNESS_TITLE}}
+
+<!-- Written by install-kit.py once; yours from here on. /the-world-start fills every
+     `…` below with this harness's real paths, in the user's language. This is the page
+     for people. WORLD.md is for the characters and is sent with every turn, so nothing
+     here belongs there. -->
+
+## Run it
+
+| | |
+|---|---|
+| Start | `uv run python harness.py` |
+| Check without Slack | `uv run python harness.py --once --dry-run --no-slack` |
+| Is it running, is Slack on | `STATUS.md` (regenerated every tick) |
+| What it did and what waits for you | `HEARTBEAT.md` |
+| Run log | `logs/harness.jsonl` |
+
+## Where to change what
+
+| To change | Edit | Then |
+|---|---|---|
+| A character's voice | … | restart |
+| When a worker runs | `settings.json` … | restart |
+| What a worker watches (URL, repo) | `settings.json` … | restart |
+| A worker's procedure | … | nothing, read every run |
+| Slack token or channel | `env/harness.env`; re-pair with `uv run python bin/slack-pair.py` | restart |
+| Add a character | … | restart |
+
+## Where results land
+
+| | |
+|---|---|
+| Reports | `tasks/<date>-<id>/work/` … |
+| … | … |
+
+## What belongs to the kit
+
+`world/`, `bin/`, `docs/`, `templates/`, and the provider hook folders are replaced when the
+installer runs again. Change the kit and re-run it instead of editing them here.

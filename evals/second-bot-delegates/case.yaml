@@ -1,0 +1,88 @@
+schema_version: "1.0"
+name: second-bot-delegates
+description: >
+  이미 봇 하나가 있는 하네스에 두 번째 봇을 붙인다. 이 스위트에서 유일하게
+  "여러 봇이 각자 제한된 tool을 갖고, 세계관의 언어로 늘어나고, 자기 tool로 안 되면
+  서로에게 넘긴다"는 계약을 재는 케이스다. 어떤 구조로 구현했는지는 보지 않는다.
+  픽스처의 하네스에는 이미 넘기기 관례가 있다(WORLD.md의 "동료에게 넘기기") —
+  그것을 이어 쓰는지를 보고, 평행한 기계를 새로 발명하면 감점한다.
+tags: [multi-bot, delegation, world-vocabulary, contract]
+runs: 3
+
+context:
+  # PATH, not inline bash. 인라인으로 적으면 러너가 스크립트 본문을 경로로 읽고
+  # "path ... does not exist"로 조용히 실패한다(실측).
+  scaffold_script: scaffold.sh
+
+execution:
+  prompt: |
+    관측대에 동료를 하나 더 들이고 싶어. 빌드가 깨졌을 때 원인을 찾아주는 역할이야.
+    이 친구는 로그를 읽어야 하는데, 원인이 저장소 코드에 있으면 Watcher가 더 잘 알잖아.
+    그럴 땐 어떻게 되는지도 같이 정해줘.
+  max_turns: 90
+  timeout_seconds: 1800
+  allowed_tools: [Read, Glob, Grep, Skill, Write, Edit, Bash]
+
+graders:
+  # 새 봇의 범위는 `bots-are-distinct-and-bounded`가 말로 잡는다. 여기 있던
+  # `second-bot-has-own-scope`(regex / target: files / "write_scope")는 지웠다 —
+  # `target: files`가 파일 내용이 아니라 경로를 보기 때문에 통과가 불가능했다
+  # (실측). scaffold-daily-summary의 같은 주석 참고.
+
+  - type: llm
+    name: bots-are-distinct-and-bounded
+    focus: last_message
+    weight: 3
+    criteria: |
+      마지막 메시지를 다음 기준으로 판정한다. 모두 만족해야 통과다.
+      1. 기존 Watcher와 새 동료가 서로 다른 역할로 남는다. 둘을 하나로 합치거나
+         Watcher에게 일을 몰아주지 않는다.
+      2. 새 동료가 무엇을 할 수 있고 무엇은 할 수 없는지, 그 경계를 구체적으로 말한다.
+         "필요한 권한을 준다"처럼 뭉개지 않는다.
+      3. 새 동료의 권한이 기존 봇보다 넓어지지 않는다. 로그를 보는 역할에 저장소
+         전체 쓰기 권한을 주지 않는다.
+
+  - type: llm
+    name: delegation-is-designed
+    focus: last_message
+    weight: 3
+    criteria: |
+      사용자는 "원인이 저장소 코드에 있으면 Watcher가 더 잘 안다"며 그때 어떻게
+      되는지를 물었다. 마지막 메시지를 다음 기준으로 판정한다.
+      1. 새 동료가 자기 tool로 해결할 수 없는 경우에 무슨 일이 일어나는지 답한다.
+      2. 그 경로가 구체적이다. 누가 무엇을 받아서 어떻게 이어받는지 말한다.
+      3. "알아서 협력한다", "필요하면 서로 돕는다" 같은 말로만 끝내지 않는다.
+      질문을 무시하고 새 봇 생성만 보고했다면 불합격이다.
+
+  - type: llm
+    name: reuses-existing-handoff
+    focus: last_message
+    weight: 3
+    criteria: |
+      이 하네스의 WORLD.md에는 이미 넘기기 관례가 있다 — "자기 장비로 닿지 않는 일은
+      그 일을 아는 동료를 호명해서 넘긴다. 같은 자리에서 상대를 부르면 관측대가 그
+      동료를 깨운다. 사람이 다시 입을 열기 전까지 넘기기는 몇 번으로 제한되고, 자기
+      자신은 부르지 않는다." 마지막 메시지를 다음 기준으로 판정한다.
+      1. 넘기기를 설명할 때 이 하네스에 이미 있는 관례를 쓴다. 상대를 호명해서
+         넘긴다는 경로를 그대로 이어 쓴다.
+      2. 그 관례를 대체하는 별도의 기계(자체 큐 파일, 자체 라우터, 새 브로커
+         스크립트, 봇끼리 직접 함수 호출 등)를 새로 만들자고 하지 않는다. 기존
+         관례로는 부족하다고 판단해 무언가 더 두는 경우에는, 왜 부족한지와 기존
+         관례와 어떻게 이어지는지를 말해야 통과다.
+      3. 넘기기에 한계가 있다는 사실을 무시하지 않는다. 무한히 주고받게
+         설계하지 않는다. (횟수 상한, 사람에게 올리는 지점, 또는 자기 자신을
+         부르지 않는다는 규칙 중 최소 하나를 언급한다.)
+      이 하네스에 넘기기 관례가 아예 없다고 단언했다면 불합격이다.
+
+  - type: llm
+    name: speaks-the-world-language
+    focus: last_message
+    weight: 2
+    criteria: |
+      이 하네스의 WORLD.md는 세계관을 정해두었다 — 밤하늘 관측대, Keeper, Watcher,
+      새 동료는 `recruit`, 새 장비는 `equip`. 마지막 메시지를 다음 기준으로 판정한다.
+      1. 기존 세계관의 이름과 어휘를 이어서 쓴다. 관측대의 설정을 버리고 일반적인
+         "agent 1", "worker A" 같은 이름으로 갈아치우지 않는다.
+      2. 새 동료에게 그 세계에 어울리는 이름이 주어진다.
+      3. 앞으로 동료나 장비를 더 늘리려면 어떻게 하면 되는지, 이 세계의 단어로
+         알려준다. (`recruit` / `equip` 또는 사용자가 그렇게 말하면 된다는 안내)

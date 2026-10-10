@@ -1,0 +1,25 @@
+{
+  "name": "the-world-skills",
+  "version": "0.2.6",
+  "license": "MIT",
+  "description": "Learn harnesses by building a world of collaborating bot characters and tools.",
+  "author": {
+    "name": "Afinit"
+  },
+  "repository": "https://github.com/afinit-com/the-world-skills",
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "The World",
+    "shortDescription": "캐릭터와 함께 배우는 하네스 만들기",
+    "longDescription": "세계관 속 캐릭터에게 tool을 붙이고 협력 관계를 살펴보며 하네스를 만드는 학습 키트입니다.",
+    "developerName": "Afinit",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "여러 캐릭터가 협력하는 하네스를 만들고 각자의 tool과 관계도를 보여줘."
+    ]
+  }
+}
