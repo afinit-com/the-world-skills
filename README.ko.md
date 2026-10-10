@@ -1,6 +1,6 @@
 # the-world-skills — 캐릭터와 함께 배우는 하네스 키트
 
-*이 문서의 [English](README.md) 버전이 원본이며, 이 번역이 늦을 수 있습니다.
+**[the-world.gon.quest](https://the-world.gon.quest)** · *이 문서의 [English](README.md) 버전이 원본이며, 이 번역이 늦을 수 있습니다.
 이슈와 PR 모두 환영하지만 응답이 느릴 수 있습니다 — [CONTRIBUTING.md](CONTRIBUTING.md).*
 
 세계관 속 여러 캐릭터에게 `tool`을 붙이고, 서로 협력하게 하면서 하네스를 배웁니다.

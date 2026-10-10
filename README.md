@@ -1,6 +1,6 @@
 # the-world-skills — a harness kit you learn by giving characters tools
 
-*Read this in [한국어](README.ko.md). Issues and pull requests are welcome, but replies can be slow — see [CONTRIBUTING.md](CONTRIBUTING.md).*
+**[the-world.gon.quest](https://the-world.gon.quest)** · *Read this in [한국어](README.ko.md). Issues and pull requests are welcome, but replies can be slow — see [CONTRIBUTING.md](CONTRIBUTING.md).*
 
 Give the characters of a world their own `tool`s, let them work together, and learn the
 harness by doing it. Runs Claude Code or Codex agents on a schedule or on a change, and
