@@ -61,6 +61,10 @@ class PluginPackageTests(unittest.TestCase):
                                      capture_output=True, text=True)
             self.assertNotEqual(drifted.returncode, 0)
             self.assertIn("--sync", drifted.stderr)
+            check = subprocess.run(script + ["--check"], capture_output=True, text=True)
+            self.assertNotEqual(check.returncode, 0)
+            self.assertIn(".claude-plugin/plugin.json: version differs", check.stderr)
+            self.assertIn("plugin.json: 9.9.9", check.stdout)
             synced = subprocess.run(script + ["--sync"], check=True,
                                     capture_output=True, text=True)
             # two manifests take the new version, and so does the Claude catalog;
@@ -76,6 +80,8 @@ class PluginPackageTests(unittest.TestCase):
             again = subprocess.run(script + ["--sync"], check=True,
                                    capture_output=True, text=True)
             self.assertIn("Already in sync", again.stdout)
+            agreed = subprocess.run(script + ["--check"], capture_output=True, text=True)
+            self.assertEqual(agreed.returncode, 0, agreed.stderr)
             self.assertNotEqual(subprocess.run(script + ["--sync", "--force"],
                                                capture_output=True).returncode, 0)
             self.assertNotEqual(subprocess.run(script, capture_output=True).returncode, 0)

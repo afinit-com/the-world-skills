@@ -103,18 +103,34 @@ def sync() -> list[str]:
     return changed
 
 
-def build(destination: Path, *, force: bool = False) -> Path:
+def drift() -> tuple[list[str], list[str]]:
+    """(version table, problems). Every manifest and catalog Claude Code and Codex read
+    must carry plugin.json's shared fields; a version that differs between the two apps
+    means one of them installs a different release than the other announces."""
     manifest = json.loads((ROOT / "plugin.json").read_text(encoding="utf-8"))
+    table = [f"plugin.json: {manifest.get('version')}"]
+    problems = []
     for relative in MANIFESTS[1:]:
         native = json.loads((ROOT / relative).read_text(encoding="utf-8"))
-        for field in SHARED:
-            if native.get(field) != manifest.get(field):
-                raise ValueError(f"{relative}: {field} differs from plugin.json "
-                                 "— run with --sync")
+        table.append(f"{relative}: {native.get('version')}")
+        problems += [f"{relative}: {field} differs from plugin.json"
+                     for field in SHARED if native.get(field) != manifest.get(field)]
     for relative, expected in published(manifest).items():
         path = ROOT / relative
-        if not path.is_file() or json.loads(path.read_text(encoding="utf-8")) != expected:
-            raise ValueError(f"{relative} is out of date with plugin.json — run with --sync")
+        current = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
+        version = ((current or {}).get("metadata") or {}).get("version")
+        if version is not None:
+            table.append(f"{relative}: {version}")
+        if current != expected:
+            problems.append(f"{relative} is out of date with plugin.json")
+    return table, problems
+
+
+def build(destination: Path, *, force: bool = False) -> Path:
+    manifest = json.loads((ROOT / "plugin.json").read_text(encoding="utf-8"))
+    _table, problems = drift()
+    if problems:
+        raise ValueError(f"{problems[0]} — run with --sync")
     if destination.resolve().is_relative_to((ROOT / "skills").resolve()):
         raise ValueError("destination must be outside skills/")
     if destination.exists():
@@ -175,7 +191,17 @@ def main() -> None:
     parser.add_argument("--sync", action="store_true",
                         help="Write plugin.json's shared fields into the three app "
                              "manifests and exit, building nothing")
+    parser.add_argument("--check", action="store_true",
+                        help="Print every manifest's version and fail if any app's manifest or "
+                             "catalog disagrees with plugin.json; changes nothing (CI runs this)")
     args = parser.parse_args()
+    if args.check:
+        table, problems = drift()
+        print("\n".join(table))
+        if problems:
+            parser.exit(1, "\n".join(problems) + "\nRun: python3 scripts/build-plugin.py --sync\n")
+        print("Claude Code and Codex manifests agree.")
+        return
     if args.sync:
         # Deliberately not part of a build: a build must not edit tracked source files
         # behind your back, and the check above already refuses to ship a drifted set.

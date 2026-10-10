@@ -13,6 +13,17 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  versions:
+    name: plugin versions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      # Claude Code and Codex each read their own manifest; this fails when they disagree.
+      - run: python scripts/build-plugin.py --check
+
   package:
     name: package tests
     runs-on: ubuntu-latest
