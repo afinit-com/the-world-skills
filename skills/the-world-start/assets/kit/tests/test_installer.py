@@ -52,6 +52,43 @@ class InstallerOwnershipTests(unittest.TestCase):
             self.assertNotIn("__WORLD_DATA__", output)
             self.assertIn("WORLD.html", (target / ".gitignore").read_text())
 
+    def test_installed_kit_prints_a_verification_plan_without_running_anything(self) -> None:
+        # Issue #2: the flow past the dry run ships with the harness, and the plan is read
+        # from harness.py so it names this harness's cast rather than a generic list.
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "harness"
+            self.run_installer(target, "codex")
+            self.assertTrue((target / "docs" / "verify.md").is_file())
+            self.assertTrue((target / "world" / "tool_check.py").is_file())
+            plan = subprocess.run(
+                [sys.executable, "-c",
+                 "import runpy; runpy.run_path('bin/world-map-demo.py', run_name='__main__')",
+                 "--verify-plan"],
+                cwd=target, check=True, capture_output=True, text=True,
+                env={**os.environ, "PYTHONUTF8": "1"},
+            ).stdout
+            for step in ("## 1. Local checks", "## 2. Tool boundaries", "## 4. A real thread",
+                         "## 6. Report"):
+                self.assertIn(step, plan)
+            self.assertFalse((target / "state.json").exists())
+            self.assertFalse((target / "WORLD.html").exists())
+
+    def test_verify_word_scaffolds_its_own_wrapper(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "harness"
+            self.run_installer(target, "codex")
+            subprocess.run(
+                ["python3", str(target / "bin/scaffold-world-skill.py"), "inspect", "verify",
+                 "--host", "codex", "--universe", "Crew", "--description", "Inspect the ship"],
+                check=True, capture_output=True,
+            )
+            body = (target / ".agents/skills/inspect/SKILL.md").read_text()
+            self.assertIn("name: inspect", body)
+            self.assertIn("harness.py --verify-plan", body)
+            self.assertIn("docs/verify.md", body)
+            self.assertIn("Never press an approve or deny", " ".join(body.split()))
+            self.assertNotIn("{{", body)
+
     def test_installed_slack_provisioner_renders_from_the_installed_template(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "harness"

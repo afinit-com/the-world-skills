@@ -11,6 +11,7 @@
 |---|---|
 | Start | `uv run python harness.py` |
 | Check without Slack | `uv run python harness.py --once --dry-run --no-slack` |
+| Check it end to end | `uv run python harness.py --verify-plan`, then `docs/verify.md` |
 | Is it running, is Slack on | `STATUS.md` (regenerated every tick) |
 | What it did and what waits for you | `HEARTBEAT.md` |
 | Run log | `logs/harness.jsonl` |

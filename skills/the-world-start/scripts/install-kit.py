@@ -19,10 +19,10 @@ not quietly widen or narrow a harness. world/profile.py reads the same file at r
 Ownership is the whole point of the split below:
 
   kit-owned    world/ named world provider hook files, bin scripts, the few remaining
-               templates/ files (gitignore, AGENTS.md, codex pyproject, skill wrapper,
-               Slack manifest, the two guard templates)
+               templates/ files (gitignore, AGENTS.md, codex pyproject, skill and verify
+               wrappers, Slack manifest, the two guard templates)
                docs/philosophy.md docs/codex-compatibility.md docs/world-map.md
-               docs/integrations.md
+               docs/integrations.md docs/verify.md
                Overwritten on every run — that is what makes a re-run an upgrade.
                Never fork these per-harness (see docs/philosophy.md).
 
@@ -72,11 +72,12 @@ PROVIDER_FILES = {
     "codex": [".codex/hooks/world-guard.py"],
 }
 KIT_FILES = [
-    # The two templates a harness still reads AFTER install: the wrapper skill body that
+    # The templates a harness still reads AFTER install: the wrapper skill bodies that
     # bin/scaffold-world-skill.py fills in, and the Slack app manifest used when the
     # harness is finally provisioned. The rest of templates/ is read from the kit during
     # install and never from the target, so it is not copied.
     "templates/skill-wrapper.md.tmpl",
+    "templates/verify-wrapper.md.tmpl",
     "templates/slack-manifest.json.tmpl",
     "bin/smoke.py",
     "bin/codex-spike.py",
@@ -90,6 +91,7 @@ KIT_FILES = [
     "docs/world-map.md",
     "docs/discord.md",
     "docs/integrations.md",
+    "docs/verify.md",
 ]
 # harness-owned: only created when absent
 SEED_FILES = ["env/harness.env.example"]

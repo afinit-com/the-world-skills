@@ -502,7 +502,15 @@ class Harness:
         parser.add_argument("--tick-interval", type=int, default=self.tick_interval)
         parser.add_argument("--world-map", nargs="?", const="WORLD.html", metavar="PATH",
                             help="export an interactive character/tool map and exit")
+        parser.add_argument("--verify-plan", action="store_true",
+                            help="print this harness's verification plan (docs/verify.md) and exit")
         args = parser.parse_args()
+
+        if args.verify_plan:
+            from .verify_plan import verify_plan
+
+            print(verify_plan(self))
+            return
 
         if args.world_map is not None:
             from .world_map import write_world_map
