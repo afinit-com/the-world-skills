@@ -351,6 +351,13 @@ Finish by telling the user the harness path, the project it works on, and the pr
 installed for. Give each worker's job, when it runs next in their time zone, and what it
 does not check. Say which checks actually passed, what remains unverified, and one next
 action. Also say that nothing runs unless `harness.py` is running: the kit sets up no
-service, so a reboot stops it until the user starts it again or asks you to register one.
+service, so a reboot stops it until the user starts it again. If a worker runs on a
+schedule or a poll, offer once to keep it running ("상시 실행을 원하면…"), and do nothing
+more unless they say yes. On yes, on macOS or Linux, run `uv run python bin/ops-kit.py`
+from the harness (`--notify --prefix <PREFIX>` once Slack is connected, if they want
+restarts announced there). It only writes `scripts/`. Show the commands it prints that register the
+watchdog and let the user run them; don't run them yourself. Fill the README's "Stopping it
+on purpose" rows from that output: with a watchdog, remove the watchdog before `down`.
+On Windows, say that the ops kit does not support it yet. `docs/operations.md` has the rest.
 The harness needs neither this plugin nor the kit to run. Re-running the installer is only
 for upgrades.

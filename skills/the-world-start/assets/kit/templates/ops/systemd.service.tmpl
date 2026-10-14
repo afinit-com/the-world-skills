@@ -1,0 +1,8 @@
+# {{NAME}} watchdog, rendered by bin/ops-kit.py. Started by {{NAME}}-watchdog.timer;
+# see that file for how to enable it and how to take the harness down for good.
+[Unit]
+Description=The World harness watchdog: {{NAME}}
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash {{WATCHDOG}}

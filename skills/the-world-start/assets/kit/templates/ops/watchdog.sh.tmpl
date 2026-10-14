@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+# {{NAME}}-watchdog — run every {{INTERVAL_S}}s by launchd or a systemd user timer.
+#
+# Each round: roll the console logs, then, if the harness is not running and was not
+# stopped on purpose (`{{NAME}}-up down`), start it again. A harness that keeps dying is
+# retried with exponential backoff, {{BACKOFF_MIN_S}}s doubling to {{BACKOFF_MAX_S}}s,
+# and the count resets once a round finds it running. Everything it does goes to
+# logs/watchdog.log{{NOTIFY_NOTE}}.
+#
+# Rendered by bin/ops-kit.py from the kit's templates/ops/. Re-render rather than edit.
+set -uo pipefail
+
+HOME_DIR={{HOME_DIR}}
+PY={{PYTHON}}
+UP={{UP}}
+LOGS="$HOME_DIR/logs"
+STATE="$LOGS/.watchdog"
+LOG="$LOGS/watchdog.log"
+BACKOFF_MIN_S={{BACKOFF_MIN_S}}
+BACKOFF_MAX_S={{BACKOFF_MAX_S}}
+ROLL_MAX_BYTES={{ROLL_MAX_BYTES}}
+KEEP_DAYS={{KEEP_DAYS}}  # empty: rolled logs are never deleted
+NOTIFY={{NOTIFY}}        # empty: no Slack message, watchdog.log only
+
+mkdir -p "$STATE"
+
+log() { printf '%s %s\n' "$(date +%Y-%m-%dT%H:%M:%S%z)" "$*" >>"$LOG"; }
+
+notify() {
+  log "$*"
+  [ -n "$NOTIFY" ] || return 0
+  # shellcheck disable=SC2086  # NOTIFY is the two --*-env flags, word-split on purpose
+  if ! "$PY" "$HOME_DIR/bin/ops-notify.py" $NOTIFY "{{NAME}} watchdog: $*" >>"$LOG" 2>&1; then
+    log "⚠️  Slack notification failed (see the line above); the event is only in this log"
+  fi
+}
+
+# Date-based copy-and-truncate for files the kit does not write itself (logs/harness.jsonl
+# rolls inside the harness). The writers hold these open with O_APPEND, so truncating in
+# place needs no restart. The first round of a day moves what was written since the last
+# roll to <stem>.<that day><ext>.gz; past ROLL_MAX_BYTES within a day it goes to
+# <stem>.<today>-<HHMMSS><ext>.gz first.
+roll() {
+  local f="$1" name stem ext marker today last stamp="" dest size
+  [ -f "$f" ] || return 0
+  name=$(basename "$f")
+  stem="${name%.*}"
+  ext=".${name##*.}"
+  [ "$stem" = "$name" ] && ext=""
+  marker="$STATE/rolled-$name"
+  today=$(date +%Y-%m-%d)
+  last=$(cat "$marker" 2>/dev/null || true)
+  if [ -z "$last" ]; then
+    echo "$today" >"$marker"
+  elif [ "$last" != "$today" ]; then
+    stamp="$last"
+  fi
+  size=$(wc -c <"$f" | tr -d ' ')
+  if [ -z "$stamp" ] && [ "$size" -ge "$ROLL_MAX_BYTES" ]; then
+    stamp="$today-$(date +%H%M%S)"
+  fi
+  [ -n "$stamp" ] || return 0
+  if [ "$size" -gt 0 ]; then
+    dest="$LOGS/$stem.$stamp$ext.gz"
+    [ -e "$dest" ] && dest="$LOGS/$stem.$stamp-$$$ext.gz"
+    if gzip -c "$f" >"$dest.tmp" && mv "$dest.tmp" "$dest"; then
+      : >"$f"
+    else
+      rm -f "$dest.tmp"
+      log "⚠️  could not roll $name; it keeps growing until this is fixed"
+      return 0
+    fi
+  fi
+  echo "$today" >"$marker"
+}
+
+roll "$LOGS/console.out"
+roll "$LOG"
+if [ -n "$KEEP_DAYS" ]; then
+  find "$LOGS" -maxdepth 1 \( -name 'console.*.out.gz' -o -name 'watchdog.*.log.gz' \) \
+    -mtime +"$KEEP_DAYS" -print -delete 2>/dev/null | while read -r gone; do
+    log "deleted $(basename "$gone") (older than $KEEP_DAYS days)"
+  done
+fi
+
+if "$UP" running; then
+  if [ -f "$STATE/failures" ]; then
+    log "running again after $(cat "$STATE/failures") restart(s)"
+    rm -f "$STATE/failures" "$STATE/next_try"
+  fi
+  exit 0
+fi
+
+[ -f "$STATE/down" ] && exit 0  # stopped on purpose
+
+now=$(date +%s)
+next_try=$(cat "$STATE/next_try" 2>/dev/null || echo 0)
+[ "$now" -lt "$next_try" ] && exit 0
+
+failures=$(cat "$STATE/failures" 2>/dev/null || echo 0)
+failures=$((failures + 1))
+delay=$BACKOFF_MIN_S
+i=1
+while [ "$i" -lt "$failures" ] && [ "$delay" -lt "$BACKOFF_MAX_S" ]; do
+  delay=$((delay * 2))
+  i=$((i + 1))
+done
+[ "$delay" -gt "$BACKOFF_MAX_S" ] && delay=$BACKOFF_MAX_S
+echo "$failures" >"$STATE/failures"
+echo $((now + delay)) >"$STATE/next_try"
+
+if "$UP" up >>"$LOG" 2>&1; then
+  notify "found it not running; restarted (attempt $failures; next retry no sooner than ${delay}s)"
+else
+  notify "found it not running and could not start it (attempt $failures; retrying in ${delay}s). See $LOGS/console.out"
+fi

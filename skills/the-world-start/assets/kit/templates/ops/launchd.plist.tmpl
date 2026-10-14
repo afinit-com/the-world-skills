@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- {{NAME}} watchdog, rendered by bin/ops-kit.py. Nothing runs until it is loaded:
+       cp {{PLIST_NAME}} ~/Library/LaunchAgents/
+       launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/{{PLIST_NAME}}
+     To take the harness down for good, unload this FIRST, then run `{{NAME}}-up down`:
+       launchctl bootout gui/$(id -u)/{{LABEL}} -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>{{LABEL}}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>{{WATCHDOG}}</string>
+  </array>
+  <key>StartInterval</key>
+  <integer>{{INTERVAL_S}}</integer>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>{{LAUNCHD_OUT}}</string>
+  <key>StandardErrorPath</key>
+  <string>{{LAUNCHD_OUT}}</string>
+</dict>
+</plist>

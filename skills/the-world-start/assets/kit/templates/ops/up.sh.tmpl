@@ -1,0 +1,137 @@
+#!/usr/bin/env bash
+# {{NAME}}-up — run this harness in the background, and stop and inspect it.
+#
+#   scripts/{{NAME}}-up [up]     start it, unless it is already running
+#   scripts/{{NAME}}-up down     stop it on purpose; the watchdog leaves it down until `up`
+#   scripts/{{NAME}}-up restart
+#   scripts/{{NAME}}-up status   pid, uptime, watchdog state, last console lines
+#   scripts/{{NAME}}-up running  exit 0 if running, 1 if not (for scripts)
+#   scripts/{{NAME}}-up attach   follow the console output (Ctrl-C leaves it running)
+#
+# Rendered by bin/ops-kit.py from the kit's templates/ops/. Re-render rather than edit:
+# the paths below were resolved once, on the machine that rendered it.
+set -euo pipefail
+
+HOME_DIR={{HOME_DIR}}
+PY={{PYTHON}}
+ENTRY="$HOME_DIR/harness.py"
+# A python process whose first argument is this harness.py (bin/ops-kit.py
+# process_match), so a second harness, an editor, or a grep for the path never counts.
+MATCH={{MATCH}}
+OUT="$HOME_DIR/logs/console.out"
+STATE="$HOME_DIR/logs/.watchdog"
+# The login shell's PATH, with the agent CLI's directory first, resolved when this was
+# rendered. launchd and systemd start with a bare PATH, where `claude` / `codex` is not
+# found and every run fails.
+RUN_PATH={{RUN_PATH}}
+CAFFEINATE={{CAFFEINATE}}
+DOWN_WAIT_S=${DOWN_WAIT_S:-300}
+
+pids() { pgrep -f "$MATCH" || true; }
+
+# Every key env/harness.env declares. The loader lets an exported shell variable win over
+# the file; under this launcher the file wins, because a stale export in the shell that
+# ran `up` (a token, an OAuth client) is not something the harness was configured with.
+env_keys() {
+  [ -f "$HOME_DIR/env/harness.env" ] || return 0
+  sed -n -E 's/^[[:space:]]*(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)=.*/\2/p' \
+    "$HOME_DIR/env/harness.env"
+}
+
+cmd_up() {
+  local running
+  running=$(pids)
+  if [ -n "$running" ]; then
+    echo "{{NAME}}: already running (pid $(echo $running))"
+    return 0
+  fi
+  if [ ! -x "$PY" ]; then
+    echo "{{NAME}}: $PY not found; create the venv (uv venv .venv && uv pip install -e .)" >&2
+    return 1
+  fi
+  mkdir -p "$HOME_DIR/logs" "$STATE"
+  rm -f "$STATE/down"
+  # ANTHROPIC_API_KEY is removed so the agent SDK stays on the subscription login
+  # (world/runners/claude.py refuses to run while it is set).
+  local -a run=(env -u ANTHROPIC_API_KEY)
+  local key
+  for key in $(env_keys); do run+=(-u "$key"); done
+  run+=(PATH="$RUN_PATH" "$PY" "$ENTRY")
+  cd "$HOME_DIR"
+  # >> opens the console log with O_APPEND, which is what lets the watchdog roll it by
+  # copy-and-truncate without a restart.
+  nohup "${run[@]}" >>"$OUT" 2>&1 </dev/null &
+  local started=$!
+  if [ "$CAFFEINATE" = 1 ] && command -v caffeinate >/dev/null; then
+    # Keep a laptop awake for as long as that process lives. `-w` rather than wrapping
+    # the command, so no second process carries the harness's command line.
+    nohup caffeinate -is -w "$started" >/dev/null 2>&1 </dev/null &
+  fi
+  local i
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    sleep 0.5
+    running=$(pids)
+    if [ -n "$running" ]; then
+      sleep 1
+      if [ -n "$(pids)" ]; then
+        echo "{{NAME}}: started (pid $(echo $running)); console: $OUT"
+        return 0
+      fi
+    fi
+  done
+  echo "{{NAME}}: did not stay up. Last console lines:" >&2
+  tail -n 20 "$OUT" >&2 || true
+  return 1
+}
+
+cmd_down() {
+  mkdir -p "$STATE"
+  date +%Y-%m-%dT%H:%M:%S%z >"$STATE/down"
+  local running
+  running=$(pids)
+  if [ -z "$running" ]; then
+    echo "{{NAME}}: not running (marked down; the watchdog leaves it down until up)"
+    return 0
+  fi
+  kill -TERM $running
+  # SIGTERM lets started runs finish (Scheduler.drain_inflight), which can take minutes.
+  local waited=0
+  while [ -n "$(pids)" ]; do
+    if [ "$waited" -ge "$DOWN_WAIT_S" ]; then
+      echo "{{NAME}}: still finishing a run after ${DOWN_WAIT_S}s (pid $(pids | tr '\n' ' '))." >&2
+      echo "  It stays marked down. Wait, or kill -9 it and lose that run's record." >&2
+      return 1
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  echo "{{NAME}}: stopped (marked down; the watchdog leaves it down until up)"
+}
+
+cmd_status() {
+  local running
+  running=$(pids)
+  if [ -n "$running" ]; then
+    echo "{{NAME}}: running"
+    ps -o pid=,etime= -p "$(echo $running | tr ' ' ',')" | sed 's/^/  pid, uptime: /'
+  else
+    echo "{{NAME}}: not running"
+  fi
+  [ -f "$STATE/down" ] && echo "  marked down since $(cat "$STATE/down") (up clears it)"
+  [ -f "$STATE/failures" ] && echo "  watchdog: $(cat "$STATE/failures") restart(s) without staying up"
+  [ -f "$HOME_DIR/logs/watchdog.log" ] && echo "  watchdog log: $HOME_DIR/logs/watchdog.log"
+  if [ -f "$OUT" ]; then
+    echo "  last console lines ($OUT):"
+    tail -n 5 "$OUT" | sed 's/^/    /'
+  fi
+}
+
+case "${1:-up}" in
+  up) cmd_up ;;
+  down) cmd_down ;;
+  restart) cmd_down && cmd_up ;;
+  status) cmd_status ;;
+  running) [ -n "$(pids)" ] ;;
+  attach) exec tail -n 50 -F "$OUT" ;;
+  *) echo "usage: $0 [up|down|restart|status|running|attach]" >&2; exit 2 ;;
+esac
