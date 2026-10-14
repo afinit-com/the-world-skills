@@ -55,6 +55,7 @@ import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, AsyncContextManager, Awaitable, Callable, Protocol
 
+from ..channels.base import task_card_lines
 from ..context import reset_current_asker, set_current_asker
 from ..env import redact
 from ..process import approval_scope
@@ -314,15 +315,7 @@ class DiscordGateway:
         )
 
     async def announce_task(self, record, result, persona: "Persona") -> str:
-        lines = [f"**{record.title}**", f"`{record.id}` · {record.status} · {record.agent}"]
-        verdict = next(
-            (e for e in reversed(tasks.read_events(self.harness.home, record.id))
-             if e.get("kind") == "verify"), None,
-        )
-        if verdict and verdict.get("evidence"):
-            lines += [f"> {item}" for item in verdict["evidence"][:4]]
-        elif result is not None and result.result_text:
-            lines.append(f"> {redact(result.result_text)[:300]}")
+        lines = [f"**{record.title}**", *task_card_lines(self.harness.home, record, result)]
         body = "\n".join(lines) + self._footer(result)
 
         threads = self.state["threads"]

@@ -267,6 +267,12 @@ survives restarts, and `on_done` runs only after a verified-complete run.
 `ScheduleTrigger(Schedule.daily(9, 0, "Asia/Seoul"))` is the wall-clock alternative. On a
 harness's first start it adopts the current occurrence as already done and waits for the
 next one, so a dry run is not a first real run and the report should say when that is.
+A scheduled or polled run is announced as a card whose headline is the task title: the
+`title=` given to `Signal` or `ScheduleTrigger`, else the prompt's first line. Give a
+worker whose prompt opens with an instruction to the model a `title=` a person can read.
+The card body is the start of the run's final message, with the completion evidence
+shrunk onto the status line, so a worker whose announcement is the result (a briefing,
+a digest) should end with that summary rather than "done".
 `Harness(provider=...)` takes `claude` or `codex`.
 
 `mutates=True` makes each task run in its own git worktree (the kit cuts it at spawn
