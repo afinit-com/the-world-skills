@@ -292,12 +292,11 @@ class DiscordGateway:
     def _face(self, identity: str) -> tuple[str, str] | None:
         """(name, avatar URL) for a persona that is not the bot itself, else None.
         Unknown keys and the main persona post as the bot, like Slack's tokenless
-        fallback. The avatar is Persona.portrait when it is an http(s) URL."""
+        fallback. The avatar is Persona.chat_icon, the same picture Slack shows."""
         persona = self.harness.personas.get(identity)
         if persona is None or persona.key == self.harness.main_persona.key:
             return None
-        avatar = persona.portrait if persona.portrait.startswith(("https://", "http://")) else ""
-        return persona.display, avatar
+        return persona.display, persona.chat_icon
 
     async def notify_thread(self, thread_ts: str, text: str, *, channel: str | None = None) -> None:
         await self.post(text, thread_ts=thread_ts)

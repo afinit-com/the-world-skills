@@ -39,20 +39,18 @@ class PostingMixin:
         """chat.postMessage kwargs that make the main bot's message show `identity`'s
         name and icon, for a persona with no Slack app of its own (no bot_token_env).
         Needs chat:write.customize on the main app. The main persona keeps the app's
-        name and only takes its portrait as the icon; a persona with its own token posts
-        as itself, and an unknown key gets {}."""
+        name and only takes Persona.chat_icon as the icon; a persona with its own token
+        posts as itself, and an unknown key gets {}."""
         persona = self.harness.personas.get(identity or "")
         if persona is None or persona.token:
             return {}
         if persona.key == self.harness.main_persona.key:
             # The main persona IS the app: its name stays the app's (that is what people
-            # @-mention), only its picture follows Persona.portrait.
-            if persona.portrait.startswith(("https://", "http://")):
-                return {"icon_url": persona.portrait}
-            return {}
+            # @-mention), only its picture follows Persona.chat_icon.
+            return {"icon_url": persona.chat_icon} if persona.chat_icon else {}
         face = {"username": persona.display}
-        if persona.portrait.startswith(("https://", "http://")):
-            face["icon_url"] = persona.portrait
+        if persona.chat_icon:
+            face["icon_url"] = persona.chat_icon
         return face
 
     async def post(

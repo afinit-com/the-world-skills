@@ -294,14 +294,29 @@ class Persona:
     # shapes as mention_tools: a list, or an async FACTORY `(listener, thread_ts) ->
     # list` — which is what a thread-bound tool actually needs.
     thread_tools: list[Any] | Callable[..., Awaitable[list]] = field(default_factory=list)
+    # Two pictures, two readers. `portrait` is a local image file inside the harness
+    # (PNG/JPEG/WebP, 2 MB or less) that the world map embeds; `icon_url` is a public
+    # http(s) image URL that Slack and Discord show beside this persona's messages.
     portrait: str = ""
     # How this persona talks on Slack (register, verbal habits, emoji, length), as the
-    # user approved it. Last, so positional Persona(...) calls keep their meaning. Injected beside flavor with VOICE_GUARD; "" adds nothing.
+    # user approved it. Injected beside flavor with VOICE_GUARD; "" adds nothing.
     voice: str = ""
+    # After voice, so positional Persona(...) calls keep their meaning. See `portrait`.
+    icon_url: str = ""
 
     @property
     def token(self) -> str | None:
         return os.environ.get(self.bot_token_env) if self.bot_token_env else None
+
+    @property
+    def chat_icon(self) -> str:
+        """The public URL chat shows as this persona's picture, or "" for none.
+        icon_url first; a harness written before icon_url existed put that URL in
+        portrait, so an http(s) portrait still counts when icon_url is empty."""
+        for value in (self.icon_url, self.portrait):
+            if value.startswith(("https://", "http://")):
+                return value
+        return ""
 
 
 @dataclass(frozen=True)
