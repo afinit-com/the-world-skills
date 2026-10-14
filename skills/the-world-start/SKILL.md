@@ -329,9 +329,10 @@ its name opens the main app's profile. A message's name and icon cannot be chang
 `chat.update` once it is posted, so messages sent before the icon was set keep the main
 app's icon. The icon must be a public URL. A file uploaded to a Slack channel is not one,
 because it needs a workspace login. Use a custom emoji's image (`emoji.slack-edge.com`) or
-public image hosting. An existing Slack app's avatar (`avatars.slack-edge.com`) also works;
-one stayed reachable right after its app was deleted, but nothing guarantees it stays
-that way, so prefer the other two for anything meant to last.
+public image hosting, and only an image you made or have the right to use. An existing
+Slack app's avatar (`avatars.slack-edge.com`) also works; one stayed reachable right after
+its app was deleted, but nothing guarantees it stays that way, so prefer the other two for
+anything meant to last.
 
 People in a dedicated channel often just type, without an @-mention, and read the
 silence as a broken bot. Ask whether the harness's channel is its own. If it is, offer
