@@ -10,6 +10,33 @@ from ..env import redact
 from ..process import task as tasks
 
 CARD_EXCERPT_CHARS = 300
+# The status line carries the evidence as one line, so it gets a line's worth of room.
+CARD_EVIDENCE_CHARS = 200
+# Everything under the headline. Slack rejects a section over 3000 characters and the
+# chunking in post() cannot shorten a block, and Discord splits a message at 2000; a
+# 120-char headline plus this plus a run footer stays inside both.
+CARD_BODY_CHARS = 1600
+
+
+def _one_line(text: str, limit: int) -> str:
+    flat = " ".join(text.split())
+    return flat if len(flat) <= limit else flat[: limit - 1] + "…"
+
+
+def _fit(lines: list[str], limit: int) -> list[str]:
+    """Keep lines while they fit; cut the first that does not, marked, and stop."""
+    out: list[str] = []
+    used = 0
+    for line in lines:
+        room = limit - used - (1 if out else 0)
+        if len(line) <= room:
+            out.append(line)
+            used += len(line) + (1 if len(out) > 1 else 0)
+            continue
+        if room > 1:
+            out.append(line[: room - 1] + "…")
+        break
+    return out
 
 
 def task_card_lines(home: Path, record: Any, result: Any) -> list[str]:
@@ -29,11 +56,12 @@ def task_card_lines(home: Path, record: Any, result: Any) -> list[str]:
     evidence = [str(item) for item in (verdict or {}).get("evidence") or []][:4]
     text = (result.result_text or "").strip() if result is not None else ""
     if not text:
-        return [status] + [f"> {item}" for item in evidence]
+        quoted = [f"> {line}" for item in evidence for line in item.splitlines()]
+        return _fit([status, *quoted], CARD_BODY_CHARS)
     if evidence:
-        status += " · " + " · ".join(evidence)
+        status += " · " + _one_line(" · ".join(evidence), CARD_EVIDENCE_CHARS)
     excerpt = redact(text)[:CARD_EXCERPT_CHARS]
-    return [status] + [f"> {line}" for line in excerpt.splitlines()]
+    return _fit([status, *(f"> {line}" for line in excerpt.splitlines())], CARD_BODY_CHARS)
 
 
 class ConversationGateway(Protocol):

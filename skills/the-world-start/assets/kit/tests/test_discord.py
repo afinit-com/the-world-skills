@@ -257,6 +257,16 @@ class AnnounceTests(GatewayCase):
         self.assertIn("watch 실행 완료 · work/ 산출물 diff.md", lines[1])
         self.assertEqual("> 3 changes", lines[2])
 
+    async def test_a_card_with_long_evidence_is_still_one_discord_message(self) -> None:
+        record = tasks.create(self.home, type="watch", title="t" * 120, agent="watch")
+        tasks.append_event(self.home, record.id, "verify", verdict="done",
+                           evidence=[("e" * 99 + "\n") * 28])
+        run = RunResult(status="ok", result_text="r" * 300, input_tokens=900,
+                        output_tokens=100, cost_usd=0.01, duration_s=4.0)
+        await self.gw.announce_task(record, run, self.harness.main_persona)
+        [post] = self.transport.sent
+        self.assertLessEqual(len(post["text"]), 2000)
+
     async def test_a_result_for_a_conversation_replies_in_its_thread(self) -> None:
         self.state["threads"]["t-m0"] = {"origin": "mention"}
         record = tasks.create(self.home, type="watch", title="asked for", agent="watch")
