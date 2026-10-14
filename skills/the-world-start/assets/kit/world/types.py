@@ -308,15 +308,27 @@ class Persona:
     def token(self) -> str | None:
         return os.environ.get(self.bot_token_env) if self.bot_token_env else None
 
+    def __post_init__(self) -> None:
+        self.icon_url = self.icon_url or ""
+        self._check_icon_url()
+
+    def _check_icon_url(self) -> None:
+        # A new field, so no harness relies on a non-URL here: refuse it rather than
+        # post under some other picture without a word.
+        if self.icon_url and not self.icon_url.startswith(("https://", "http://")):
+            raise ValueError(
+                f"persona {self.key!r}: icon_url must be a public http(s) image URL, "
+                f"got {self.icon_url!r}; a local image file for the world map goes in portrait")
+
     @property
     def chat_icon(self) -> str:
         """The public URL chat shows as this persona's picture, or "" for none.
-        icon_url first; a harness written before icon_url existed put that URL in
-        portrait, so an http(s) portrait still counts when icon_url is empty."""
-        for value in (self.icon_url, self.portrait):
-            if value.startswith(("https://", "http://")):
-                return value
-        return ""
+        icon_url when set; a harness written before icon_url existed put that URL in
+        portrait, so an http(s) portrait still counts, but only when icon_url is empty."""
+        self._check_icon_url()  # also catches an icon_url assigned after construction
+        if self.icon_url:
+            return self.icon_url
+        return self.portrait if self.portrait.startswith(("https://", "http://")) else ""
 
 
 @dataclass(frozen=True)

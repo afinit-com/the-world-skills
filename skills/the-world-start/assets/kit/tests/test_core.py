@@ -494,7 +494,21 @@ class PersonaChatIconTests(unittest.TestCase):
         self.assertEqual("https://x.test/p.png",
                          Persona("a", "A", portrait="https://x.test/p.png").chat_icon)
         self.assertEqual("", Persona("a", "A", portrait="portraits/a.png").chat_icon)
-        self.assertEqual("", Persona("a", "A", icon_url="portraits/a.png").chat_icon)
+        self.assertEqual("https://x.test/p.png",
+                         Persona("a", "A", portrait="https://x.test/p.png", icon_url=None).chat_icon)
+        self.assertEqual("", Persona("a", "A", icon_url=None).icon_url)
+
+    def test_an_icon_url_that_is_not_a_url_is_refused_whatever_the_portrait(self) -> None:
+        from world.types import Persona
+
+        for portrait in ("portraits/a.png", "https://x.test/p.png"):
+            with self.subTest(portrait=portrait):
+                with self.assertRaisesRegex(ValueError, r"persona 'a': icon_url must be a public http"):
+                    Persona("a", "A", portrait=portrait, icon_url="icons/a.png")
+        persona = Persona("a", "A", portrait="https://x.test/p.png")
+        persona.icon_url = "icons/a.png"
+        with self.assertRaises(ValueError):
+            persona.chat_icon
 
 
 class PersonaFaceTests(unittest.TestCase):
