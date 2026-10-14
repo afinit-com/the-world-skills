@@ -53,6 +53,21 @@ class PluginPackageTests(unittest.TestCase):
         self.assertIn("Write it to `Persona(voice=...)` only after the user edits or approves it", text)
         self.assertIn('Numbers, "unverified" markers, errors, and approval requests stay exact', text)
 
+    def test_start_skill_points_past_the_dry_run_to_the_verify_flow(self) -> None:
+        # Issue #2: "Exit 0 is not completion" was a principle with no flow behind it, so
+        # every harness improvised one. The flow is the kit's docs/verify.md; the skill
+        # points there right after the principle, with the browser rules said in full.
+        text = " ".join((ROOT / "skills/the-world-start/SKILL.md").read_text().split())
+        exit0 = text.index("**Exit 0 is not completion.**")
+        pointer = text.index("**Verify past the dry run with `docs/verify.md`.**")
+        self.assertLess(exit0, pointer)
+        self.assertLess(pointer, text.index("**Report only what happened.**"))
+        self.assertIn("right after Slack is first connected", text)
+        self.assertIn("never press an approve or deny button", text)
+        self.assertIn("only when the user allowed it in this conversation", text)
+        self.assertIn("with `verify` as the flow", text)
+        self.assertTrue((ROOT / "skills/the-world-start/assets/kit/docs/verify.md").is_file())
+
     def test_sync_restores_shared_fields_without_touching_app_specific_ones(self) -> None:
         # The three manifests cannot be one file or a symlink — each app reads its own and
         # carries its own extra keys — so --sync is what keeps their shared half honest.

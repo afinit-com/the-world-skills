@@ -19,10 +19,10 @@ not quietly widen or narrow a harness. world/profile.py reads the same file at r
 Ownership is the whole point of the split below:
 
   kit-owned    world/ named world provider hook files, bin scripts, the few remaining
-               templates/ files (gitignore, AGENTS.md, codex pyproject, skill wrapper,
-               Slack manifest, the two guard templates, the opt-in ops templates)
+               templates/ files (gitignore, AGENTS.md, codex pyproject, skill and verify
+               wrappers, Slack manifest, the two guard templates, the opt-in ops templates)
                docs/philosophy.md docs/codex-compatibility.md docs/world-map.md
-               docs/integrations.md docs/operations.md
+               docs/integrations.md docs/operations.md docs/verify.md
                Overwritten on every run — that is what makes a re-run an upgrade.
                Never fork these per-harness (see docs/philosophy.md).
 
@@ -74,11 +74,13 @@ PROVIDER_FILES = {
 }
 KIT_FILES = [
     # The templates a harness still reads AFTER install: the wrapper skill bodies that
-    # bin/scaffold-world-skill.py fills in (agent words, tool words), and the Slack app
-    # manifest used when the harness is finally provisioned. The rest of templates/ is
-    # read from the kit during install and never from the target, so it is not copied.
+    # bin/scaffold-world-skill.py fills in (agent words, tool words, verify words), and the
+    # Slack app manifest used when the harness is finally provisioned. The rest of
+    # templates/ is read from the kit during install and never from the target, so it is
+    # not copied.
     "templates/skill-wrapper.md.tmpl",
     "templates/skill-wrapper-tool.md.tmpl",
+    "templates/verify-wrapper.md.tmpl",
     "templates/slack-manifest.json.tmpl",
     # Read by bin/ops-kit.py, only when the user opts into running the harness all the
     # time (docs/operations.md).
@@ -104,6 +106,7 @@ KIT_FILES = [
     "docs/discord.md",
     "docs/integrations.md",
     "docs/operations.md",
+    "docs/verify.md",
 ]
 # harness-owned: only created when absent
 SEED_FILES = ["env/harness.env.example"]

@@ -1,0 +1,24 @@
+---
+name: {{word}}
+description: {{flavor_description}} — this harness's word for checking that it really does what it says, past the dry run. Use when the user says "{{word}}"{{extra_trigger_phrases}}.
+---
+
+# /{{word}} — this harness's word for verifying it
+
+Scaffolded once by /the-world-start, so that checking this harness end to end is a real
+command rather than a procedure improvised each time.
+
+Run `uv run python harness.py --verify-plan` and follow `docs/verify.md` through its six
+steps: local checks, tool boundaries, process and connection, a real thread, what was left
+behind, and a report that keeps what was confirmed apart from what was not. The plan is
+read from `harness.py`, so it names this harness's channel, personas, approval-gated tools,
+and report-writing workers; nothing in it is checked until you check it.
+
+In a browser, send a new message only when the person allowed it in this conversation, and
+only a request that leaves nothing outside the chat. Never press an approve or deny
+button. Keep speaking in {{universe_name}}'s vocabulary, and keep ids, paths, SHAs, and
+"not confirmed" exact.
+
+This wrapper is yours. If `WORLD.md`'s Vocabulary entry changes, rename this skill's folder
+(the directory holding this `SKILL.md`) to match — it is a one-time scaffold, not read from
+`WORLD.md` at runtime.

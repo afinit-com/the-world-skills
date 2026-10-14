@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Create one world-word skill wrapper for the selected authoring host."""
+"""Create one world-word skill wrapper for the selected authoring host.
+
+`agent` and `tool` are the creation words (adding a worker, adding a tool) and share one
+template; `verify` is the word for checking the harness end to end (docs/verify.md).
+"""
 
 from __future__ import annotations
 
@@ -52,7 +56,7 @@ def profile_provider(root: Path) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("word")
-    parser.add_argument("flow", choices=("agent", "tool"))
+    parser.add_argument("flow", choices=("agent", "tool", "verify"))
     parser.add_argument("--provider", choices=("claude", "codex", "both"),
                         default=profile_provider(Path(__file__).resolve().parents[1]))
     parser.add_argument("--host", choices=("claude", "codex", "all"),
@@ -66,8 +70,10 @@ def main() -> None:
 
     root = Path(__file__).resolve().parents[1]
     # A tool word carries its own flow (split the request, place each piece, confirm a
-    # proposal table); an agent word uses the shared body.
-    template = "skill-wrapper-tool.md.tmpl" if args.flow == "tool" else "skill-wrapper.md.tmpl"
+    # proposal table); a verify word carries the checking flow; an agent word uses the
+    # shared body.
+    template = {"tool": "skill-wrapper-tool.md.tmpl",
+                "verify": "verify-wrapper.md.tmpl"}.get(args.flow, "skill-wrapper.md.tmpl")
     body = (root / "templates" / template).read_text(encoding="utf-8")
     values = {
         "word": args.word,

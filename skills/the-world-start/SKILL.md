@@ -175,9 +175,19 @@ to `recruit` and `equip` when the user has no preference. Honor explicit naming 
 The tool word does not assume a tool: it splits the request into pieces, places each as a
 tool, code, prompt procedure, skill, knowledge, setting or world sentence, and builds only
 after the user confirms the proposal table.
+Scaffold the word for checking the harness the same way, with `verify` as the flow; default
+to `verify`.
 
 **Exit 0 is not completion.** A worker that produces analysis (`writes_report=True`) is
 verified by a file landing in its task's `work/`, never by an exit code.
+
+**Verify past the dry run with `docs/verify.md`.** `harness.py --verify-plan` fills its six
+steps from this harness: local checks, tool boundaries tested through `world.tool_check`,
+process and connection, a real thread, what was left behind, and a report. Run it right
+after Slack is first connected, with the first real thread, and say which steps were not
+reached. In a browser, read before writing: send a new message only when the user allowed
+it in this conversation and only a request that leaves nothing outside the chat, and never
+press an approve or deny button. That click is the approver's.
 
 **Report only what happened.** A dry run is not a Slack connection and not a real agent
 result. Name what is still unverified, including any check blocked on missing credentials.
