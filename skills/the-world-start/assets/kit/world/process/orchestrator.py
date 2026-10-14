@@ -33,6 +33,7 @@ import time
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
+from . import runlog
 from . import task as tasks
 from . import worktrees
 from .state import record_report, save_state
@@ -48,6 +49,11 @@ WORKTREE_SWEEP_INTERVAL_S = 3600
 
 def append_run_log(harness: "Harness", entry: dict) -> None:
     harness.logs_dir.mkdir(parents=True, exist_ok=True)
+    # getattr: test stubs and harnesses built before the cap existed carry no settings.
+    runlog.maybe_roll(harness.run_log_path,
+                      max_bytes=getattr(harness, "run_log_max_bytes", runlog.RUN_LOG_MAX_BYTES),
+                      keep_days=getattr(harness, "run_log_keep_days", None),
+                      log=getattr(harness, "log", print))
     entry = {"ts": time.time(), **entry}
     with harness.run_log_path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(entry) + "\n")
