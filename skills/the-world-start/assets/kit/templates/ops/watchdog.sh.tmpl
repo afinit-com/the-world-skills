@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+# {{NAME}}-watchdog — run every {{INTERVAL_S}}s by launchd or a systemd user timer.
+#
+# Each round, under the same ops lock as `{{NAME}}-up up/down` (bin/ops-lock.py): if the
+# harness is not running and was not stopped on purpose (`{{NAME}}-up down`), start it
+# again. A harness that keeps dying is retried with exponential backoff,
+# {{BACKOFF_MIN_S}}s doubling to {{BACKOFF_MAX_S}}s, and the count resets once a round
+# finds it running. A harness running without its console writer is restarted. Everything
+# it does goes to logs/watchdog.log{{NOTIFY_NOTE}}. The console log is not touched here;
+# its writer rolls it (bin/ops-log.py).
+#
+# Rendered by bin/ops-kit.py from the kit's templates/ops/. Re-render rather than edit.
+set -uo pipefail
+
+HOME_DIR={{HOME_DIR}}
+PY={{PYTHON}}
+UP={{UP}}
+SELF={{WATCHDOG}}
+LOGS="$HOME_DIR/logs"
+STATE="$LOGS/.watchdog"
+LOG="$LOGS/watchdog.log"
+BACKOFF_MIN_S={{BACKOFF_MIN_S}}
+BACKOFF_MAX_S={{BACKOFF_MAX_S}}
+KEEP_DAYS={{KEEP_DAYS}}  # empty: rolled logs are never deleted
+NOTIFY={{NOTIFY}}        # empty: no Slack message, watchdog.log only
+
+mkdir -p "$STATE"
+
+# The whole round holds the lock. A `down` in progress holds it too, for up to its drain
+# wait, so a round that cannot get it within 30s is skipped; the next one comes soon.
+if [ "${WORLD_OPS_LOCK_HELD:-}" != "$HOME_DIR" ]; then
+  WORLD_OPS_LOCK_HELD="$HOME_DIR" exec "$PY" "$HOME_DIR/bin/ops-lock.py" "$STATE/lock" \
+    --wait-s 30 -- "$SELF"
+fi
+
+log() { printf '%s %s\n' "$(date +%Y-%m-%dT%H:%M:%S%z)" "$*" >>"$LOG"; }
+
+notify() {
+  log "$*"
+  [ -n "$NOTIFY" ] || return 0
+  # shellcheck disable=SC2086  # NOTIFY is the two --*-env flags, word-split on purpose
+  if ! "$PY" "$HOME_DIR/bin/ops-notify.py" $NOTIFY "{{NAME}} watchdog: $*" >>"$LOG" 2>&1; then
+    log "⚠️  Slack notification failed (see the line above); the event is only in this log"
+  fi
+}
+
+# Only watchdog rounds write this log, one at a time under the lock, so rolling it by
+# rename between rounds loses nothing.
+"$PY" "$HOME_DIR/bin/ops-log.py" --file "$LOG" --roll-only ${KEEP_DAYS:+--keep-days "$KEEP_DAYS"} \
+  2>>"$LOGS/ops-log.err"
+
+# Lines the console writer could not write (a full disk, a read-only file): restarting
+# would not help, so say it once each time it starts happening.
+if [ -f "$LOGS/.console.out.dropping" ]; then
+  if [ ! -f "$STATE/reported-dropping" ]; then
+    notify "the console writer is dropping lines: $(cat "$LOGS/.console.out.dropping")"
+    touch "$STATE/reported-dropping"
+  fi
+else
+  rm -f "$STATE/reported-dropping"
+fi
+
+if "$UP" running; then
+  # Running without its console writer: the harness's next line of output fails with
+  # EPIPE and kills it at a moment nobody chose, so restart it now instead.
+  if ! "$UP" healthy && [ ! -f "$STATE/down" ]; then
+    if "$UP" recycle >>"$LOG" 2>&1; then
+      notify "its console writer had died; restarted the harness before its output could kill it"
+    else
+      notify "its console writer had died and restarting the harness failed; see $LOG"
+    fi
+    exit 0
+  fi
+  if [ -f "$STATE/failures" ]; then
+    log "running again after $(cat "$STATE/failures") restart(s)"
+    rm -f "$STATE/failures" "$STATE/next_try"
+  fi
+  exit 0
+fi
+
+# Stopped on purpose. Read under the lock, so a `down` either finished before this
+# round (marker present) or starts after it.
+[ -f "$STATE/down" ] && exit 0
+
+now=$(date +%s)
+next_try=$(cat "$STATE/next_try" 2>/dev/null || echo 0)
+[ "$now" -lt "$next_try" ] && exit 0
+
+failures=$(cat "$STATE/failures" 2>/dev/null || echo 0)
+failures=$((failures + 1))
+delay=$BACKOFF_MIN_S
+i=1
+while [ "$i" -lt "$failures" ] && [ "$delay" -lt "$BACKOFF_MAX_S" ]; do
+  delay=$((delay * 2))
+  i=$((i + 1))
+done
+[ "$delay" -gt "$BACKOFF_MAX_S" ] && delay=$BACKOFF_MAX_S
+echo "$failures" >"$STATE/failures"
+echo $((now + delay)) >"$STATE/next_try"
+
+# `resume`, never `up`: only a person's explicit `up` clears the down marker.
+if "$UP" resume >>"$LOG" 2>&1; then
+  notify "found it not running; restarted (attempt $failures; next retry no sooner than ${delay}s)"
+else
+  notify "found it not running and could not start it (attempt $failures; retrying in ${delay}s). See $LOGS/console.out"
+fi

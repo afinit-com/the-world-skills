@@ -1,0 +1,18 @@
+# {{NAME}} watchdog timer, rendered by bin/ops-kit.py. Nothing runs until it is enabled:
+#   mkdir -p ~/.config/systemd/user
+#   cp {{NAME}}-watchdog.service {{NAME}}-watchdog.timer ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now {{NAME}}-watchdog.timer
+#   loginctl enable-linger "$USER"    # keep user units running while logged out
+# To take the harness down for good, disable this FIRST, then run `{{NAME}}-up down`:
+#   systemctl --user disable --now {{NAME}}-watchdog.timer
+[Unit]
+Description=Run the {{NAME}} watchdog every {{INTERVAL_S}}s
+
+[Timer]
+OnBootSec=60s
+OnUnitActiveSec={{INTERVAL_S}}s
+Unit={{NAME}}-watchdog.service
+
+[Install]
+WantedBy=timers.target

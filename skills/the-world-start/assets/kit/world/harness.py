@@ -19,11 +19,13 @@ import signal as _signal
 import subprocess
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Awaitable, Callable
 
 from .env import load_harness_env
 from .process.orchestrator import poll_loop
+from .process.runlog import RUN_LOG_MAX_BYTES
 from .process.scheduler import Scheduler, scheduler_loop
 from .process.state import load_state, save_state
 from .profile import CHANNEL, DEFAULT_PROVIDER, SUPPORTED_PROVIDERS, reinstall_hint
@@ -267,6 +269,12 @@ class Harness:
         self.heartbeat_path = self.home / "HEARTBEAT.md"
         self.status_path = self.home / "STATUS.md"
         self.run_log_path = self.logs_dir / "harness.jsonl"
+        # Rolled daily to logs/harness.<YYYY-MM-DD>.jsonl.gz and early past this size
+        # (world/process/runlog.py). Rolled days are kept forever unless harness.py sets
+        # run_log_keep_days to a number of days; None means the disk keeps growing by
+        # about one compressed day per day.
+        self.run_log_max_bytes: int | None = RUN_LOG_MAX_BYTES
+        self.run_log_keep_days: int | None = None
         # Append-only record of every human decision. Unlike state.json (rewritten each
         # tick, holds what is currently true) this holds what happened, forever.
         self.ledger_path = self.home / "ledger.jsonl"
@@ -368,7 +376,10 @@ class Harness:
         return self.world_doc.read_text(encoding="utf-8") if self.world_doc.exists() else ""
 
     def log(self, msg: str) -> None:
-        print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} [{self.name}] {msg}", flush=True)
+        # ISO 8601 with the UTC offset (2026-10-14T09:00:00+09:00), so a line read on
+        # another machine, or wrapped by a launcher, needs no second timestamp.
+        stamp = datetime.now().astimezone().isoformat(timespec="seconds")
+        print(f"{stamp} [{self.name}] {msg}", flush=True)
 
     def preflight_mutates(self) -> list[str]:
         """Say at startup, not at the first real run, when a mutates=True worker can never run.

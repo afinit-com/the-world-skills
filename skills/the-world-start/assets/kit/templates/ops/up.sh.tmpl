@@ -1,0 +1,248 @@
+#!/usr/bin/env bash
+# {{NAME}}-up — run this harness in the background, and stop and inspect it.
+#
+#   scripts/{{NAME}}-up [up]     start it, unless it is already running
+#   scripts/{{NAME}}-up down     stop it on purpose; the watchdog leaves it down until `up`
+#   scripts/{{NAME}}-up restart
+#   scripts/{{NAME}}-up status   pid, uptime, console writer, watchdog state, last lines
+#   scripts/{{NAME}}-up running  exit 0 if running, 1 if not (for scripts)
+#   scripts/{{NAME}}-up healthy  exit 0 if running AND its console writer is alive
+#   scripts/{{NAME}}-up attach   follow the console output (Ctrl-C leaves it running)
+#   scripts/{{NAME}}-up resume   start it unless running or marked down (the watchdog's path)
+#   scripts/{{NAME}}-up recycle  stop and start it without marking it down (the watchdog's
+#                                path when the console writer died)
+#
+# up, down, restart and resume run under the harness's ops lock (bin/ops-lock.py), the same
+# one the watchdog holds for its whole round, so checking and starting are one step:
+# concurrent `up`s start one harness, and a watchdog round never lands between a `down`'s
+# marker and its stop. The lock is on fd 9 here; everything started in the background
+# gets `9>&-` so a long-running process never holds it.
+#
+# Rendered by bin/ops-kit.py from the kit's templates/ops/. Re-render rather than edit:
+# the paths below were resolved once, on the machine that rendered it.
+set -euo pipefail
+
+HOME_DIR={{HOME_DIR}}
+PY={{PYTHON}}
+SELF={{UP}}
+ENTRY="$HOME_DIR/harness.py"
+# A python process whose first argument is this harness.py (bin/ops-kit.py
+# process_match), so a second harness, an editor, or a grep for the path never counts.
+MATCH={{MATCH}}
+OUT="$HOME_DIR/logs/console.out"
+STATE="$HOME_DIR/logs/.watchdog"
+# The login shell's PATH, with the agent CLI's directory first, resolved when this was
+# rendered. launchd and systemd start with a bare PATH, where `claude` / `codex` is not
+# found and every run fails.
+RUN_PATH={{RUN_PATH}}
+CAFFEINATE={{CAFFEINATE}}
+KEEP_DAYS={{KEEP_DAYS}}  # empty: rolled console logs are never deleted
+DOWN_WAIT_S=${DOWN_WAIT_S:-300}
+# How long to wait for the console writer to drain and exit once the harness is gone.
+WRITER_WAIT_S=${WRITER_WAIT_S:-30}
+LOCK="$STATE/lock"
+
+case "${1:-up}" in
+  up | down | restart | resume | recycle)
+    # The variable names the harness whose lock is held, so another harness's script
+    # started from inside this one still takes its own.
+    if [ "${WORLD_OPS_LOCK_HELD:-}" != "$HOME_DIR" ]; then
+      if [ ! -x "$PY" ]; then
+        echo "{{NAME}}: $PY not found; create the venv (uv venv .venv && uv pip install -e .)" >&2
+        exit 1
+      fi
+      mkdir -p "$STATE"
+      WORLD_OPS_LOCK_HELD="$HOME_DIR" exec "$PY" "$HOME_DIR/bin/ops-lock.py" "$LOCK" \
+        --wait-s "${LOCK_WAIT_S:-$((DOWN_WAIT_S + 60))}" -- "$SELF" "$@"
+    fi
+    ;;
+esac
+
+pids() { pgrep -f "$MATCH" || true; }
+
+# Every key env/harness.env declares. The loader lets an exported shell variable win over
+# the file; under this launcher the file wins, because a stale export in the shell that
+# ran `up` (a token, an OAuth client) is not something the harness was configured with.
+env_keys() {
+  [ -r "$HOME_DIR/env/harness.env" ] || return 0
+  sed -n -E 's/^[[:space:]]*(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)=.*/\2/p' \
+    "$HOME_DIR/env/harness.env"
+}
+
+# The pid of the live console writer (bin/ops-log.py holds an flock while it runs), or
+# nothing. A pid file could outlive its process; the lock cannot.
+writer() { "$PY" "$HOME_DIR/bin/ops-log.py" --file "$OUT" --check 2>/dev/null || true; }
+
+# Wait for the console writer to drain and exit. It exits on EOF, which comes when the
+# last process holding the harness's output closes it: the harness, and anything the
+# harness started that inherited its stdout and is still running.
+wait_writer() {
+  local waited=0
+  while [ -n "$(writer)" ]; do
+    if [ "$waited" -ge "$WRITER_WAIT_S" ]; then
+      echo "{{NAME}}: the console writer (pid $(writer)) is still running ${WRITER_WAIT_S}s after" >&2
+      echo "  the harness stopped: something the harness started still holds its output" >&2
+      echo "  open. Find it with: lsof $OUT, or ps -o pid,command -g <harness pgid>." >&2
+      return 1
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+}
+
+# Start the harness; the caller holds the lock and has checked it is not running.
+start() {
+  mkdir -p "$HOME_DIR/logs" "$STATE"
+  # A second writer would exit at once and leave the new harness writing into a closed
+  # pipe, so an old one still draining is waited for, not raced.
+  wait_writer || return 1
+  # ANTHROPIC_API_KEY is removed so the agent SDK stays on the subscription login
+  # (world/runners/claude.py refuses to run while it is set).
+  local -a run=(env -u ANTHROPIC_API_KEY -u WORLD_OPS_LOCK_HELD)
+  local key
+  for key in $(env_keys); do run+=(-u "$key"); done
+  run+=(PATH="$RUN_PATH" "$PY" "$ENTRY")
+  local -a writer=("$PY" "$HOME_DIR/bin/ops-log.py" --file "$OUT")
+  [ -n "$KEEP_DAYS" ] && writer+=(--keep-days "$KEEP_DAYS")
+  cd "$HOME_DIR"
+  # The harness's output goes through one writer that stamps and rolls the console log
+  # itself (bin/ops-log.py); nothing else writes or truncates that file.
+  nohup "${run[@]}" > >(exec "${writer[@]}" >/dev/null 2>>"$HOME_DIR/logs/ops-log.err" 9>&-) \
+    2>&1 </dev/null 9>&- &
+  local started=$!
+  if [ "$CAFFEINATE" = 1 ] && command -v caffeinate >/dev/null; then
+    # Keep a laptop awake for as long as that process lives. `-w` rather than wrapping
+    # the command, so no second process carries the harness's command line.
+    nohup caffeinate -is -w "$started" >/dev/null 2>&1 </dev/null 9>&- &
+  fi
+  local i running
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    sleep 0.5
+    running=$(pids)
+    if [ -n "$running" ]; then
+      sleep 1
+      if [ -n "$(pids)" ]; then
+        if [ -z "$(writer)" ]; then
+          echo "{{NAME}}: started (pid $(echo $running)) but its console writer is not" >&2
+          echo "  running, so its output is lost; see $HOME_DIR/logs/ops-log.err" >&2
+          return 1
+        fi
+        echo "{{NAME}}: started (pid $(echo $running)); console: $OUT"
+        return 0
+      fi
+    fi
+  done
+  echo "{{NAME}}: did not stay up. Last console lines:" >&2
+  tail -n 20 "$OUT" >&2 || true
+  return 1
+}
+
+# SIGTERM the harness and wait for it, then for its console writer.
+stop() {
+  local running
+  running=$(pids)
+  if [ -n "$running" ]; then
+    kill -TERM $running 2>/dev/null || true  # one may have exited since pids()
+    # SIGTERM lets started runs finish (Scheduler.drain_inflight), which can take minutes.
+    local waited=0
+    while [ -n "$(pids)" ]; do
+      if [ "$waited" -ge "$DOWN_WAIT_S" ]; then
+        echo "{{NAME}}: still finishing a run after ${DOWN_WAIT_S}s (pid $(echo $(pids)))." >&2
+        echo "  Wait, or kill -9 it and lose that run's record." >&2
+        return 1
+      fi
+      sleep 1
+      waited=$((waited + 1))
+    done
+  fi
+  wait_writer
+}
+
+# An explicit `up` is the one thing that clears the down marker, even when the harness
+# is still running (a `down` that timed out waiting for a run leaves it running and
+# marked; without this the watchdog would never restart it again).
+cmd_up() {
+  rm -f "$STATE/down"
+  local running
+  running=$(pids)
+  if [ -n "$running" ]; then
+    echo "{{NAME}}: already running (pid $(echo $running))"
+    return 0
+  fi
+  start
+}
+
+# The watchdog's start: never clears the marker, and refuses while it is there.
+cmd_resume() {
+  if [ -f "$STATE/down" ]; then
+    echo "{{NAME}}: marked down since $(cat "$STATE/down"); not starting"
+    return 3
+  fi
+  [ -n "$(pids)" ] && return 0
+  start
+}
+
+# The watchdog's restart of a harness whose console writer died: without a reader its
+# next line of output fails with EPIPE and it dies at a moment nobody chose.
+cmd_recycle() {
+  if [ -f "$STATE/down" ]; then
+    echo "{{NAME}}: marked down since $(cat "$STATE/down"); not restarting"
+    return 3
+  fi
+  stop && start
+}
+
+cmd_down() {
+  mkdir -p "$STATE"
+  date +%Y-%m-%dT%H:%M:%S%z >"$STATE/down"
+  if [ -z "$(pids)" ] && [ -z "$(writer)" ]; then
+    echo "{{NAME}}: not running (marked down; the watchdog leaves it down until up)"
+    return 0
+  fi
+  if ! stop; then
+    echo "  It stays marked down." >&2
+    return 1
+  fi
+  echo "{{NAME}}: stopped (marked down; the watchdog leaves it down until up)"
+}
+
+cmd_status() {
+  local running
+  running=$(pids)
+  if [ -n "$running" ]; then
+    echo "{{NAME}}: running"
+    ps -o pid=,etime= -p "$(echo $running | tr ' ' ',')" | sed 's/^/  pid, uptime: /'
+  else
+    echo "{{NAME}}: not running"
+  fi
+  local w
+  w=$(writer)
+  if [ -n "$w" ]; then
+    echo "  console writer: running (pid $w)"
+  elif [ -n "$running" ]; then
+    echo "  console writer: NOT RUNNING. UNHEALTHY: the harness's output goes nowhere and its"
+    echo "    next line kills it (EPIPE). The watchdog restarts it; by hand: $SELF restart"
+  fi
+  [ -f "$HOME_DIR/logs/.console.out.dropping" ] &&
+    echo "  console writer is DROPPING lines: $(cat "$HOME_DIR/logs/.console.out.dropping")"
+  [ -f "$STATE/down" ] && echo "  marked down since $(cat "$STATE/down") (up clears it)"
+  [ -f "$STATE/failures" ] && echo "  watchdog: $(cat "$STATE/failures") restart(s) without staying up"
+  [ -f "$HOME_DIR/logs/watchdog.log" ] && echo "  watchdog log: $HOME_DIR/logs/watchdog.log"
+  if [ -f "$OUT" ]; then
+    echo "  last console lines ($OUT):"
+    tail -n 5 "$OUT" | sed 's/^/    /'
+  fi
+}
+
+case "${1:-up}" in
+  up) cmd_up ;;
+  resume) cmd_resume ;;
+  down) cmd_down ;;
+  restart) cmd_down && cmd_up ;;
+  status) cmd_status ;;
+  running) [ -n "$(pids)" ] ;;
+  healthy) [ -n "$(pids)" ] && [ -n "$(writer)" ] ;;
+  recycle) cmd_recycle ;;
+  attach) exec tail -n 50 -F "$OUT" ;;
+  *) echo "usage: $0 [up|down|restart|status|running|healthy|attach|resume|recycle]" >&2; exit 2 ;;
+esac
