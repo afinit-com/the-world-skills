@@ -18,6 +18,10 @@
   <integer>{{INTERVAL_S}}</integer>
   <key>RunAtLoad</key>
   <true/>
+  <!-- Without this, launchd kills what a round started (the harness) when the round
+       exits, because it shares the round's process group. -->
+  <key>AbandonProcessGroup</key>
+  <true/>
   <key>StandardOutPath</key>
   <string>{{LAUNCHD_OUT}}</string>
   <key>StandardErrorPath</key>

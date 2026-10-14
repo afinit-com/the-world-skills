@@ -9,8 +9,8 @@ The kit sets up no service: a harness runs while `harness.py` runs and a reboot 
 This is for a harness that has to outlive that. It WRITES files only; it never loads,
 enables or starts anything. What it writes, under the harness's own `scripts/`:
 
-  scripts/<name>-up               up | down | restart | status | running | attach
-  scripts/<name>-watchdog         one round: roll console logs, restart if it died
+  scripts/<name>-up               up | down | restart | status | running | attach | resume
+  scripts/<name>-watchdog         one round: restart the harness if it died
   scripts/launchd/<label>.plist   macOS: run the watchdog every 120s and at login
   scripts/systemd/<name>-watchdog.service, .timer   Linux: the same as a user timer
 
@@ -40,7 +40,6 @@ KIT_TEMPLATES = ROOT / "templates" / "ops"
 INTERVAL_S = 120
 BACKOFF_MIN_S = 30
 BACKOFF_MAX_S = 1800
-ROLL_MAX_BYTES = 10 * 1024 * 1024
 PROVIDER_CLIS = {"claude": ("claude",), "codex": ("codex",), "both": ("claude", "codex")}
 
 
@@ -112,13 +111,13 @@ def render(home: Path, name: str, os_name: str, python: Path, run_path: str, *,
         "HOME_DIR": q(str(home)),
         "PYTHON": q(str(python)),
         "UP": q(str(up)),
+        "WATCHDOG": q(str(watchdog)),
         "MATCH": q(process_match(home)),
         "RUN_PATH": q(run_path),
         "CAFFEINATE": "1" if os_name == "macos" else "0",
         "INTERVAL_S": str(INTERVAL_S),
         "BACKOFF_MIN_S": str(BACKOFF_MIN_S),
         "BACKOFF_MAX_S": str(BACKOFF_MAX_S),
-        "ROLL_MAX_BYTES": str(ROLL_MAX_BYTES),
         "KEEP_DAYS": "" if keep_days is None else str(int(keep_days)),
         "NOTIFY": q(notify_flags) if notify else "",
         "NOTIFY_NOTE": " and to Slack" if notify else "",

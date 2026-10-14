@@ -37,7 +37,9 @@ Each of these was a bug in a hand-built launcher first.
 - **One copy.** `up` does nothing when this harness is already running. It finds the
   process by a python interpreter whose first argument is this `harness.py`, not by the
   venv's path, because a macOS framework Python re-executes `.venv/bin/python` under
-  another name.
+  another name. Checking and starting happen under one lock (`bin/ops-lock.py`, an
+  `flock` the kernel releases when its holder exits), so six `up`s at once start one
+  harness. `up`, `down`, `restart` and every watchdog round take the same lock.
 - **The subscription login stays on.** `ANTHROPIC_API_KEY` is removed from the
   harness's environment, and so is every key `env/harness.env` declares. Under the
   launcher the file wins over a stale export in the shell that ran `up`.
@@ -52,7 +54,12 @@ Each of these was a bug in a hand-built launcher first.
   token and the channel.
 - **A deliberate stop stays stopped.** `down` leaves a marker
   (`logs/.watchdog/down`) the watchdog respects until the next `up`. Before it existed, a
-  harness stopped on purpose came back within two minutes.
+  harness stopped on purpose came back within two minutes. The watchdog reads the marker
+  under the lock and never removes it; only an explicit `up` does, and it does so even
+  when the harness is still running after a `down` that timed out.
+- **What the watchdog starts outlives the round.** The plist sets `AbandonProcessGroup`
+  and the systemd unit `KillMode=process`; without them launchd or systemd kills the
+  restarted harness as soon as the round that started it exits.
 - **A laptop stays awake** (macOS) while the harness runs, with `caffeinate -is -w <pid>`.
 
 ## Logs
@@ -60,17 +67,23 @@ Each of these was a bug in a hand-built launcher first.
 | File | Written by | Rolled by |
 |---|---|---|
 | `logs/harness.jsonl` | the harness, one line per run | the harness |
-| `logs/console.out` | `<name>-up` (the harness's stdout and stderr) | the watchdog |
-| `logs/watchdog.log` | the watchdog | the watchdog |
+| `logs/console.out` | `bin/ops-log.py`, fed the harness's stdout and stderr | `bin/ops-log.py` |
+| `logs/watchdog.log` | the watchdog, under the lock | the watchdog, at the start of a round |
 
 Each log line from `Harness.log` starts with an ISO time and its UTC offset
-(`2026-10-14T09:00:00+09:00`), so `console.out` needs no second timestamp.
+(`2026-10-14T09:00:00+09:00`). `ops-log.py` stamps the lines that lack one (a traceback,
+a library's own print) and leaves the rest alone, so no line carries two.
 
-Rolling is by date. The first write of a day (the first watchdog round of a day, for the
-console logs) moves what came before to `<stem>.<YYYY-MM-DD><ext>.gz`, so "the log from
-the 13th" is found by name. Past 10MB within one day the file is rolled early to
-`<stem>.<YYYY-MM-DD>-<HHMMSS><ext>.gz`. The console logs are rolled with copy-and-truncate,
-which their `O_APPEND` writers survive without a restart.
+Rolling is by date. The first write of a day moves what came before to
+`<stem>.<YYYY-MM-DD><ext>.gz`, so "the log from the 13th" is found by name. Past 10MB
+within one day the file is rolled early to `<stem>.<YYYY-MM-DD>-<HHMMSS><ext>.gz`.
+
+Every log is rolled by the process that writes it, by renaming the file between two
+writes. Rolling from outside with copy-and-truncate, even of an `O_APPEND` file, loses
+the lines appended after the copy reached the end and before the truncate: they are in
+neither the copy nor the file. The .gz is written under a temp name and the plain file
+removed last, so a roll cut short leaves the lines uncompressed, and the next write
+finishes it.
 
 Nothing rolled is deleted by default, so `logs/` grows by about one compressed day per
 day. To bound it, set `h.run_log_keep_days = 30` in `harness.py` for `harness.jsonl`, and

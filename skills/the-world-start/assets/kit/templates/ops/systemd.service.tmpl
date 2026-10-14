@@ -5,4 +5,7 @@ Description=The World harness watchdog: {{NAME}}
 
 [Service]
 Type=oneshot
+# Without this, systemd stops what a round started (the harness) when the round exits,
+# because it is in the service's cgroup.
+KillMode=process
 ExecStart=/bin/bash {{WATCHDOG}}

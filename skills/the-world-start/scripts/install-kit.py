@@ -95,6 +95,8 @@ KIT_FILES = [
     "bin/slack-pair.py",
     "bin/ops-kit.py",
     "bin/ops-notify.py",
+    "bin/ops-log.py",
+    "bin/ops-lock.py",
     "docs/philosophy.md",
     "docs/codex-compatibility.md",
     "docs/world-map.md",

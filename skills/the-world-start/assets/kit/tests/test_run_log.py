@@ -133,6 +133,47 @@ class RunLogRollTest(unittest.TestCase):
         self.assertEqual(lines[0], "old")
         self.assertEqual(json.loads(lines[1])["agent"], "x")
 
+    def test_a_crash_while_compressing_loses_nothing(self):
+        """Compression dies halfway (the process was killed, the disk filled): the next
+        write finishes the roll from the renamed plain file and appends as usual."""
+        lines = "".join(f'{{"n": {n}}}\n' for n in range(5000))
+        self._write(lines, _at(-1))
+        real_copy = runlog.shutil.copyfileobj
+
+        def die_halfway(src, dst):
+            dst.write(src.read(1000))
+            raise OSError("killed mid-compression")
+        runlog.shutil.copyfileobj = die_halfway
+        try:
+            self.assertIsNone(runlog.maybe_roll(self.path, now=_at(0), log=self.messages.append))
+        finally:
+            runlog.shutil.copyfileobj = real_copy
+        self.assertTrue(any("left uncompressed" in m for m in self.messages), self.messages)
+        day = datetime.fromtimestamp(_at(-1)).date().isoformat()
+        plain = self.logs / f"harness.{day}.jsonl"
+        self.assertTrue(plain.exists())
+        self.assertFalse((self.logs / f"harness.{day}.jsonl.gz").exists(),
+                         "a partial .gz must never carry the final name")
+
+        h = SimpleNamespace(logs_dir=self.logs, run_log_path=self.path, log=self.messages.append)
+        append_run_log(h, {"n": "after"})
+        self.assertFalse(plain.exists())
+        self.assertEqual(list(self.logs.glob("*.tmp")), [])
+        with gzip.open(self.logs / f"harness.{day}.jsonl.gz", "rt", encoding="utf-8") as f:
+            self.assertEqual(f.read(), lines)
+        self.assertEqual(json.loads(self.path.read_text(encoding="utf-8"))["n"], "after")
+
+    def test_a_crash_after_compressing_but_before_cleanup_is_finished(self):
+        day = datetime.fromtimestamp(_at(-1)).date().isoformat()
+        plain = self.logs / f"harness.{day}.jsonl"
+        plain.write_text("kept\n", encoding="utf-8")
+        with gzip.open(self.logs / f"harness.{day}.jsonl.gz", "wt", encoding="utf-8") as f:
+            f.write("kept\n")
+        runlog.maybe_roll(self.path, now=_at(0), log=self.messages.append)
+        self.assertFalse(plain.exists())
+        with gzip.open(self.logs / f"harness.{day}.jsonl.gz", "rt", encoding="utf-8") as f:
+            self.assertEqual(f.read(), "kept\n")
+
     def test_append_run_log_rolls_before_writing(self):
         home = Path(self.tmp.name)
         h = SimpleNamespace(logs_dir=home / "logs", run_log_path=home / "logs" / "harness.jsonl",
