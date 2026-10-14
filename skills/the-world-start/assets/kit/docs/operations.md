@@ -22,7 +22,7 @@ nothing.
 
 | File | What it does |
 |---|---|
-| `scripts/<name>-up` | `up` / `down` / `restart` / `status` / `running` / `attach` |
+| `scripts/<name>-up` | `up` / `down` / `restart` / `status` / `running` / `healthy` / `attach` |
 | `scripts/<name>-watchdog` | One round: roll the console logs, restart the harness if it died |
 | `scripts/launchd/<label>.plist` | macOS: run the watchdog every 120s and at login |
 | `scripts/systemd/<name>-watchdog.{service,timer}` | Linux: the same as a user timer |
@@ -39,7 +39,10 @@ Each of these was a bug in a hand-built launcher first.
   venv's path, because a macOS framework Python re-executes `.venv/bin/python` under
   another name. Checking and starting happen under one lock (`bin/ops-lock.py`, an
   `flock` the kernel releases when its holder exits), so six `up`s at once start one
-  harness. `up`, `down`, `restart` and every watchdog round take the same lock.
+  harness. `up`, `down`, `restart` and every watchdog round take the same lock. The
+  script doing the work holds it on fd 9, not just the helper that took it, so killing
+  the helper does not let a second `up` in halfway through; the harness and its console
+  writer are started with fd 9 closed, so neither holds it while running.
 - **The subscription login stays on.** `ANTHROPIC_API_KEY` is removed from the
   harness's environment, and so is every key `env/harness.env` declares. Under the
   launcher the file wins over a stale export in the shell that ran `up`.
@@ -89,6 +92,21 @@ Nothing rolled is deleted by default, so `logs/` grows by about one compressed d
 day. To bound it, set `h.run_log_keep_days = 30` in `harness.py` for `harness.jsonl`, and
 render with `--keep-days 30` for the console logs.
 
+## The console writer
+
+The harness's stdout and stderr go through a pipe to `bin/ops-log.py`, which is the only
+process writing `logs/console.out`. It holds an `flock` on `logs/.console.out.writer`
+while it runs, so a second writer exits at once. What happens when it fails:
+
+| Failure | What happens | Who notices |
+|---|---|---|
+| A line cannot be written (disk full, file made read-only) | The writer drops it and keeps reading, so the harness never gets EPIPE. The count goes to `logs/.console.out.dropping` and stderr (`logs/ops-log.err`). When writing works again, the log gets one line saying how many were lost. | `status` shows `DROPPING`. The watchdog notes it once per episode, with `--notify` in Slack too. It does not restart: that would not free the disk. |
+| The writer dies | The harness keeps running until its next line of output, which fails with EPIPE and kills it at a moment nobody chose. | `status` shows `UNHEALTHY` and `healthy` exits 1. The next watchdog round restarts the harness with a fresh writer and says so (`--notify`: in Slack). |
+| The writer does not exit after the harness stops | Something the harness started still holds its output open. | `down`, `restart` and `up` wait `WRITER_WAIT_S` (30s) for it, then fail loudly and name it. Nothing is started beside it. |
+
+When a full disk cannot take `logs/.console.out.dropping` either, only stderr has the
+count, and that file may be on the same disk.
+
 ## Stopping it
 
 | To | Run |
@@ -96,5 +114,6 @@ render with `--keep-days 30` for the console logs.
 | Stop it for a while | `scripts/<name>-up down`. The watchdog leaves it down until `up`. |
 | Take it down for good | Remove the watchdog first, then `down`. On macOS `launchctl bootout gui/$(id -u)/<label>`, on Linux `systemctl --user disable --now <name>-watchdog.timer`. |
 
-`down` sends SIGTERM and waits up to 5 minutes for runs already started to finish. If one
-is still going it says so and leaves the harness marked down.
+`down` sends SIGTERM and waits up to 5 minutes for runs already started to finish, then
+up to 30 seconds for the console writer to drain. If either is still going it says so
+and leaves the harness marked down.

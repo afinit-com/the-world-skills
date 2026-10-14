@@ -72,7 +72,8 @@ class RunLogRollTest(unittest.TestCase):
         self.assertFalse(self.path.exists())
         with gzip.open(rolled, "rt", encoding="utf-8") as f:
             self.assertEqual(f.read(), '{"a": 1}\n')
-        self.assertEqual(sorted(p.name for p in self.logs.iterdir()), [rolled.name])
+        visible = sorted(p.name for p in self.logs.iterdir() if not p.name.startswith("."))
+        self.assertEqual(visible, [rolled.name])
 
     def test_same_day_under_cap_is_left_alone(self):
         self._write('{"a": 1}\n', _at(0, hour=9))

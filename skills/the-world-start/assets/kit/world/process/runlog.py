@@ -22,10 +22,17 @@ The .gz is written under a temp name and renamed into place, and the plain file 
 removed only after that. A roll cut short (a crash, a full disk) therefore leaves the
 plain `harness.<date>.jsonl`, never a truncated .gz under the final name, and the next
 write compresses it (recover()). bin/ops-log.py rolls the console log with this module.
+
+Rolling, recovering and appending happen under an flock on `.<name>.lock` beside the
+file, and the temp .gz carries the pid that writes it. Two processes on one file (an old
+console writer still draining while a new one starts, a recovery overlapping a roll)
+then take turns instead of writing one shared temp file into a corrupt gzip and deleting
+the original. Windows has no fcntl; there the one harness process is the only writer.
 """
 
 from __future__ import annotations
 
+import contextlib
 import gzip
 import os
 import shutil
@@ -34,7 +41,27 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Callable
 
+try:
+    import fcntl
+except ImportError:  # Windows
+    fcntl = None
+
 RUN_LOG_MAX_BYTES = 10 * 1024 * 1024
+
+
+@contextlib.contextmanager
+def _locked(path: Path):
+    """Hold the per-file roll lock. Blocking: every holder is quick (one append, or one
+    roll of at most max_bytes)."""
+    if fcntl is None:
+        yield
+        return
+    fd = os.open(path.with_name(f".{path.name}.lock"), os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)  # releases the lock
 
 
 def _rolled_path(path: Path, stamp: str) -> Path:
@@ -59,7 +86,7 @@ def _compress(plain: Path) -> Path:
     """`x.jsonl` -> `x.jsonl.gz`, written to a temp name and renamed into place, so a
     crash leaves either no .gz or a complete one, and the plain file until the end."""
     target = plain.with_name(plain.name + ".gz")
-    tmp = plain.with_name(plain.name + ".gz.tmp")
+    tmp = plain.with_name(f"{plain.name}.gz.{os.getpid()}.tmp")
     with plain.open("rb") as src, gzip.open(tmp, "wb") as dst:
         shutil.copyfileobj(src, dst)
     os.replace(tmp, target)
@@ -89,6 +116,9 @@ def recover(path: Path) -> list[Path]:
     but not yet followed by removing the plain file. The plain file is the truth in all
     three, so it is compressed again."""
     done = []
+    # Called under the roll lock, so any temp .gz left here belongs to a process that died.
+    for tmp in path.parent.glob(f"{path.stem}.*{path.suffix}.gz.*.tmp"):
+        tmp.unlink()
     for plain in path.parent.glob(f"{path.stem}.*{path.suffix}"):
         if not _dated(path, plain.name):
             continue
@@ -125,8 +155,27 @@ def maybe_roll(path: Path, *, max_bytes: int | None = RUN_LOG_MAX_BYTES,
                log: Callable[[str], None] = print) -> Path | None:
     """Roll `path` if it belongs to an earlier local day or is over max_bytes.
 
-    Called before each append. Returns the .gz written, or None when nothing rolled.
+    Returns the .gz written, or None when nothing rolled.
     """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with _locked(path):
+        return _maybe_roll(path, max_bytes=max_bytes, keep_days=keep_days, now=now, log=log)
+
+
+def append(path: Path, data: bytes, *, max_bytes: int | None = RUN_LOG_MAX_BYTES,
+           keep_days: int | None = None, log: Callable[[str], None] = print) -> None:
+    """Roll if due, then append `data`, as one step under the roll lock, so no other
+    process can rename and compress the file between this open and this write. A failed
+    roll is logged and the append still happens; a failed append raises."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with _locked(path):
+        _maybe_roll(path, max_bytes=max_bytes, keep_days=keep_days, now=None, log=log)
+        with path.open("ab") as f:
+            f.write(data)
+
+
+def _maybe_roll(path: Path, *, max_bytes: int | None, keep_days: int | None,
+                now: float | None, log: Callable[[str], None]) -> Path | None:
     now = time.time() if now is None else now
     today = datetime.fromtimestamp(now).date()
     rolled = None

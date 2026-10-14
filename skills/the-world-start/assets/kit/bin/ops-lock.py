@@ -8,10 +8,16 @@ it, so "is it running / is it marked down" and "start it" happen as one step. Wi
 it, six `up`s at once each saw no harness and started one, and a watchdog that checked
 the down marker just before a `down` finished started the harness right back up.
 
-flock(2) rather than a lock directory: the kernel drops the lock when this process
-exits, however it exits, so there is no stale lock to detect and no race in reclaiming
-one. The lock file descriptor is not inherited by the command (or by the harness it
-starts), so a long-running harness never holds the lock. POSIX only, like the scripts.
+flock(2) rather than a lock directory: the kernel drops the lock when the last process
+holding it exits, however it exits, so there is no stale lock to detect and no race in
+reclaiming one.
+
+The command holds the lock too, on fd 9 (LOCK_FD). Were only this process to hold it, a
+SIGKILL here would release the lock while the command was still mid-way through its
+critical section, and a second `up` would start a second harness. So the lock lives as
+long as the command does. The scripts close fd 9 (`9>&-`) on everything they start in
+the background, so a long-running harness or console writer never holds it. POSIX only,
+like the scripts.
 
 Exit status is the command's, or 75 (EX_TEMPFAIL) when the lock stayed busy for
 --wait-s seconds, with the holder's pid on stderr.
@@ -28,6 +34,7 @@ import time
 from pathlib import Path
 
 BUSY = 75
+LOCK_FD = 9
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -56,12 +63,16 @@ def main(argv: list[str] | None = None) -> int:
                       f"{args.wait_s:g}s", file=sys.stderr)
                 return BUSY
             time.sleep(0.1)
+    if fd != LOCK_FD:
+        os.dup2(fd, LOCK_FD)  # same open file description, so the same lock
+    child = subprocess.Popen(command, pass_fds=(LOCK_FD,))
     os.ftruncate(fd, 0)
-    os.pwrite(fd, f"{os.getpid()}\n".encode(), 0)
-    try:
-        return subprocess.run(command).returncode  # close_fds: the lock stays here
-    except KeyboardInterrupt:
-        return 130
+    os.pwrite(fd, f"{child.pid}\n".encode(), 0)
+    while True:
+        try:
+            return child.wait()
+        except KeyboardInterrupt:
+            continue  # the child got the same SIGINT; its exit status is the answer
 
 
 if __name__ == "__main__":

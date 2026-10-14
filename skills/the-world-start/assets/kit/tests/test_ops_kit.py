@@ -186,7 +186,18 @@ with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "env-seen.jso
                "file_key": os.environ.get("STUB_FROM_FILE"), "path": os.environ["PATH"],
                "lock_env": os.environ.get("WORLD_OPS_LOCK_HELD")}, f)
 print("stub harness up", flush=True)
-time.sleep(120)
+if os.environ.get("STUB_ORPHAN_S"):
+    # A child that inherits stdout and outlives the harness, as an agent CLI can: the
+    # console writer gets no EOF until it exits.
+    import subprocess
+    child = subprocess.Popen(["sleep", os.environ["STUB_ORPHAN_S"]])
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "orphan.pid"), "w") as f:
+        f.write(str(child.pid))
+    signal.signal(signal.SIGTERM, lambda *_: os._exit(0))
+for n in range(1200):
+    if os.environ.get("STUB_CHATTY"):
+        print(f"tick {n}", flush=True)
+    time.sleep(0.1)
 """
 
 
@@ -202,6 +213,7 @@ def _read_rolled(logs: Path, stem: str, ext: str) -> list[str]:
     return lines
 
 
+@unittest.skipUnless(POSIX, "the console writer is POSIX only, like the scripts that start it")
 class ConsoleWriterTest(unittest.TestCase):
     """bin/ops-log.py: the console log's only writer, which rolls the file itself."""
 
@@ -270,8 +282,28 @@ class LauncherAndWatchdogTest(unittest.TestCase):
         self.watchdog = self.home / "scripts" / "stub-watchdog"
         self.state = self.home / "logs" / ".watchdog"
         self.addCleanup(self.kill_all)
+        self.addCleanup(lambda: (self.home / "env" / "harness.env").chmod(0o644)
+                        if (self.home / "env" / "harness.env").exists() else None)
+
+    def writers(self) -> list[str]:
+        match = "ops-log\\.py --file " + ops_kit.ere_escape(str(self.home / "logs" / "console.out"))
+        return subprocess.run(["pgrep", "-f", match], capture_output=True, text=True).stdout.split()
+
+    def lock_is_free(self) -> bool:
+        probe = subprocess.run([sys.executable, str(KIT / "bin" / "ops-lock.py"),
+                                str(self.state / "lock"), "--wait-s", "0", "--", "true"],
+                               capture_output=True)
+        return probe.returncode == 0
+
+    def kill_orphan(self):
+        pid_file = self.home / "orphan.pid"
+        if pid_file.exists():
+            subprocess.run(["kill", "-9", pid_file.read_text().strip()], capture_output=True)
 
     def kill_all(self):
+        self.kill_orphan()
+        for pid in self.writers():
+            subprocess.run(["kill", "-9", pid], capture_output=True)
         for _ in range(50):
             pids = self.pids()
             if not pids:
@@ -392,6 +424,147 @@ class LauncherAndWatchdogTest(unittest.TestCase):
         self.run_watchdog()
         self.assertEqual(len(self.pids()), 1, "the watchdog did not bring it back")
 
+    def test_nothing_started_in_the_background_holds_the_ops_lock(self):
+        self.assertEqual(self.run_up("up").returncode, 0)
+        self.assertEqual(len(self.writers()), 1)
+        self.assertTrue(self.lock_is_free(), "the harness or its writer inherited the lock")
+
+    def test_down_waits_for_a_draining_writer_so_up_never_makes_two(self):
+        self.assertEqual(self.run_up("up", env={"STUB_ORPHAN_S": "3"}).returncode, 0)
+        down = self.run_up("down", env={"WRITER_WAIT_S": "20"})
+        self.assertEqual(down.returncode, 0, down.stdout + down.stderr)
+        self.assertEqual(self.writers(), [], "down returned before the writer drained")
+        self.assertEqual(self.run_up("up").returncode, 0)
+        self.assertEqual(len(self.writers()), 1)
+
+    def test_a_writer_that_will_not_drain_fails_loudly_and_blocks_a_second(self):
+        self.assertEqual(self.run_up("up", env={"STUB_ORPHAN_S": "60"}).returncode, 0)
+        down = self.run_up("down", env={"WRITER_WAIT_S": "1"})
+        self.assertEqual(down.returncode, 1)
+        self.assertIn("console writer", down.stderr)
+        up = self.run_up("up", env={"WRITER_WAIT_S": "1"})
+        self.assertEqual(up.returncode, 1, up.stdout + up.stderr)
+        self.assertIn("console writer", up.stderr)
+        self.assertEqual(self.pids(), [])
+        self.assertEqual(len(self.writers()), 1)
+        self.kill_orphan()  # the orphan exits, the writer gets EOF and drains
+        up = self.run_up("up", env={"WRITER_WAIT_S": "10"})
+        self.assertEqual(up.returncode, 0, up.stdout + up.stderr)
+        self.assertEqual(len(self.writers()), 1)
+
+    def test_a_killed_lock_holder_still_keeps_a_second_up_out(self):
+        # env/harness.env as a FIFO parks the first `up` inside its critical section
+        # (reading the env keys, before it starts the harness) for as long as we like.
+        env_file = self.home / "env" / "harness.env"
+        env_file.unlink()
+        os.mkfifo(env_file)
+        first = subprocess.Popen([str(self.up), "up"], stdout=subprocess.PIPE,
+                                 stderr=subprocess.STDOUT, text=True)
+        time.sleep(1.5)
+        first.kill()  # SIGKILL the ops-lock process; its child shell is mid-way
+        first.wait()
+        second = subprocess.Popen([str(self.up), "up"], stdout=subprocess.PIPE,
+                                  stderr=subprocess.STDOUT, text=True)
+        time.sleep(1.5)
+        self.assertIsNone(second.poll(), "the second up got the lock while the first ran")
+        with open(env_file, "w") as fifo:  # let the first one go on
+            fifo.write("STUB_FROM_FILE=x\n")
+        out = second.communicate(timeout=60)[0]
+        self.assertIn("already running", out)
+        self.assertEqual(len(self.pids()), 1)
+
+    def test_a_killed_writer_is_reported_and_the_watchdog_restarts_the_harness(self):
+        self.assertEqual(self.run_up("up").returncode, 0)
+        before = self.pids()
+        subprocess.run(["kill", "-9", *self.writers()], check=True)
+        time.sleep(0.5)
+        self.assertEqual(self.pids(), before, "the harness should still be alive")
+        self.assertNotEqual(self.run_up("healthy").returncode, 0)
+        self.assertIn("UNHEALTHY", self.run_up("status").stdout)
+        self.run_watchdog()
+        self.assertEqual(self.run_up("healthy").returncode, 0)
+        self.assertNotEqual(self.pids(), before)
+        self.assertEqual(len(self.writers()), 1)
+        self.assertIn("console writer had died", (self.home / "logs" / "watchdog.log").read_text())
+
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root ignores file modes")
+    def test_a_write_failure_drops_lines_but_keeps_the_harness_alive(self):
+        self.assertEqual(self.run_up("up", env={"STUB_CHATTY": "1"}).returncode, 0)
+        console = self.home / "logs" / "console.out"
+        dropping = self.home / "logs" / ".console.out.dropping"
+        before = self.pids()
+        console.chmod(0o400)
+        try:
+            for _ in range(50):
+                if dropping.exists():
+                    break
+                time.sleep(0.1)
+            self.assertTrue(dropping.exists())
+            time.sleep(0.5)
+            self.assertEqual(self.pids(), before, "the harness died of its writer's failure")
+            self.assertEqual(len(self.writers()), 1)
+            self.assertIn("DROPPING", self.run_up("status").stdout)
+            self.run_watchdog()
+            self.assertIn("dropping lines", (self.home / "logs" / "watchdog.log").read_text())
+        finally:
+            console.chmod(0o644)
+        for _ in range(50):
+            if not dropping.exists():
+                break
+            time.sleep(0.1)
+        self.assertFalse(dropping.exists())
+        self.assertIn("were dropped", console.read_text(encoding="utf-8"))
+
+
+class LockAndRollOverlapTest(unittest.TestCase):
+    @unittest.skipUnless(POSIX, "flock")
+    def test_the_lock_outlives_a_killed_ops_lock_process(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            lock = Path(tmp) / "lock"
+            holder = subprocess.Popen([sys.executable, str(KIT / "bin" / "ops-lock.py"),
+                                       str(lock), "--", "sleep", "3"])
+            try:
+                time.sleep(0.5)
+                holder.kill()
+                holder.wait()
+                busy = subprocess.run([sys.executable, str(KIT / "bin" / "ops-lock.py"), str(lock),
+                                       "--wait-s", "0", "--", "true"], capture_output=True)
+                self.assertEqual(busy.returncode, 75, "the lock died with the parent")
+                free = subprocess.run([sys.executable, str(KIT / "bin" / "ops-lock.py"), str(lock),
+                                       "--wait-s", "10", "--", "true"], capture_output=True)
+                self.assertEqual(free.returncode, 0)
+            finally:
+                subprocess.run(["pkill", "-f", "^sleep 3$"], capture_output=True)
+
+    @unittest.skipUnless(POSIX, "flock")
+    def test_writers_rolling_one_file_keep_every_line_and_valid_gzips(self):
+        """An old console writer still draining while a new one starts. Without the roll
+        lock this loses about one line in eight here: one process renames and compresses
+        the file between another's open and its write."""
+        script = (
+            "import importlib.util, sys\n"
+            f"spec = importlib.util.spec_from_file_location('r', {str(KIT / 'world' / 'process' / 'runlog.py')!r})\n"
+            "r = importlib.util.module_from_spec(spec); spec.loader.exec_module(r)\n"
+            "from pathlib import Path\n"
+            "p = Path(sys.argv[1]); tag = sys.argv[2]; pad = 'x' * 400\n"
+            "for n in range(600):\n"
+            "    r.append(p, f'{tag} {n} {pad}\\n'.encode(), max_bytes=60000, log=lambda m: None)\n"
+            "    if n % 100 == 0: r.maybe_roll(p, max_bytes=60000, log=lambda m: None)\n"
+        )
+        tags = ("a", "b", "c", "d")
+        with tempfile.TemporaryDirectory() as tmp:
+            logs = Path(tmp)
+            path = logs / "console.out"
+            # a temp gzip left by a writer that died mid-compression
+            (logs / "console.2000-01-01.out.gz.99999.tmp").write_bytes(b"partial")
+            procs = [subprocess.Popen([sys.executable, "-c", script, str(path), tag]) for tag in tags]
+            for p in procs:
+                self.assertEqual(p.wait(timeout=120), 0)
+            self.assertEqual(list(logs.glob("*.tmp")), [])
+            lines = _read_rolled(logs, "console", ".out")  # raises on a corrupt gzip
+            for tag in tags:
+                mine = sorted(int(line.split()[1]) for line in lines if line.startswith(tag + " "))
+                self.assertEqual(mine, list(range(600)), tag)
 
 if __name__ == "__main__":
     unittest.main()

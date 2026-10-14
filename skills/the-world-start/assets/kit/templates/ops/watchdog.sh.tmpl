@@ -5,8 +5,9 @@
 # harness is not running and was not stopped on purpose (`{{NAME}}-up down`), start it
 # again. A harness that keeps dying is retried with exponential backoff,
 # {{BACKOFF_MIN_S}}s doubling to {{BACKOFF_MAX_S}}s, and the count resets once a round
-# finds it running. Everything it does goes to logs/watchdog.log{{NOTIFY_NOTE}}. The
-# console log is not touched here; its writer rolls it (bin/ops-log.py).
+# finds it running. A harness running without its console writer is restarted. Everything
+# it does goes to logs/watchdog.log{{NOTIFY_NOTE}}. The console log is not touched here;
+# its writer rolls it (bin/ops-log.py).
 #
 # Rendered by bin/ops-kit.py from the kit's templates/ops/. Re-render rather than edit.
 set -uo pipefail
@@ -48,7 +49,28 @@ notify() {
 "$PY" "$HOME_DIR/bin/ops-log.py" --file "$LOG" --roll-only ${KEEP_DAYS:+--keep-days "$KEEP_DAYS"} \
   2>>"$LOGS/ops-log.err"
 
+# Lines the console writer could not write (a full disk, a read-only file): restarting
+# would not help, so say it once each time it starts happening.
+if [ -f "$LOGS/.console.out.dropping" ]; then
+  if [ ! -f "$STATE/reported-dropping" ]; then
+    notify "the console writer is dropping lines: $(cat "$LOGS/.console.out.dropping")"
+    touch "$STATE/reported-dropping"
+  fi
+else
+  rm -f "$STATE/reported-dropping"
+fi
+
 if "$UP" running; then
+  # Running without its console writer: the harness's next line of output fails with
+  # EPIPE and kills it at a moment nobody chose, so restart it now instead.
+  if ! "$UP" healthy && [ ! -f "$STATE/down" ]; then
+    if "$UP" recycle >>"$LOG" 2>&1; then
+      notify "its console writer had died; restarted the harness before its output could kill it"
+    else
+      notify "its console writer had died and restarting the harness failed; see $LOG"
+    fi
+    exit 0
+  fi
   if [ -f "$STATE/failures" ]; then
     log "running again after $(cat "$STATE/failures") restart(s)"
     rm -f "$STATE/failures" "$STATE/next_try"

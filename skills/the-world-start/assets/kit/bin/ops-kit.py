@@ -9,8 +9,9 @@ The kit sets up no service: a harness runs while `harness.py` runs and a reboot 
 This is for a harness that has to outlive that. It WRITES files only; it never loads,
 enables or starts anything. What it writes, under the harness's own `scripts/`:
 
-  scripts/<name>-up               up | down | restart | status | running | attach | resume
-  scripts/<name>-watchdog         one round: restart the harness if it died
+  scripts/<name>-up               up | down | restart | status | running | healthy | attach
+  scripts/<name>-watchdog         one round: restart the harness if it died or lost its
+                                  console writer
   scripts/launchd/<label>.plist   macOS: run the watchdog every 120s and at login
   scripts/systemd/<name>-watchdog.service, .timer   Linux: the same as a user timer
 
