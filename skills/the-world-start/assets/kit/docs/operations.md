@@ -5,8 +5,8 @@ closed terminal or a crash stops it until someone starts it again. That stays th
 default: a service the user never asked for is a process they don't know to look for.
 
 A harness with a morning briefing or a poll usually needs to outlive that the week it
-starts working. `bin/ops-kit.py` renders what two harnesses had each built by hand for
-that, into the harness's own `scripts/`. It writes files and prints commands. It never
+starts working. `bin/ops-kit.py` renders a launcher and a watchdog for that, into the
+harness's own `scripts/`. It writes files and prints commands. It never
 loads, enables or starts anything.
 
 ```bash
