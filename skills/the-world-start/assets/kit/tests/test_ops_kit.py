@@ -154,6 +154,20 @@ class RenderTest(unittest.TestCase):
         self.assertFalse(re.match(pattern, f'notepad.exe "{harness}"', re.I))
         self.assertFalse(re.match(pattern, f'"{venv}" "{harness}.bak"', re.I))
 
+    def test_windows_process_match_skips_the_writer_in_a_home_without_spaces(self):
+        """CI's temp dir has no space, so nothing is quoted: the console writer's command
+        line then ended in `python.exe ...harness.py` and counted as a second harness."""
+        import re
+        from pathlib import PureWindowsPath
+        home = PureWindowsPath(r"C:\Users\runner\AppData\Local\Temp\tmp1\stub")
+        pattern = ops_kit.windows_process_match(home)
+        venv, harness = home / ".venv" / "Scripts" / "python.exe", home / "harness.py"
+        base = r"C:\hostedtoolcache\Python\3.12.10\x64\python.exe"
+        writer = f"{venv} {home}\\bin\\ops-log.py --file {home}\\logs\\console.out --run -- {venv} {harness}"
+        self.assertFalse(re.match(pattern, writer, re.I))
+        self.assertTrue(re.match(pattern, f"{venv} {harness}", re.I))
+        self.assertTrue(re.match(pattern, f'"{base}" {harness}', re.I))
+
     def test_a_profile_for_another_os_is_refused(self):
         with self.assertRaisesRegex(ops_kit.OpsKitError, "this machine is windows"):
             ops_kit.check_host("linux", "windows")
@@ -802,7 +816,7 @@ class WindowsLauncherTest(unittest.TestCase):
         started = self.run_up("up", env={"ANTHROPIC_API_KEY": "sk-shell",
                                          "STUB_FROM_FILE": "stale-shell-value"})
         self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
-        self.assertEqual(len(self.pids()), 1)
+        self.assertEqual(len(self.pids()), 1, self.processes())
         self.assertEqual(len(self.writers()), 1)
         seen = json.loads((self.home / "env-seen.json").read_text(encoding="utf-8"))
         self.assertIsNone(seen["api_key"])
@@ -815,7 +829,7 @@ class WindowsLauncherTest(unittest.TestCase):
         again = self.run_up("up")
         self.assertEqual(again.returncode, 0, again.stdout + again.stderr)
         self.assertIn("already running", again.stdout)
-        self.assertEqual(len(self.pids()), 1)
+        self.assertEqual(len(self.pids()), 1, self.processes())
         self.assertEqual(self.run_up("running").returncode, 0)
         self.assertEqual(self.run_up("healthy").returncode, 0)
         self.assertIn("console writer: running", self.run_up("status").stdout)
@@ -866,7 +880,7 @@ class WindowsLauncherTest(unittest.TestCase):
                                   errors="replace") for _ in range(4)]
         outputs = [p.communicate(timeout=300)[0] for p in procs]
         self.assertTrue(all(p.returncode == 0 for p in procs), outputs)
-        self.assertEqual(len(self.pids()), 1, outputs)
+        self.assertEqual(len(self.pids()), 1, (outputs, self.processes()))
         self.assertEqual(sum("started" in o for o in outputs), 1, outputs)
         self.assertEqual(self.run_up("down").returncode, 0)
 

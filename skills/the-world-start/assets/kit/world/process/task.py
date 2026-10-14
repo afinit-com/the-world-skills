@@ -108,6 +108,24 @@ def new_task_id(now: datetime.datetime | None = None) -> str:
     return f"{now.strftime('%Y%m%d')}-{secrets.token_hex(2)}"
 
 
+def _claim_task_dir(home: Path, now: datetime.datetime | None = None) -> str:
+    """A fresh id whose directory this call created. The suffix is 16 random bits, so two
+    tasks of one day share an id often enough to matter (about 7% of days with 100
+    tasks), and creating the directory with exist_ok wrote the second task over the
+    first: one of them was gone without a word. mkdir without exist_ok is atomic, so
+    another process filing a task at the same moment cannot take the same one either."""
+    root = tasks_dir(home)
+    root.mkdir(parents=True, exist_ok=True)
+    for _ in range(1000):
+        task_id = new_task_id(now)
+        try:
+            (root / task_id).mkdir()
+        except FileExistsError:
+            continue
+        return task_id
+    raise TaskError(f"no free task id left for {task_id[:8]} after 1000 tries")
+
+
 # --- the record ---------------------------------------------------------------
 
 
@@ -455,25 +473,30 @@ def create(
     if raw is not None and not origin.source_hash:
         origin = replace(origin, source_hash=f"sha256:{sha256(raw).hexdigest()}")
 
-    task = Task(
-        id=new_task_id(now),
-        type=type,
-        title=title,
-        slug=slug,
-        origin=origin,
-        # An explicit retry_budget wins over the type's default: passing both used to
-        # be a TypeError rather than an override, which is a poor way to learn that
-        # the caller and the type disagree.
-        retry_budget=fields.pop("retry_budget", task_type.retry_budget if task_type else 3),
-        created=stamp,
-        updated=stamp,
-        body=body,
-        **fields,
-    )
-    task.validate()
+    task_id = _claim_task_dir(home, now)
+    try:
+        task = Task(
+            id=task_id,
+            type=type,
+            title=title,
+            slug=slug,
+            origin=origin,
+            # An explicit retry_budget wins over the type's default: passing both used to
+            # be a TypeError rather than an override, which is a poor way to learn that
+            # the caller and the type disagree.
+            retry_budget=fields.pop("retry_budget", task_type.retry_budget if task_type else 3),
+            created=stamp,
+            updated=stamp,
+            body=body,
+            **fields,
+        )
+        task.validate()
+    except Exception:
+        (tasks_dir(home) / task_id).rmdir()  # still empty: nothing was written yet
+        raise
 
     directory = tasks_dir(home) / task.dirname
-    (directory / "work").mkdir(parents=True, exist_ok=True)
+    (directory / "work").mkdir(exist_ok=True)
     if raw is not None:
         (directory / "source").mkdir(exist_ok=True)
         (directory / "source" / source_name).write_bytes(raw)

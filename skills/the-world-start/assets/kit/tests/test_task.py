@@ -4,6 +4,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from world.process import task as tasks
 
@@ -19,6 +20,23 @@ def _make(home: Path, **kwargs) -> tasks.Task:
 
 
 class RecordTests(unittest.TestCase):
+    def test_a_colliding_id_gets_a_fresh_one_instead_of_overwriting(self) -> None:
+        """Ids carry 16 random bits. Two tasks drawing the same one used to share a
+        directory, and the second task.md replaced the first without a word."""
+        home = _home()
+        draws = iter(["abcd", "abcd", "beef"])
+        with patch.object(tasks.secrets, "token_hex", side_effect=lambda _n: next(draws)):
+            first = _make(home, slug="first")
+            second = _make(home, slug="second")
+        self.assertNotEqual(first.id, second.id)
+        self.assertEqual({"first", "second"}, {t.slug for t in tasks.list_tasks(home)})
+
+    def test_an_invalid_task_leaves_no_directory_behind(self) -> None:
+        home = _home()
+        with self.assertRaises(tasks.TaskError):
+            _make(home, origin=tasks.Origin(kind="nobody"))
+        self.assertEqual([], list(tasks.tasks_dir(home).iterdir()))
+
     def test_roundtrip_preserves_unicode_lists_and_nested_groups(self) -> None:
         home = _home()
         made = _make(

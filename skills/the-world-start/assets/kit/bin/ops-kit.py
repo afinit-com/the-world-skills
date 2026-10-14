@@ -87,9 +87,16 @@ def windows_process_match(home: Path) -> str:
     """The Windows counterpart of process_match, for PowerShell's -match on a process's
     command line: a python interpreter, quoted or not, whose first argument is this
     harness.py. ops-log.py, which starts the harness, carries the path later in its
-    command line and so does not match."""
+    command line and so does not match.
+
+    An unquoted program path cannot hold whitespace (it would have been quoted), and the
+    pattern says so. Without that, in a home with no space in its path, `[^"]*\\` ran
+    across the console writer's whole unquoted command line to the `python.exe
+    ...harness.py` at its end, and the writer counted as a second harness."""
     harness = dotnet_regex_escape(str(home / "harness.py"))
-    return rf'^"?(?:[^"]*\\)?pythonw?[0-9.]*(?:\.exe)?"?\s+"?{harness}"?(?:\s|$)'
+    exe = r'pythonw?[0-9.]*(?:\.exe)?'
+    return (rf'^(?:"(?:[^"]*\\)?{exe}"|(?:[^"\s]*\\)?{exe})'
+            rf'\s+"?{harness}"?(?:\s|$)')
 
 
 def ps_quote(text: str) -> str:
