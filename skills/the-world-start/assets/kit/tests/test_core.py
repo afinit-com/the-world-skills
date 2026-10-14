@@ -544,6 +544,33 @@ class HandoffTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("turn_running", listener.state["threads"]["t1"])
 
 
+class PersonaChatIconTests(unittest.TestCase):
+    def test_icon_url_first_then_a_url_portrait_never_a_local_file(self) -> None:
+        from world.types import Persona
+
+        self.assertEqual("https://x.test/i.png",
+                         Persona("a", "A", portrait="https://x.test/p.png",
+                                 icon_url="https://x.test/i.png").chat_icon)
+        self.assertEqual("https://x.test/p.png",
+                         Persona("a", "A", portrait="https://x.test/p.png").chat_icon)
+        self.assertEqual("", Persona("a", "A", portrait="portraits/a.png").chat_icon)
+        self.assertEqual("https://x.test/p.png",
+                         Persona("a", "A", portrait="https://x.test/p.png", icon_url=None).chat_icon)
+        self.assertEqual("", Persona("a", "A", icon_url=None).icon_url)
+
+    def test_an_icon_url_that_is_not_a_url_is_refused_whatever_the_portrait(self) -> None:
+        from world.types import Persona
+
+        for portrait in ("portraits/a.png", "https://x.test/p.png"):
+            with self.subTest(portrait=portrait):
+                with self.assertRaisesRegex(ValueError, r"persona 'a': icon_url must be a public http"):
+                    Persona("a", "A", portrait=portrait, icon_url="icons/a.png")
+        persona = Persona("a", "A", portrait="https://x.test/p.png")
+        persona.icon_url = "icons/a.png"
+        with self.assertRaises(ValueError):
+            persona.chat_icon
+
+
 class PersonaFaceTests(unittest.TestCase):
     def _poster(self):
         from world.slack.post import PostingMixin
@@ -556,8 +583,19 @@ class PersonaFaceTests(unittest.TestCase):
             "lumen": Persona(key="lumen", display="Lumen", portrait="https://x.test/lumen.png"),
             "ember": Persona(key="ember", display="Ember", portrait="art/ember.png"),
             "own": Persona(key="own", display="Own", bot_token_env="T_OWN_TOKEN"),
+            "beacon": Persona(key="beacon", display="Beacon", portrait="portraits/beacon.png",
+                             icon_url="https://x.test/beacon-icon.png"),
         })
         return poster
+
+    def test_icon_url_is_the_chat_icon_and_wins_over_a_url_portrait(self) -> None:
+        # Issue #1: a local portrait for the map and an icon URL for Slack, together.
+        poster = self._poster()
+        self.assertEqual({"username": "Beacon", "icon_url": "https://x.test/beacon-icon.png"},
+                         poster._face("beacon"))
+        lumen = poster.harness.personas["lumen"]
+        lumen.icon_url = "https://x.test/lumen-icon.png"
+        self.assertEqual("https://x.test/lumen-icon.png", poster._face("lumen")["icon_url"])
 
     def test_a_persona_without_its_own_app_posts_under_its_name_and_icon(self) -> None:
         poster = self._poster()

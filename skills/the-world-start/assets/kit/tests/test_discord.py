@@ -144,7 +144,9 @@ class GatewayCase(unittest.IsolatedAsyncioTestCase):
             main_persona=Persona(key="main", display="Main"),
             extra_personas=[Persona(key="scout", display="Scout",
                                     portrait="https://example.test/scout.png"),
-                            Persona(key="keeper", display="Keeper", portrait="art/keeper.png")],
+                            Persona(key="keeper", display="Keeper", portrait="art/keeper.png"),
+                            Persona(key="beacon", display="Beacon", portrait="art/beacon.png",
+                                    icon_url="https://example.test/beacon-icon.png")],
             discord=DiscordConfig(bot_token_env="T_DISCORD_TOKEN",
                                   channel_env="T_DISCORD_CHANNEL",
                                   approver_env="T_DISCORD_APPROVER"),
@@ -293,6 +295,11 @@ class AnnounceTests(GatewayCase):
         await self.gw.post("hello", identity="keeper")
         await self.gw.post("hello", identity="nobody")
         self.assertEqual([("Keeper", ""), None], [s["as"] for s in self.transport.sent])
+
+    async def test_icon_url_is_the_avatar_beside_a_local_portrait(self) -> None:
+        await self.gw.post("hello", identity="beacon")
+        self.assertEqual(("Beacon", "https://example.test/beacon-icon.png"),
+                         self.transport.sent[0]["as"])
 
 
 class VoiceTests(GatewayCase):

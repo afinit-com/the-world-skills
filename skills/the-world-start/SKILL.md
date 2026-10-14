@@ -298,10 +298,27 @@ approver, and nothing about the Slack plan: one app serves every persona, so the
 plan's app limit never matters. Say in one line that on a free plan messages vanish past 90
 days, and keep anything that must outlive that in a file rather than a thread. One Slack app serves every
 persona: it is the main persona, and the others post through it under their own name and
-`Persona.portrait` icon (an http(s) URL) with `chat:write.customize`, so a free plan's
-10-app limit never counts personas. Give a persona its own app (`bot_token_env`) only when
-the user wants it to have its own Slack profile. Real tokens go in `env/harness.env`, never
-a committed file.
+icon with `chat:write.customize`, so a free plan's 10-app limit never counts personas. Give
+a persona its own app (`bot_token_env`) only when the user wants it to have its own Slack
+profile. Real tokens go in `env/harness.env`, never a committed file.
+
+A persona has two picture fields, read by different places. `Persona.portrait` is a local
+image file inside the harness (PNG/JPEG/WebP, 2 MB or less) that the world map embeds;
+`Persona.icon_url` is a public http(s) image URL that Slack and Discord show beside the
+persona's messages. A harness written before `icon_url` existed may hold that URL in
+`portrait`: chat still uses it when `icon_url` is empty, and the world map draws a name card
+for it and prints a warning, so move it to `icon_url`.
+
+Say what a persona without its own app is, before the user finds out. Its messages go
+through `chat.postMessage` with `username` and `icon_url` (Slack also takes `icon_emoji`;
+the kit does not send it). It is not a Slack account: nobody can @-mention it, and clicking
+its name opens the main app's profile. A message's name and icon cannot be changed with
+`chat.update` once it is posted, so messages sent before the icon was set keep the main
+app's icon. The icon must be a public URL. A file uploaded to a Slack channel is not one,
+because it needs a workspace login. Use a custom emoji's image (`emoji.slack-edge.com`) or
+public image hosting. An existing Slack app's avatar (`avatars.slack-edge.com`) also works;
+one stayed reachable right after its app was deleted, but nothing guarantees it stays
+that way, so prefer the other two for anything meant to last.
 
 People in a dedicated channel often just type, without an @-mention, and read the
 silence as a broken bot. Ask whether the harness's channel is its own. If it is, offer
@@ -316,8 +333,7 @@ app). Fill `team`: without it the CLI asks which workspace, and a shell with no 
 (yours, or the user's `!`) cannot answer. Slack accepts any script in the app name but only
 ASCII letters, digits, `.`, `_` and `-` in the bot user's name. When the display name is not
 ASCII, the main app's bot is named after the prefix (`@lighthouse`), and a persona with its
-own app `<prefix>-<key>`; set `bot_username` on the entry to choose another. A `Persona.portrait` must be a public https image URL. A file uploaded
-to a Slack channel is not one, because it needs a workspace login. Then have the user run
+own app `<prefix>-<key>`; set `bot_username` on the entry to choose another. Then have the user run
 `uv run python bin/slack-provision.py` in their own terminal, since the CLI may ask which
 workspace or whether to request admin approval. It needs `slack` installed and one
 `slack login`, creates and installs the app from the manifest template with no browser

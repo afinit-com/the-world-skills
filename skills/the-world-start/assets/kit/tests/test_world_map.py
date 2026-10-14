@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import sys
 import tempfile
@@ -85,6 +86,29 @@ class WorldMapTests(unittest.TestCase):
         self.scout.portrait = "../outside.png"
         with self.assertRaises(ValueError):
             world_map_data(self.harness)
+
+    def test_a_url_portrait_falls_back_to_the_name_card_loudly(self):
+        # Issue #1: harnesses older than icon_url put the Slack icon URL in portrait.
+        self.scout.portrait = "https://x.test/scout.png"
+        with patch("sys.stderr", new_callable=io.StringIO) as err:
+            data = world_map_data(self.harness)
+        self.assertEqual("", data["characters"][1]["portrait"])
+        self.assertIn("scout", err.getvalue())
+        self.assertIn("icon_url", err.getvalue())
+
+    def test_local_portrait_and_icon_url_together_export(self):
+        (self.home / "portraits").mkdir()
+        (self.home / "portraits" / "scout.png").write_bytes(b"example image bytes")
+        self.scout.portrait = "portraits/scout.png"
+        self.scout.icon_url = "https://x.test/scout-icon.png"
+        with patch.object(sys, "argv", ["harness.py", "--world-map"]), patch(
+            "world.harness.asyncio.run", side_effect=AssertionError("Runtime must not start")
+        ), patch("sys.stderr", new_callable=io.StringIO) as err:
+            self.harness.main()
+        self.assertEqual("", err.getvalue())
+        output = (self.home / "WORLD.html").read_text()
+        self.assertIn("data:image/png;base64,", output)
+        self.assertNotIn("scout-icon.png", output)
 
     def test_cli_exports_without_starting_runtime(self):
         with patch.object(sys, "argv", ["harness.py", "--world-map"]), patch(
