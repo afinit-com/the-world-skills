@@ -21,9 +21,24 @@ def _names(tools) -> str:
 
 
 def _channel(harness) -> str:
+    """The channel the harness will run, chosen the way Harness._main_async chooses it: an
+    explicit `channel=` gateway first. Classes are matched by name so that reading the
+    plan never imports a channel SDK."""
+    gateway = getattr(harness, "channel", None)
+    if gateway is not None:
+        names = {cls.__name__ for cls in type(gateway).__mro__}
+        if "NullGateway" in names:
+            return "none"
+        if names & {"SlackGateway", "SlackListener"}:
+            return "slack"
+        if "DiscordGateway" in names:
+            return "discord"
+        return "unknown"
+    if CHANNEL == "none":
+        return "none"
     if getattr(harness, "discord", None) is not None:
         return "discord"
-    return "none" if CHANNEL == "none" else "slack"
+    return "slack"
 
 
 def _env(name: str | None, value: str | None) -> str:
@@ -78,8 +93,13 @@ def verify_plan(harness) -> str:
 
     out += ["", "## 4. A real thread"]
     if channel == "none":
-        out.append("- this harness has no conversation channel (`--channel none`); "
-                   "step 4 does not apply, and the report says so")
+        out.append("- this harness runs poll-only (no channel installed, or a NullGateway "
+                   "passed as `channel=`); step 4 does not apply, and the report says so")
+    elif channel == "unknown":
+        gateway = type(harness.channel).__name__
+        out.append(f"- `channel=` is a `{gateway}`, which this plan does not know; check "
+                   "the lines below in its thread if it has one, and report the ones that "
+                   "could not be checked as not confirmed")
     elif channel == "discord":
         out.append("- Discord is experimental (docs/discord.md); check the same lines "
                    "below in its thread and say which could not be checked")
@@ -92,9 +112,15 @@ def verify_plan(harness) -> str:
                 out.append("- the channel is not set, so this step cannot run yet")
         out.append(f"- [ ] {main.display} (`{main.key}`) answers a mention in the thread")
         for p in subs:
-            how = (f"its own app (`{p.bot_token_env}`)" if p.bot_token_env else
-                   "the main app with `chat:write.customize` (without it, the post "
-                   "shows the main app's name)")
+            # Same test as PostingMixin._face: a token, not the variable's name, decides.
+            # Only whether it is set is read; the value is never printed.
+            if p.token:
+                how = f"its own app (`{p.bot_token_env}`)"
+            else:
+                how = ("the main app with `chat:write.customize` (without it, the post "
+                       "shows the main app's name)")
+                if p.bot_token_env:
+                    how += f"; `{p.bot_token_env}` is not set, so it falls back to the main app"
             icon = "its portrait" if p.portrait else "no portrait set (the main app's icon)"
             out.append(f"- [ ] {p.display} (`{p.key}`) posts under its own name, "
                        f"{icon} and voice, through {how}")

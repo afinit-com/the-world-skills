@@ -8,8 +8,10 @@ real thread. These pin the helper's contract and what the plan has to name.
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import contextlib
+import inspect
 import io
 import os
 import subprocess
@@ -21,24 +23,29 @@ from unittest import mock
 
 from world import Agent, Harness, MentionTrigger, Persona, PollTrigger, SlackConfig, ToolSpec
 from world.toolkit import result
-from world.tool_check import FakeListener, bind, call, text
+from world.tool_check import FakeListener, bind, call, refuses, text
 from world.verify_plan import verify_plan
 
 KIT = Path(__file__).resolve().parents[1]
 ALLOWED_HOST = "github.com"
+WRITES: list = []  # what gh_write really did; a boundary check must leave it empty
 
 
-def comment_factory(writes: list):
+def gh_write(url: str) -> None:
+    """The outward call a comment tool writes through. Never stubbed means really written."""
+    WRITES.append(url)
+
+
+def comment_factory(check_host: bool = True):
     """The shape issue #2 describes: a thread-bound write tool whose own code refuses
-    another host. `writes` stands in for the outward call."""
+    another host. `check_host=False` is the same tool with that boundary broken."""
 
     async def factory(listener, thread_ts):
         async def handler(args):
-            if not args["url"].startswith(f"https://{ALLOWED_HOST}/"):
+            if check_host and not args["url"].startswith(f"https://{ALLOWED_HOST}/"):
                 return result(1, "refused: only github.com")
-            writes.append((thread_ts, args["url"]))
+            gh_write(args["url"])
             await listener.post(f"commented on {args['url']}", thread_ts=thread_ts)
-            listener.state.setdefault("comments", []).append(args["url"])
             listener.save_state()
             return result(0, "commented")
 
@@ -47,22 +54,57 @@ def comment_factory(writes: list):
     return factory
 
 
+def posting_mixin_post_params() -> list[tuple]:
+    """PostingMixin.post's parameters, read from source so this runs without slack_sdk."""
+    tree = ast.parse((KIT / "world/slack/post.py").read_text(encoding="utf-8"))
+    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "PostingMixin")
+    fn = next(n for n in cls.body if isinstance(n, ast.AsyncFunctionDef) and n.name == "post")
+    params = [(a.arg, "positional", None) for a in fn.args.args]
+    params += [(a.arg, "keyword", ast.literal_eval(d))
+               for a, d in zip(fn.args.kwonlyargs, fn.args.kw_defaults)]
+    return params
+
+
 class FakeListenerTests(unittest.TestCase):
-    def test_factory_is_bound_to_the_thread_and_refusal_writes_nothing(self) -> None:
-        writes: list = []
+    def setUp(self) -> None:
+        WRITES.clear()
+        self.outward = [(sys.modules[__name__], "gh_write")]
+
+    def test_a_refusal_is_checked_with_the_outward_call_stubbed(self) -> None:
         listener = FakeListener()
-        tools = asyncio.run(bind(comment_factory(writes), listener, "1700000000.000100"))
-
-        refused = asyncio.run(call(tools, "pr_comment", {"url": "https://evil.example/pull/1"}))
-        self.assertTrue(refused["is_error"])
+        tools = asyncio.run(bind(comment_factory(), listener, "1700000000.000100"))
+        refused = asyncio.run(refuses(tools, "pr_comment", {"url": "https://evil.example/p/1"},
+                                      outward=self.outward))
         self.assertIn("only github.com", text(refused))
-        self.assertEqual(([], [], 0), (writes, listener.posted, listener.saves))
+        self.assertEqual(([], [], 0), (WRITES, listener.posted, listener.saves))
 
-        done = asyncio.run(call(tools, "pr_comment", {"url": "https://github.com/a/b/pull/1"}))
-        self.assertFalse(done["is_error"])
-        self.assertEqual([("1700000000.000100", "https://github.com/a/b/pull/1")], writes)
-        self.assertEqual("1700000000.000100", listener.posted[0]["thread_ts"])
-        self.assertEqual(1, listener.saves)
+    def test_an_open_boundary_fails_the_check_and_writes_nothing(self) -> None:
+        # Review of #2: the first version ran the real write when a boundary was open, so
+        # the check itself could comment or merge. Now it fails with the write stubbed.
+        tools = asyncio.run(bind(comment_factory(check_host=False), FakeListener(), "1.1"))
+        with self.assertRaises(AssertionError) as caught:
+            asyncio.run(refuses(tools, "pr_comment", {"url": "https://evil.example/p/1"},
+                                outward=self.outward))
+        self.assertIn("boundary is open", str(caught.exception))
+        self.assertEqual([], WRITES)
+
+    def test_a_write_check_will_not_run_without_a_stub(self) -> None:
+        tools = asyncio.run(bind(comment_factory(), FakeListener(), "1.1"))
+        with self.assertRaises(ValueError):
+            asyncio.run(refuses(tools, "pr_comment", {"url": "https://evil.example/p/1"},
+                                outward=[]))
+        with self.assertRaises(TypeError):  # call() has no default for outward either
+            asyncio.run(call(tools, "pr_comment", {"url": "https://evil.example/p/1"}))
+        self.assertEqual([], WRITES)
+
+    def test_an_accepted_input_fails_refuses(self) -> None:
+        async def handler(_args):
+            return {"content": [{"type": "text", "text": "fine"}], "is_error": False}
+
+        tools = [ToolSpec("read", "Read", {}, handler)]
+        with self.assertRaises(AssertionError) as caught:
+            asyncio.run(refuses(tools, "read", {}, outward=self.outward))
+        self.assertIn("accepted", str(caught.exception))
 
     def test_a_list_is_returned_as_is_and_a_missing_tool_is_an_error(self) -> None:
         async def handler(_args):
@@ -71,10 +113,21 @@ class FakeListenerTests(unittest.TestCase):
         spec = ToolSpec("read", "Read", {}, handler)
         tools = asyncio.run(bind([spec], FakeListener(), "1.1"))
         self.assertEqual([spec], tools)
-        self.assertEqual("x", text(asyncio.run(call(tools, "read", {}))))
+        self.assertEqual("x", text(asyncio.run(call(tools, "read", {}, outward=()))))
         with self.assertRaises(LookupError) as caught:
-            asyncio.run(call(tools, "write", {}))
+            asyncio.run(call(tools, "write", {}, outward=()))
         self.assertIn("read", str(caught.exception))
+
+    def test_post_takes_exactly_the_real_listeners_arguments(self) -> None:
+        # Review of #2: **kwargs let `thread_id=` through here and a TypeError in Slack.
+        fake = [(name, "positional" if p.kind is p.POSITIONAL_OR_KEYWORD else "keyword",
+                 None if p.default is p.empty else p.default)
+                for name, p in inspect.signature(FakeListener.post).parameters.items()]
+        self.assertEqual(posting_mixin_post_params(), fake)
+        listener = FakeListener()
+        with self.assertRaises(TypeError):
+            asyncio.run(listener.post("hi", thread_id="1.1"))
+        self.assertEqual([], listener.posted)
 
     def test_a_failing_factory_fails_the_check_instead_of_yielding_no_tools(self) -> None:
         # The listener turns a raising factory into "no tools this turn". A check that did
@@ -141,13 +194,51 @@ class VerifyPlanTests(unittest.TestCase):
 
     def test_a_set_channel_is_shown_and_an_own_app_needs_no_customize_scope(self) -> None:
         self.reviewer.bot_token_env = "REVIEWER_BOT_TOKEN"
-        with mock.patch.dict(os.environ, {"SLACK_CHANNEL": "C0123", "APPROVER_SLACK_ID": "U9"}):
+        with mock.patch.dict(os.environ, {"SLACK_CHANNEL": "C0123", "APPROVER_SLACK_ID": "U9",
+                                          "REVIEWER_BOT_TOKEN": "xoxb-reviewer-secret"}):
             plan = verify_plan(self.harness)
+        self.assertNotIn("xoxb-reviewer-secret", plan)
         self.assertIn("`C0123` (`SLACK_CHANNEL`)", plan)
         self.assertIn("`U9` (`APPROVER_SLACK_ID`)", plan)
         self.assertNotIn("cannot run yet", plan)
         self.assertIn("its own app (`REVIEWER_BOT_TOKEN`)", plan)
         self.assertNotIn("chat:write.customize", plan)
+
+    def test_a_named_but_unset_token_falls_back_to_the_main_app(self) -> None:
+        # Review of #2: the variable's name alone was read as "own app", but the runtime
+        # (PostingMixin._face) posts through the main app whenever the token is missing.
+        self.reviewer.bot_token_env = "REVIEWER_BOT_TOKEN"
+        os.environ.pop("REVIEWER_BOT_TOKEN", None)
+        plan = verify_plan(self.harness)
+        self.assertNotIn("its own app", plan)
+        self.assertIn("chat:write.customize", plan)
+        self.assertIn("`REVIEWER_BOT_TOKEN` is not set, so it falls back to the main app", plan)
+
+    def test_an_explicit_gateway_decides_the_channel_like_the_runtime(self) -> None:
+        # Review of #2: Harness.channel wins at runtime, but the plan ignored it and asked
+        # a poll-only harness for a Slack thread.
+        from world.channels import NullGateway
+
+        self.harness.channel = NullGateway()
+        plan = verify_plan(self.harness)
+        self.assertIn("step 4 does not apply", plan)
+        self.assertNotIn("SLACK_CHANNEL", plan)
+        self.assertNotIn("approval card", plan)
+
+        class HomeGrownGateway:
+            enabled = True
+
+        self.harness.channel = HomeGrownGateway()
+        plan = verify_plan(self.harness)
+        self.assertIn("`HomeGrownGateway`, which this plan does not know", plan)
+        self.assertIn("not confirmed", plan)
+        self.assertNotIn("SLACK_CHANNEL", plan)
+
+        class SlackGateway:  # matched by name, so the plan never imports slack_sdk
+            pass
+
+        self.harness.channel = SlackGateway()
+        self.assertIn("`SLACK_CHANNEL` is not set", verify_plan(self.harness))
 
     def test_a_channel_less_harness_says_the_thread_step_does_not_apply(self) -> None:
         with mock.patch("world.verify_plan.CHANNEL", "none"):
@@ -172,8 +263,11 @@ class VerifyDocTests(unittest.TestCase):
         for line in ("Never press an approve or deny button",
                      "Send a new message only when the person you are working with allowed it",
                      "only a request that leaves nothing outside Slack",
-                     "uv run python harness.py --verify-plan", "world.tool_check"):
+                     "uv run python harness.py --verify-plan", "world.tool_check",
+                     "a boundary check never lets a write tool reach the outside",
+                     "outward=["):
             self.assertIn(line, doc)
+        self.assertNotIn("where it landed", doc)  # an open boundary must not have written
         legacy = " ".join((KIT / ".claude/the-world/verify.md").read_text().split())
         self.assertIn("docs/verify.md", legacy)
         self.assertIn("never press an approve or deny button", legacy)

@@ -35,14 +35,14 @@ listener whose `post` and `save_state` reach nothing:
 ```python
 import asyncio
 
-from world.tool_check import FakeListener, bind, call, text
+from world.tool_check import FakeListener, bind, refuses, text
 from abilities.reviewer.persona import PERSONA   # wherever the persona is declared
 
 async def main():
     listener = FakeListener(state={})
     tools = await bind(PERSONA.mention_tools, listener, "1700000000.000100")
-    refused = await call(tools, "pr_comment", {"url": "https://example.com/x/y/pull/1"})
-    assert refused["is_error"], refused
+    refused = await refuses(tools, "pr_comment", {"url": "https://example.com/x/y/pull/1"},
+                            outward=["tools.github.gh_write"])   # the function that writes
     print("other host refused:", text(refused))
 
 asyncio.run(main())
@@ -50,12 +50,13 @@ asyncio.run(main())
 
 Keep a script like this in the harness's own `tests/` so the next change runs it too.
 
-The fake stands in for Slack, not for the tool. A tool handler runs for real, so a write
-tool called on a path it fails to refuse performs the write. Call write tools only on
-paths they must refuse, read the outside world rather than write to it, or fake the
-outward call (`unittest.mock`, as the kit's `tests/test_integration_recipes.py` does). If
-a boundary turns out to be open, the write it let through is a finding: report it with
-where it landed.
+The fake stands in for Slack, not for the tool: the handler runs for real. So a boundary
+check never lets a write tool reach the outside. Name the function the tool writes
+through (`gh`, an HTTP post, `subprocess.run`) in `outward`. `refuses` stubs each one for
+the call and fails if any was reached, even when the tool then reported an error, and it
+will not run with none named. An open boundary then shows up as a failed check with
+nothing written. If the tool has no single function to stub, that is worth fixing in the
+tool before checking it.
 
 `bind` returns the tools without the approval gate the listener wraps around
 `mention_tools`. That is on purpose: this step checks the tool's own code. The gate is the
