@@ -31,6 +31,14 @@ class RecordTests(unittest.TestCase):
         self.assertNotEqual(first.id, second.id)
         self.assertEqual({"first", "second"}, {t.slug for t in tasks.list_tasks(home)})
 
+    def test_a_task_that_cannot_be_written_in_full_leaves_no_directory_behind(self) -> None:
+        home = _home()
+        with patch.object(tasks, "append_event", side_effect=OSError("disk full")):
+            with self.assertRaisesRegex(OSError, "disk full"):
+                _make(home, source="원문")
+        self.assertEqual([], list(tasks.tasks_dir(home).iterdir()))
+        self.assertEqual([], tasks.list_tasks(home))
+
     def test_an_invalid_task_leaves_no_directory_behind(self) -> None:
         home = _home()
         with self.assertRaises(tasks.TaskError):

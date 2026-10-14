@@ -19,6 +19,14 @@
 # the OS closes the handle, and so frees the lock, however this process ends. The handle
 # is not inheritable, so nothing started here holds it.
 #
+# A step it cannot complete or cannot check (the process list, the down marker, the lock)
+# stops the command with exit status 4 and the reason, rather than guessing: an empty
+# process list read as "not running" would start a second harness, and a `down` whose
+# marker was not written would be undone by the next watchdog round.
+#
+# WORLD_OPS_TEST_HOOK is for the kit's tests only: `process-query-fails` makes the process
+# list fail, `hold-lock-<seconds>` sleeps while holding the lock.
+#
 # Windows PowerShell 5.1 or later; nothing beyond what ships with Windows. Rendered by
 # bin/ops-kit.py from the kit's templates/ops/. Re-render rather than edit: the paths
 # below were resolved once, on the machine that rendered it.
@@ -73,29 +81,50 @@ function Read-Text([string]$Path) {
   return ''
 }
 
-# The lock, or $null once it stayed busy for $WaitS seconds.
+function Inner([System.Exception]$e) {
+  while ($e.InnerException) { $e = $e.InnerException }
+  return $e
+}
+
+# The lock, or $null once it stayed busy for $WaitS seconds. Only a sharing violation
+# means busy; any other error, here or in recording the holder's pid, is thrown, with
+# the lock released first so this process does not keep itself out.
 function Enter-OpsLock([double]$WaitS) {
-  New-Item -ItemType Directory -Force -Path $State | Out-Null
+  [void][System.IO.Directory]::CreateDirectory($State)
   $deadline = (Get-Date).AddSeconds($WaitS)
   while ($true) {
     try {
       $stream = [System.IO.File]::Open($Lock, [System.IO.FileMode]::OpenOrCreate,
         [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
-      [System.IO.File]::WriteAllText("$Lock.pid", "$PID`n", $Utf8)
-      return $stream
+      break
     } catch {
-      $e = $_.Exception
-      while ($e.InnerException) { $e = $e.InnerException }
-      if ($e -isnot [System.IO.IOException]) { throw }
+      $e = Inner $_.Exception
+      if ($e -isnot [System.IO.IOException]) { throw "cannot open the lock ${Lock}: $($e.Message)" }
       if ((Get-Date) -ge $deadline) { return $null }
       Start-Sleep -Milliseconds 100
     }
   }
+  try {
+    [System.IO.File]::WriteAllText("$Lock.pid", "$PID`n", $Utf8)
+  } catch {
+    $stream.Dispose()
+    throw "took the lock but could not record its holder in $Lock.pid: $((Inner $_.Exception).Message)"
+  }
+  return $stream
 }
 
+# Every harness process, or a thrown error: an empty list must mean "none running",
+# never "could not look".
 function Get-HarnessProcesses {
-  $found = @(Get-CimInstance -ClassName Win32_Process -Filter "Name LIKE 'python%'" -ErrorAction SilentlyContinue |
-    Where-Object { $_.CommandLine -and $_.CommandLine -match $Match })
+  if ($env:WORLD_OPS_TEST_HOOK -eq 'process-query-fails') {
+    throw 'cannot list processes (Get-CimInstance Win32_Process): test hook'
+  }
+  try {
+    $all = @(Get-CimInstance -ClassName Win32_Process -Filter "Name LIKE 'python%'" -ErrorAction Stop)
+  } catch {
+    throw "cannot list processes (Get-CimInstance Win32_Process): $((Inner $_.Exception).Message)"
+  }
+  $found = @($all | Where-Object { $_.CommandLine -and $_.CommandLine -match $Match })
   $ids = @($found | ForEach-Object { [int]$_.ProcessId })
   $found | Where-Object { $ids -notcontains [int]$_.ParentProcessId }
 }
@@ -142,7 +171,7 @@ function Wait-Writer {
 
 # Start the harness; the caller holds the lock and has checked it is not running.
 function Start-Harness {
-  New-Item -ItemType Directory -Force -Path (Join-Path $HomeDir 'logs'), $State | Out-Null
+  [void][System.IO.Directory]::CreateDirectory($State)
   # A second writer would exit at once and leave the new harness without a reader, so an
   # old one still draining is waited for, not raced.
   if (-not (Wait-Writer)) { return $false }
@@ -214,7 +243,13 @@ function Stop-Harness {
 # still running (a `down` that timed out leaves it running and marked; without this the
 # watchdog would never restart it again).
 function Invoke-Up {
-  Remove-Item -LiteralPath $DownFile -Force -ErrorAction SilentlyContinue
+  if (Test-Path -LiteralPath $DownFile) {
+    try {
+      Remove-Item -LiteralPath $DownFile -Force -Recurse -ErrorAction Stop
+    } catch {
+      throw "cannot clear the down marker ${DownFile}: $((Inner $_.Exception).Message); not starting"
+    }
+  }
   $running = @(Get-HarnessProcesses)
   if ($running.Count) {
     Say "{{NAME}}: already running (pid $(Join-Ids $running))"
@@ -246,9 +281,15 @@ function Invoke-Recycle {
   return 1
 }
 
+# The marker is written before anything is stopped: a harness stopped without it is
+# started again by the next watchdog round.
 function Invoke-Down {
-  New-Item -ItemType Directory -Force -Path $State | Out-Null
-  [System.IO.File]::WriteAllText($DownFile, "$(Stamp)`n", $Utf8)
+  try {
+    [void][System.IO.Directory]::CreateDirectory($State)
+    [System.IO.File]::WriteAllText($DownFile, "$(Stamp)`n", $Utf8)
+  } catch {
+    throw "cannot write the down marker ${DownFile}: $((Inner $_.Exception).Message); nothing was stopped"
+  }
   if (-not @(Get-HarnessProcesses).Count -and -not (Get-Writer)) {
     Say "{{NAME}}: not running (marked down; the watchdog leaves it down until up)"
     return 0
@@ -303,12 +344,18 @@ if (@('up', 'down', 'restart', 'resume', 'recycle') -contains $Command -and
     Say "{{NAME}}: $Py not found; create the venv (uv venv .venv; uv pip install -e .)" -Err
     exit 1
   }
-  $lockStream = Enter-OpsLock $LockWaitS
+  try {
+    $lockStream = Enter-OpsLock $LockWaitS
+  } catch {
+    Say "{{NAME}}: $($_.Exception.Message)" -Err
+    exit 4
+  }
   if (-not $lockStream) {
     Say "{{NAME}}: $Lock is held by pid $(Read-Text "$Lock.pid"); gave up after ${LockWaitS}s" -Err
     exit 75
   }
   $global:WorldOpsLockHeld = $HomeDir
+  if ($env:WORLD_OPS_TEST_HOOK -match '^hold-lock-(\d+)$') { Start-Sleep -Seconds ([int]$Matches[1]) }
 }
 try {
   switch ($Command) {
@@ -326,6 +373,9 @@ try {
       $code = 2
     }
   }
+} catch {
+  Say "{{NAME}}: $($_.Exception.Message)" -Err
+  $code = 4
 } finally {
   if ($lockStream) {
     $lockStream.Dispose()

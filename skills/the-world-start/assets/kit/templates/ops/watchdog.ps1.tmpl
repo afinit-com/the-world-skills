@@ -27,7 +27,14 @@ $Notify = {{NOTIFY}}       # empty: no Slack message, watchdog.log only
 $Utf8 = New-Object System.Text.UTF8Encoding($false)
 try { [Console]::OutputEncoding = $Utf8 } catch { }
 $env:PYTHONIOENCODING = 'utf-8'
-New-Item -ItemType Directory -Force -Path $State | Out-Null
+[void][System.IO.Directory]::CreateDirectory($State)
+# `& <path>` resolves the path as a wildcard pattern, so a home with [ or ] in its name
+# is not found as written. Use the path as written when that finds the script, and the
+# escaped form otherwise.
+$UpCall = $UpScript
+if (-not (Get-Command -Name $UpScript -CommandType ExternalScript -ErrorAction SilentlyContinue)) {
+  $UpCall = [System.Management.Automation.WildcardPattern]::Escape($UpScript)
+}
 
 function Stamp { (Get-Date).ToString('yyyy-MM-ddTHH:mm:sszzz') }
 
@@ -50,23 +57,43 @@ function Send-Note([string]$Text) {
   }
 }
 
-# The lock, or $null once it stayed busy for $WaitS seconds (see {{NAME}}-up.ps1).
+function Inner([System.Exception]$e) {
+  while ($e.InnerException) { $e = $e.InnerException }
+  return $e
+}
+
+# The lock, or $null once it stayed busy for $WaitS seconds; any other error is thrown,
+# with the lock released first (see {{NAME}}-up.ps1).
 function Enter-OpsLock([double]$WaitS) {
   $deadline = (Get-Date).AddSeconds($WaitS)
   while ($true) {
     try {
       $stream = [System.IO.File]::Open($Lock, [System.IO.FileMode]::OpenOrCreate,
         [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
-      [System.IO.File]::WriteAllText("$Lock.pid", "$PID`n", $Utf8)
-      return $stream
+      break
     } catch {
-      $e = $_.Exception
-      while ($e.InnerException) { $e = $e.InnerException }
-      if ($e -isnot [System.IO.IOException]) { throw }
+      $e = Inner $_.Exception
+      if ($e -isnot [System.IO.IOException]) { throw "cannot open the lock ${Lock}: $($e.Message)" }
       if ((Get-Date) -ge $deadline) { return $null }
       Start-Sleep -Milliseconds 100
     }
   }
+  try {
+    [System.IO.File]::WriteAllText("$Lock.pid", "$PID`n", $Utf8)
+  } catch {
+    $stream.Dispose()
+    throw "took the lock but could not record its holder in $Lock.pid: $((Inner $_.Exception).Message)"
+  }
+  return $stream
+}
+
+# {{NAME}}-up.ps1 exits 4 when it could not complete or check a step (the process list,
+# the down marker). The round stops there: it acts on nothing it could not see.
+function Test-Stopped([string]$What) {
+  if ($LASTEXITCODE -ne 4) { return $false }
+  Send-Note "stopped this round: '$What' could not tell or could not finish (exit 4); see $Log"
+  $script:RoundCode = 4
+  return $true
 }
 
 function Invoke-Round {
@@ -95,13 +122,16 @@ function Invoke-Round {
   $down = Join-Path $State 'down'
   $failuresFile = Join-Path $State 'failures'
   $nextTryFile = Join-Path $State 'next_try'
-  & $UpScript running
+  & $UpCall running
+  if (Test-Stopped 'running') { return }
   if ($LASTEXITCODE -eq 0) {
     # Running without its console writer: the harness's next line of output fails and
     # kills it at a moment nobody chose, so restart it now instead.
-    & $UpScript healthy
+    & $UpCall healthy
+    if (Test-Stopped 'healthy') { return }
     if ($LASTEXITCODE -ne 0 -and -not (Test-Path -LiteralPath $down)) {
-      & $UpScript recycle
+      & $UpCall recycle
+      if (Test-Stopped 'recycle') { return }
       if ($LASTEXITCODE -eq 0) {
         Send-Note "its console writer had died; restarted the harness before its output could kill it"
       } else {
@@ -134,7 +164,8 @@ function Invoke-Round {
   [System.IO.File]::WriteAllText($nextTryFile, "$($now + $delay)`n", $Utf8)
 
   # `resume`, never `up`: only a person's explicit `up` clears the down marker.
-  & $UpScript resume
+  & $UpCall resume
+  if (Test-Stopped 'resume') { return }
   if ($LASTEXITCODE -eq 0) {
     Send-Note "found it not running; restarted (attempt $failures; next retry no sooner than ${delay}s)"
   } else {
@@ -144,7 +175,13 @@ function Invoke-Round {
 
 # The whole round holds the lock. A `down` in progress holds it too, so a round that
 # cannot get it within 30s is skipped; the next one comes soon.
-$lockStream = Enter-OpsLock 30
+try {
+  $lockStream = Enter-OpsLock 30
+} catch {
+  Write-Log "watchdog: $($_.Exception.Message); skipped this round"
+  [Console]::Error.WriteLine("{{NAME}} watchdog: $($_.Exception.Message)")
+  exit 4
+}
 if (-not $lockStream) {
   [Console]::Error.WriteLine("{{NAME}} watchdog: $Lock is busy; skipped this round")
   exit 75
@@ -153,11 +190,15 @@ if (-not $lockStream) {
 # it prints goes to the watchdog log.
 $global:WorldOpsLockHeld = $HomeDir
 $global:WorldOpsLogFile = $Log
+$script:RoundCode = 0
 try {
   Invoke-Round
+} catch {
+  Send-Note "stopped this round: $($_.Exception.Message)"
+  $script:RoundCode = 4
 } finally {
   $global:WorldOpsLockHeld = $null
   $global:WorldOpsLogFile = $null
   $lockStream.Dispose()
 }
-exit 0
+exit $script:RoundCode

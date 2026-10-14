@@ -35,6 +35,7 @@ import datetime
 import json
 import re
 import secrets
+import shutil
 from dataclasses import dataclass, field, replace
 from hashlib import sha256
 from pathlib import Path
@@ -475,25 +476,36 @@ def create(
 
     task_id = _claim_task_dir(home, now)
     try:
-        task = Task(
-            id=task_id,
-            type=type,
-            title=title,
-            slug=slug,
-            origin=origin,
-            # An explicit retry_budget wins over the type's default: passing both used to
-            # be a TypeError rather than an override, which is a poor way to learn that
-            # the caller and the type disagree.
-            retry_budget=fields.pop("retry_budget", task_type.retry_budget if task_type else 3),
-            created=stamp,
-            updated=stamp,
-            body=body,
-            **fields,
-        )
-        task.validate()
-    except Exception:
-        (tasks_dir(home) / task_id).rmdir()  # still empty: nothing was written yet
+        return _fill_task_dir(home, task_id, type=type, title=title, slug=slug, origin=origin,
+                              task_type=task_type, stamp=stamp, body=body, raw=raw,
+                              source_name=source_name, fields=fields)
+    except BaseException:
+        # The directory is this call's own (it claimed it), so a task that could not be
+        # written in full leaves nothing behind: no half-written record to list.
+        shutil.rmtree(tasks_dir(home) / task_id, ignore_errors=True)
         raise
+
+
+def _fill_task_dir(home: Path, task_id: str, *, type: str, title: str, slug: str,  # noqa: A002
+                   origin: "Origin", task_type, stamp: str, body: str, raw: bytes | None,
+                   source_name: str, fields: dict) -> "Task":
+    """Write a claimed task directory: the record, its source, its first event."""
+    task = Task(
+        id=task_id,
+        type=type,
+        title=title,
+        slug=slug,
+        origin=origin,
+        # An explicit retry_budget wins over the type's default: passing both used to
+        # be a TypeError rather than an override, which is a poor way to learn that
+        # the caller and the type disagree.
+        retry_budget=fields.pop("retry_budget", task_type.retry_budget if task_type else 3),
+        created=stamp,
+        updated=stamp,
+        body=body,
+        **fields,
+    )
+    task.validate()
 
     directory = tasks_dir(home) / task.dirname
     (directory / "work").mkdir(exist_ok=True)

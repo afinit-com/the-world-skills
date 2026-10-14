@@ -109,7 +109,10 @@ class RenderTest(unittest.TestCase):
         self.assertIn("$RunPath = '/opt/cli/bin:/usr/bin:/bin'", up)
         self.assertIn("$KeepDays = ''", up)
         self.assertIn("$Notify = @()", watchdog)
-        self.assertIn("& $UpScript resume", watchdog)  # never `up`: that clears the marker
+        self.assertIn("& $UpCall resume", watchdog)  # never `up`: that clears the marker
+        # An unreadable process list fails the command (exit 4) instead of reading as empty.
+        self.assertIn("Win32_Process -Filter \"Name LIKE 'python%'\" -ErrorAction Stop", up)
+        self.assertNotRegex(up, r"Get-CimInstance[^\n]*SilentlyContinue")
 
         raw = files["scripts/windows/my-harness-watchdog.xml"][0]
         self.assertTrue(raw.startswith(b"\xff\xfe"), "schtasks /XML wants UTF-16 with a BOM")
@@ -726,9 +729,15 @@ class WindowsLauncherTest(unittest.TestCase):
     windows-latest VM; everything started or registered here is removed again."""
 
     def setUp(self):
+        self.make_home("stub")
+        self.addCleanup(self.kill_all)
+
+    def make_home(self, dirname: str):
+        """A harness home in a fresh temp dir, its scripts rendered for it. A test may
+        call it again for a second home; kill_all cleans up whichever is current."""
         tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.addCleanup(tmp.cleanup)
-        self.home = Path(tmp.name).resolve() / "stub"
+        self.home = Path(tmp.name).resolve() / dirname
         (self.home / "bin").mkdir(parents=True)
         for script in ("ops-log.py", "ops-notify.py"):
             shutil.copy2(KIT / "bin" / script, self.home / "bin" / script)
@@ -750,10 +759,10 @@ class WindowsLauncherTest(unittest.TestCase):
         self.up = self.home / "scripts" / "stub-up.ps1"
         self.watchdog = self.home / "scripts" / "stub-watchdog.ps1"
         self.state = self.home / "logs" / ".watchdog"
-        self.addCleanup(self.kill_all)
 
     def processes(self) -> list[dict]:
-        script = ("@(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and "
+        script = ("[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "
+                  "@(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and "
                   "$_.CommandLine.Contains($env:STUB_HOME) } | Select-Object ProcessId, "
                   "ParentProcessId, Name, CommandLine) | ConvertTo-Json -Compress")
         out = subprocess.run([*PS, "-Command", script], capture_output=True, text=True,
@@ -863,6 +872,109 @@ class WindowsLauncherTest(unittest.TestCase):
         # up clears the marker
         self.assertEqual(self.run_up("up").returncode, 0)
         self.assertFalse((self.state / "down").exists())
+        self.assertEqual(self.run_up("down").returncode, 0)
+
+    def test_lifecycle_in_a_home_with_spaces_hangul_quotes_and_brackets(self):
+        self.kill_all()
+        self.make_home("a b 한글 'q' [x]")
+        started = self.run_up("up", env={"ANTHROPIC_API_KEY": "sk-shell"})
+        self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
+        self.assertEqual(len(self.pids()), 1, self.processes())
+        seen = json.loads((self.home / "env-seen.json").read_text(encoding="utf-8"))
+        self.assertIsNone(seen["api_key"])
+        again = self.run_up("up")
+        self.assertIn("already running", again.stdout, again.stderr)
+        self.assertIn("console writer: running", self.run_up("status").stdout)
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(self.pids()[0])], check=True,
+                       capture_output=True)
+        self.wait_gone()
+        round_ = self.run_ps(self.watchdog)  # runs the up script by a bracketed path
+        self.assertEqual(round_.returncode, 0, round_.stdout + round_.stderr)
+        self.assertEqual(len(self.pids()), 1, (self.home / "logs" / "watchdog.log").read_text(
+            encoding="utf-8"))
+        down = self.run_up("down")
+        self.assertEqual(down.returncode, 0, down.stdout + down.stderr)
+        self.assertEqual(self.pids(), [])
+        self.run_ps(self.watchdog)
+        self.assertEqual(self.pids(), [], "the watchdog undid a deliberate down")
+
+    def test_a_process_list_it_cannot_read_stops_every_command(self):
+        """An unreadable process list must not read as "not running": up would start a
+        second harness, down would report success with the harness still up."""
+        fail = {"WORLD_OPS_TEST_HOOK": "process-query-fails"}
+        up = self.run_up("up", env=fail)
+        self.assertEqual(up.returncode, 4, up.stdout + up.stderr)
+        self.assertIn("cannot list processes", up.stderr)
+        self.assertEqual(self.pids(), [])
+
+        self.assertEqual(self.run_up("up").returncode, 0)
+        down = self.run_up("down", env=fail)
+        self.assertEqual(down.returncode, 4, down.stdout + down.stderr)
+        self.assertEqual(len(self.pids()), 1, "down claimed nothing was running")
+        self.assertEqual(self.run_up("running", env=fail).returncode, 4)
+        self.assertEqual(self.run_up("up").returncode, 0)  # clears the marker down wrote
+
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(self.pids()[0])], check=True,
+                       capture_output=True)
+        self.wait_gone()
+        round_ = self.run_ps(self.watchdog, env=fail)
+        self.assertEqual(round_.returncode, 4, round_.stdout + round_.stderr)
+        self.assertEqual(self.pids(), [], "the watchdog acted on a list it could not read")
+        log = (self.home / "logs" / "watchdog.log").read_text(encoding="utf-8")
+        self.assertIn("stopped this round", log)
+        self.assertIn("cannot list processes", log)
+
+    def test_down_stops_nothing_when_its_marker_cannot_be_written(self):
+        self.assertEqual(self.run_up("up").returncode, 0)
+        marker = self.state / "down"
+        marker.mkdir(parents=True)  # a directory where the file goes: the write fails
+        (marker / "keep").write_text("x", encoding="utf-8")
+        down = self.run_up("down")
+        self.assertEqual(down.returncode, 4, down.stdout + down.stderr)
+        self.assertIn("cannot write the down marker", down.stderr)
+        self.assertEqual(len(self.pids()), 1, "stopped without a marker the watchdog respects")
+        shutil.rmtree(marker)
+        self.assertEqual(self.run_up("down").returncode, 0)
+
+    def test_up_starts_nothing_when_the_marker_cannot_be_cleared(self):
+        self.assertEqual(self.run_up("down").returncode, 0)
+        marker = self.state / "down"
+        with open(marker, "rb"):  # open without FILE_SHARE_DELETE: the delete fails
+            up = self.run_up("up")
+        self.assertEqual(up.returncode, 4, up.stdout + up.stderr)
+        self.assertIn("cannot clear the down marker", up.stderr)
+        self.assertEqual(self.pids(), [])
+        self.assertTrue(marker.exists())
+        up = self.run_up("up")
+        self.assertEqual(up.returncode, 0, up.stdout + up.stderr)
+        self.assertFalse(marker.exists())
+        self.assertEqual(self.run_up("down").returncode, 0)
+
+    def test_a_killed_lock_holder_frees_the_lock(self):
+        holder = subprocess.Popen([*PS, "-File", str(self.up), "up"],
+                                  env={**os.environ, "WORLD_OPS_TEST_HOOK": "hold-lock-120"},
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        lock = self.state / "lock"
+        try:
+            for _ in range(300):
+                try:
+                    with open(lock, "r+b"):
+                        pass
+                except PermissionError:
+                    break  # opened with no sharing: held
+                except FileNotFoundError:
+                    pass
+                time.sleep(0.1)
+            else:
+                self.fail("the holder never took the lock")
+        finally:
+            holder.kill()
+            holder.wait(timeout=60)
+        began = time.monotonic()
+        up = self.run_up("up", env={"LOCK_WAIT_S": "30"})
+        self.assertEqual(up.returncode, 0, up.stdout + up.stderr)
+        self.assertLess(time.monotonic() - began, 30, "waited out the lock instead of getting it")
+        self.assertEqual(len(self.pids()), 1, self.processes())
         self.assertEqual(self.run_up("down").returncode, 0)
 
     def run_task_action(self):
