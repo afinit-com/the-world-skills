@@ -372,19 +372,19 @@ class AnnounceTaskTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("999.555", mixin.state["threads"])
 
 
-EVIDENCE = "herald 실행 완료 · work/ 산출물 report.md"
+EVIDENCE = "watch 실행 완료 · work/ 산출물 report.md"
 
 
 class AnnounceCardBodyTests(unittest.IsolatedAsyncioTestCase):
     """Issue #5: the default completion check leaves the same evidence on every run, and
-    the card showed that evidence INSTEAD of what the agent wrote — a scheduled briefing
-    arrived as "herald 실행 완료 · work/ 산출물 report.md" with the report hidden."""
+    the card showed that evidence INSTEAD of what the agent wrote — a scheduled report
+    arrived as "<agent> 실행 완료 · work/ 산출물 <file>" with the report itself hidden."""
 
     async def _card(self, result_text: str, evidence: str = EVIDENCE) -> str:
         from world.process import task as tasks
 
         home = Path(tempfile.mkdtemp())
-        record = tasks.create(home, type="agent-run", title="📋 보고 17건", agent="herald")
+        record = tasks.create(home, type="agent-run", title="📋 아침 보고", agent="watch")
         tasks.append_event(home, record.id, "verify", verdict="done",
                            evidence=[evidence])
         posted: list[str] = []
@@ -408,13 +408,13 @@ class AnnounceCardBodyTests(unittest.IsolatedAsyncioTestCase):
     async def test_what_the_agent_wrote_leads_and_evidence_moves_to_the_status_line(self) -> None:
         body = await self._card("완료 4건\n실패 5건")
         head, status, *rest = body.splitlines()
-        self.assertEqual("*📋 보고 17건*", head)
-        self.assertIn("herald 실행 완료 · work/ 산출물 report.md", status)
+        self.assertEqual("*📋 아침 보고*", head)
+        self.assertIn("watch 실행 완료 · work/ 산출물 report.md", status)
         self.assertEqual(["> 완료 4건", "> 실패 5건"], rest)
 
     async def test_with_nothing_written_the_evidence_is_still_the_body(self) -> None:
         body = await self._card("")
-        self.assertEqual("> herald 실행 완료 · work/ 산출물 report.md", body.splitlines()[-1])
+        self.assertEqual("> watch 실행 완료 · work/ 산출물 report.md", body.splitlines()[-1])
 
     async def test_long_evidence_and_a_result_stay_inside_one_slack_section(self) -> None:
         # Slack rejects a section over 3000 characters. Unbounded evidence joined onto the
