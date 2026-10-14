@@ -26,10 +26,14 @@ class Signal:
                recent-findings context snippet.
     on_done  — bookkeeping to run only after a *verified-complete* run. Never mark
                input seen or processed from exit code alone.
+    title    — the headline a human sees on the task and its Slack/Discord card. Empty
+               falls back to the prompt's first line, so a prompt that opens with an
+               instruction to the model shows that instruction as the headline.
     """
 
     prompt: str
     on_done: Callable[["RunResult"], None] | None = None
+    title: str = ""
 
 
 # check(state, now) -> Signal to spawn, or None to stay idle this tick.
@@ -139,10 +143,12 @@ class ScheduleTrigger:
     dedup lives in the orchestrator (state["agents"][name]["last_fired"]); see Schedule.
 
     `prompt` is the trigger payload the run gets (the standing instructions still come
-    from the agent's prompt_file). Override it to say what the scheduled run should do."""
+    from the agent's prompt_file). Override it to say what the scheduled run should do.
+    `title` is the card headline, as on Signal; empty means the prompt's first line."""
 
     schedule: Schedule
     prompt: str = "정기 실행 시각입니다. 표준 지침(prompt.md)에 따라 이번 회차를 수행하세요."
+    title: str = ""
 
 
 @dataclass

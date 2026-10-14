@@ -114,7 +114,14 @@ def _due_signal(agent, agent_state: dict, now: float):
     def on_done(_result) -> None:
         agent_state["last_fired"] = now
 
-    return Signal(prompt=agent.trigger.prompt, on_done=on_done)
+    return Signal(prompt=agent.trigger.prompt, on_done=on_done, title=agent.trigger.title)
+
+
+def _signal_title(signal: Signal) -> str:
+    """The task's headline: the Signal's own title, else the prompt's first line — which
+    is what every task got before Signal.title existed, so an old harness reads the same."""
+    first_line = (signal.prompt.splitlines() or [""])[0]
+    return ((signal.title or "").strip() or first_line)[:120]
 
 
 async def _enqueue_due_agent(harness: "Harness", state: dict, agent, now: float, *,
@@ -161,13 +168,13 @@ async def _enqueue_due_agent(harness: "Harness", state: dict, agent, now: float,
     if dry_run:
         # tasks/ is committed. A dry run that files one is not a dry run — the same rule
         # that keeps _due_signal read-only and stops save_state rewriting HEARTBEAT.md.
-        harness.log(f"[dry-run] would enqueue {agent.name}: {signal.prompt.splitlines()[0][:120]}")
+        harness.log(f"[dry-run] would enqueue {agent.name}: {_signal_title(signal)}")
         return False
 
     record = tasks.create(
         harness.home,
         type=getattr(agent, "task_type", "") or tasks.AGENT_RUN_TYPE,
-        title=signal.prompt.splitlines()[0][:120],
+        title=_signal_title(signal),
         slug=tasks.slugify(agent.name),
         agent=agent.name,
         body=signal.prompt,

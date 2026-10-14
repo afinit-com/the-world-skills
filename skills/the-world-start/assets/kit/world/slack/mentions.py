@@ -16,6 +16,7 @@ import time
 import uuid
 from typing import TYPE_CHECKING, NamedTuple
 
+from ..channels.base import task_card_lines
 from .rules import RULES_TEMPLATE, pre_approved_clause, slack_mrkdwn, split_approval_request
 from .run_footer import footer_context, run_fields
 from .ui import EMOJI_DONE, EMOJI_ERROR, EMOJI_QUEUED, EMOJI_WORKING, ToolTrail
@@ -309,16 +310,7 @@ class MentionMixin:
             # human pushed a past notice back through the pipeline on purpose.
             head = f"♻️ *운영자 재처리 요청*\n{head}"
 
-        verdict = next(
-            (e for e in reversed(task.read_events(self.harness.home, record.id))
-             if e.get("kind") == "verify"), None,
-        )
-        lines = [head, f"`{record.id}` · {record.status} · {record.agent}"]
-        if verdict and verdict.get("evidence"):
-            lines += [f"> {item}" for item in verdict["evidence"][:4]]
-        elif result is not None and result.result_text:
-            lines.append(f"> {redact(result.result_text)[:300]}")
-        body = "\n".join(lines)
+        body = "\n".join([head, *task_card_lines(self.harness.home, record, result)])
 
         primary = result.artifacts[0] if (result and result.artifacts) else ""
         blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": body}}]

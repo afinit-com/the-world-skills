@@ -372,6 +372,47 @@ class AnnounceTaskTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("999.555", mixin.state["threads"])
 
 
+class AnnounceCardBodyTests(unittest.IsolatedAsyncioTestCase):
+    """Issue #5: the default completion check leaves the same evidence on every run, and
+    the card showed that evidence INSTEAD of what the agent wrote — a scheduled briefing
+    arrived as "herald 실행 완료 · work/ 산출물 report.md" with the report hidden."""
+
+    async def _card(self, result_text: str) -> str:
+        from world.process import task as tasks
+
+        home = Path(tempfile.mkdtemp())
+        record = tasks.create(home, type="agent-run", title="📋 보고 17건", agent="herald")
+        tasks.append_event(home, record.id, "verify", verdict="done",
+                           evidence=["herald 실행 완료 · work/ 산출물 report.md"])
+        posted: list[str] = []
+        mixin = MentionMixin()
+        mixin.harness = SimpleNamespace(
+            home=home, agents=[], run_footer=False, knowledge_proposal_agent=None,
+        )
+        mixin.state = {"threads": {}}
+        mixin.save_state = lambda: None
+
+        async def post(body, **kw):
+            posted.append(body)
+            return "111.222"
+
+        mixin.post = post
+        await mixin.announce_task(record, RunResult(status="ok", result_text=result_text),
+                                  SimpleNamespace(key="lumen"))
+        return posted[0]
+
+    async def test_what_the_agent_wrote_leads_and_evidence_moves_to_the_status_line(self) -> None:
+        body = await self._card("완료 4건\n실패 5건")
+        head, status, *rest = body.splitlines()
+        self.assertEqual("*📋 보고 17건*", head)
+        self.assertIn("herald 실행 완료 · work/ 산출물 report.md", status)
+        self.assertEqual(["> 완료 4건", "> 실패 5건"], rest)
+
+    async def test_with_nothing_written_the_evidence_is_still_the_body(self) -> None:
+        body = await self._card("")
+        self.assertEqual("> herald 실행 완료 · work/ 산출물 report.md", body.splitlines()[-1])
+
+
 class TeammateMentionTests(unittest.IsolatedAsyncioTestCase):
     async def test_main_hands_off_by_name_and_only_to_the_roster(self) -> None:
         from world.toolkit import make_teammate_mention_tool
