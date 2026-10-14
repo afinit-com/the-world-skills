@@ -304,11 +304,11 @@ class TaskTitleTests(unittest.IsolatedAsyncioTestCase):
     async def _enqueue(self, trigger) -> "tasks.Task":
         from world.process import orchestrator
 
-        harness, state = _harness("herald"), _state()
+        harness, state = _harness("watch"), _state()
         agent = harness.agents[0]
         agent.trigger = trigger
         if isinstance(trigger, ScheduleTrigger):
-            state["agents"]["herald"] = {"last_fired": 0}
+            state["agents"]["watch"] = {"last_fired": 0}
         self.assertTrue(await orchestrator._enqueue_due_agent(
             harness, state, agent, time.time(), dry_run=False,
             scheduler=_scheduler(harness, state),
@@ -317,9 +317,9 @@ class TaskTitleTests(unittest.IsolatedAsyncioTestCase):
         return record
 
     async def test_a_signal_title_is_the_task_title_and_the_prompt_is_unchanged(self) -> None:
-        prompt = "아래 목록대로 report.md 절차에 따라 보고하라.\n- 항목 17건"
-        record = await self._enqueue(PollTrigger(lambda *_: Signal(prompt, title="📋 보고 17건")))
-        self.assertEqual("📋 보고 17건", record.title)
+        prompt = "아래 목록대로 report.md 절차에 따라 보고하라.\n- 항목 3건"
+        record = await self._enqueue(PollTrigger(lambda *_: Signal(prompt, title="📋 아침 보고")))
+        self.assertEqual("📋 아침 보고", record.title)
         self.assertEqual(prompt, record.body.strip())
 
     async def test_without_a_title_the_first_prompt_line_is_still_used(self) -> None:
