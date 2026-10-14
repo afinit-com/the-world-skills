@@ -1,0 +1,89 @@
+---
+name: {{word}}
+description: {{flavor_description}} — this harness's word for equipping its cast: it splits a request into tools, code, procedures, skills, knowledge and settings, and proposes where each piece goes before building. Use when the user says "{{word}}"{{extra_trigger_phrases}}.
+---
+
+# /{{word}} — this harness's word for equipping the cast
+
+Scaffolded once by /the-world-start from this harness's `WORLD.md` Vocabulary table, so
+that this world's own word is a real command rather than narration.
+
+Read `WORLD.md` for the cast, the vocabulary, and the naming pool, and `docs/philosophy.md`
+for why each boundary in this kit exists. Then equip the cast with what the user asked
+for — a capability and the knowledge to use it, not necessarily a tool — keeping what
+already holds for every other one here: authority declared in code and narrow, a
+scoped tool rather than a wider Bash allowlist, outward actions behind human approval,
+and a report that says what is still unverified. A piece that only reads leaves
+`write_scope` empty, which blocks writes everywhere; a piece that must write gets a
+narrow `write_scope`, a reason for it, and a write tool bound to the same roots. Keep
+speaking in {{universe_name}}'s vocabulary.
+
+## Split the request, place each piece, then build
+
+A request is rarely one tool. "Brief me on my PRs every morning" is a read-only tool
+(fetch the PRs), code with tests (sort them by state), a procedure (the order and format
+of the briefing), knowledge (each repository's review rules), settings (the time, which
+repositories), and a world sentence (who briefs whom). Taken as one tool, the boundary
+leaks into the prompt, the procedure into a tool description, and a changing value into
+code.
+
+1. **Split** the request into pieces, each one thing that has to be true.
+2. **Place** each piece with the table below: the first row whose question is "yes".
+   When two rows fit, take the one enforced more strongly (higher in the table).
+3. **Propose** the placement as a table and wait for the user's confirmation before
+   writing anything.
+4. **Build** only what was confirmed, then report what is still unverified.
+
+| Question | Kind | Where it goes |
+|---|---|---|
+| Does it leave something outside (post, comment, merge, write)? | tool — approval required | `Persona.mention_tools` (every tool there is approval-gated); what it does is fixed before the approval, not chosen after |
+| Is there a boundary it must hold? | code | a check inside the tool, with a test |
+| Does it need data the model cannot get by itself? | tool — read-only | `Persona.thread_tools` / `Agent.tools` |
+| Is it a computation or classification with one right answer? | code | `check()` or inside the tool, with a test |
+| Is it a procedure that one character follows every time? | prompt procedure | that character's prompt file |
+| Is it know-how with many cases, of which each run needs only a few? | skill | a plugin in a `PluginMarketplace` on `Harness.plugins` — see the cost below |
+| Is it a changing fact that people maintain? | knowledge | `knowledge/`, read through a read-only tool (`make_repo_readers` bound there) |
+| Is it a value a person will change? | setting | `settings.json` |
+| Is it a sentence about the world? | world | `WORLD.md` |
+
+**Knowledge starts as a short note a person writes.** Don't build `knowledge/` from
+automated proposals: in one harness, 7 of 89 automatically proposed entries were adopted.
+
+### What choosing a skill costs
+
+Propose a skill only when the cases are too many to put in the prompt, and write its cost
+in the table. In this kit (`world/runners/claude.py`):
+
+- The `Skill` tool is disallowed by default. It is added only when all of these hold:
+  the agent has `allow_plugins`, `Harness.plugins` is not empty, the installed SDK
+  supports plugins, and at least one enabled plugin resolves to a directory on disk. A
+  poll agent opts in with `Agent.allow_plugins=True`. A mention turn opts in whenever
+  `Harness.mention_plugins` is on (the default), for every persona at once: it cannot be
+  granted to one persona alone.
+- When nothing resolves, `Skill` stays disallowed. An unsynced marketplace, a name missing
+  from its `marketplace.json`, or a missing source directory is logged by name; an empty
+  `enabled` list shows only in the sync summary, as `0/0 enabled plugin(s) resolved`. An
+  SDK without plugin support logs that the setting was ignored.
+- A plugin is loaded whole: its own hooks and MCP servers come with it and run, and
+  `strict_mcp_config` does not block them. That is the one full-trust exception to "a
+  capability is a `ToolSpec`", so only a registry you trust to run code as you.
+- Claude runtime only. `CodexRunner` refuses to run an agent with `allow_plugins`.
+- What the skill's own files can do depends on the agent. No agent here gets the built-in
+  `Read`, and a mention turn has no `Bash`, so there the skill is its text: scripts beside
+  its `SKILL.md` are not run by the model. A poll agent with `allow_bash=True` has `Bash`
+  next to `Skill` and can run them, so count that agent's Bash in the cost.
+
+### The proposal
+
+| Piece | Kind | Where it goes | Why | What enforces it | Approval |
+|---|---|---|---|---|---|
+
+Below the table, add:
+
+- Buttons to add, or "no buttons".
+- A draft voice for any character that starts speaking because of this.
+- What this capability does not check.
+
+This wrapper is yours. If `WORLD.md`'s Vocabulary entry changes, rename this skill's folder
+(the directory holding this `SKILL.md`) to match — it is a one-time scaffold, not read from
+`WORLD.md` at runtime.

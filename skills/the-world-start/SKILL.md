@@ -172,6 +172,9 @@ connected yet" stays there after it stops being true. Those go elsewhere:
 The two creation words become real commands via
 `bin/scaffold-world-skill.py <word> agent|tool --universe ... --description ...`. Default
 to `recruit` and `equip` when the user has no preference. Honor explicit naming choices.
+The tool word does not assume a tool: it splits the request into pieces, places each as a
+tool, code, prompt procedure, skill, knowledge, setting or world sentence, and builds only
+after the user confirms the proposal table.
 
 **Exit 0 is not completion.** A worker that produces analysis (`writes_report=True`) is
 verified by a file landing in its task's `work/`, never by an exit code.

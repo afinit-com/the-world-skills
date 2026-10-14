@@ -76,6 +76,14 @@ class CodexRunnerProcessTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result.result_text, "ok")
             self.assertEqual((result.input_tokens, result.output_tokens), (7, 2))
 
+    async def test_plugins_are_refused_before_any_process_starts(self):
+        # templates/skill-wrapper-tool.md.tmpl states skills are Claude-runtime only.
+        harness = SimpleNamespace(git_root=Path("/repo"), home=Path("/repo"), codex_model=None)
+        runner = CodexRunner(harness, executable="/nonexistent/codex")
+        result = await runner.run(agent(allow_plugins=True), "hello")
+        self.assertEqual(result.status, "error")
+        self.assertIn("does not enable plugins", result.result_text)
+
 
 class ToolBridgeTests(unittest.IsolatedAsyncioTestCase):
     async def test_mcp_adapter_lists_and_calls_parent_closure(self):

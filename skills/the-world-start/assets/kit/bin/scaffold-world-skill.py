@@ -65,7 +65,10 @@ def main() -> None:
         parser.error("word must use lowercase letters, digits, and single hyphens")
 
     root = Path(__file__).resolve().parents[1]
-    body = (root / "templates" / "skill-wrapper.md.tmpl").read_text(encoding="utf-8")
+    # A tool word carries its own flow (split the request, place each piece, confirm a
+    # proposal table); an agent word uses the shared body.
+    template = "skill-wrapper-tool.md.tmpl" if args.flow == "tool" else "skill-wrapper.md.tmpl"
+    body = (root / "templates" / template).read_text(encoding="utf-8")
     values = {
         "word": args.word,
         "flow_file": args.flow,

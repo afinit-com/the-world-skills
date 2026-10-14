@@ -162,6 +162,41 @@ class InstallerOwnershipTests(unittest.TestCase):
             subprocess.run(command, check=True, capture_output=True, text=True)
             self.assertEqual(codex.read_text(), "mine")
 
+    def test_tool_word_proposes_a_placement_before_building(self) -> None:
+        # The tool word used to start from the answer ("add the tool the user asked
+        # for"), so a request mixing a boundary, a procedure and a changing value all
+        # went into one tool. It must split, place and confirm first (issue #3).
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "harness"
+            self.run_installer(target, "both")
+            script = target / "bin" / "scaffold-world-skill.py"
+            for word, flow in (("equip", "tool"), ("recruit", "agent")):
+                subprocess.run(
+                    ["python3", str(script), word, flow, "--host", "all",
+                     "--universe", "Crew", "--description", f"{word} the crew"],
+                    check=True, capture_output=True, text=True,
+                )
+            tool = (target / ".claude/skills/equip/SKILL.md").read_text()
+            self.assertEqual(tool, (target / ".agents/skills/equip/SKILL.md").read_text())
+            self.assertTrue(tool.startswith("---\nname: equip\n"))
+            self.assertNotIn("{{", tool)
+            self.assertIn("docs/philosophy.md", tool)
+            self.assertIn("wait for the user's confirmation", tool)
+            self.assertIn(
+                "| Piece | Kind | Where it goes | Why | What enforces it | Approval |", tool)
+            for place in ("`Persona.mention_tools`", "`check()`", "prompt file",
+                          "`Harness.plugins`", "`knowledge/`", "`settings.json`",
+                          "`WORLD.md` |"):
+                self.assertIn(place, tool)
+            self.assertIn("The `Skill` tool is disallowed by default", tool)
+            self.assertIn("equipping the cast", tool)
+            self.assertIn("leaves\n`write_scope` empty", tool)
+            self.assertNotIn("never empty", tool)
+            self.assertIn("short note a person writes", tool)
+            agent = (target / ".claude/skills/recruit/SKILL.md").read_text()
+            self.assertNotIn("Where it goes", agent)
+            self.assertIn("add the agent the user asked for", agent)
+
 
     @unittest.skipIf(os.name == "nt", "chmod cannot make a directory unwritable on Windows")
     def test_unwritable_codex_dir_fails_before_writing_anything(self) -> None:
