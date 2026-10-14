@@ -189,6 +189,9 @@ class InstallerOwnershipTests(unittest.TestCase):
                           "`WORLD.md` |"):
                 self.assertIn(place, tool)
             self.assertIn("The `Skill` tool is disallowed by default", tool)
+            self.assertIn("equipping the cast", tool)
+            self.assertIn("leaves\n`write_scope` empty", tool)
+            self.assertNotIn("never empty", tool)
             self.assertIn("short note a person writes", tool)
             agent = (target / ".claude/skills/recruit/SKILL.md").read_text()
             self.assertNotIn("Where it goes", agent)

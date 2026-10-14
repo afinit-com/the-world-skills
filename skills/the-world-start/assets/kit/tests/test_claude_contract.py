@@ -78,6 +78,42 @@ class ClaudeAdapterContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(options.allowed_tools, ["mcp__h__probe"])
         self.assertEqual(options.mcp_servers["h"]["tools"][0].name, "probe")
 
+    # templates/skill-wrapper-tool.md.tmpl tells the tool word what choosing a skill
+    # costs. These pin each runtime fact it states to the options the runner builds.
+    def plugin_surface(self, *, configs, supported=True, **agent_kwargs):
+        from world.process import plugins
+
+        harness = self.harness()
+        harness.plugins = [SimpleNamespace(name="mp", enabled=("p",))]
+        agent = Agent("watch", PollTrigger(lambda *_: None), **agent_kwargs)
+        with patch.object(plugins, "sdk_supports_plugins", return_value=supported), \
+                patch.object(plugins, "plugin_configs", return_value=configs):
+            return self.adapter._build_options(harness, agent)
+
+    def test_skill_needs_allow_plugins_and_a_resolved_plugin(self):
+        resolved = [{"type": "local", "path": "/mp/p"}]
+        options = self.plugin_surface(configs=resolved, allow_plugins=True)
+        self.assertIn("Skill", options.tools)
+        self.assertNotIn("Skill", options.disallowed_tools)
+        self.assertEqual(options.plugins, resolved)
+        for closed in (
+            self.plugin_surface(configs=resolved),  # no allow_plugins
+            self.plugin_surface(configs=[], allow_plugins=True),  # nothing resolved
+            self.plugin_surface(configs=resolved, supported=False, allow_plugins=True),
+        ):
+            self.assertNotIn("Skill", closed.tools)
+            self.assertIn("Skill", closed.disallowed_tools)
+            self.assertIsNone(closed.plugins)
+
+    def test_skill_never_brings_read_but_a_bash_agent_keeps_bash(self):
+        resolved = [{"type": "local", "path": "/mp/p"}]
+        options = self.plugin_surface(configs=resolved, allow_plugins=True)
+        self.assertNotIn("Read", options.tools)
+        self.assertNotIn("Bash", options.tools)
+        options = self.plugin_surface(configs=resolved, allow_plugins=True, allow_bash=True)
+        self.assertIn("Bash", options.tools)
+        self.assertIn("Skill", options.tools)
+
     async def test_claude_auth_policy_is_adapter_local(self):
         runner = self.adapter.ClaudeRunner(self.harness())
         agent = Agent("watch", PollTrigger(lambda *_: None))

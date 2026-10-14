@@ -1,9 +1,9 @@
 ---
 name: {{word}}
-description: {{flavor_description}} — this harness's word for adding a {{flow_file}} to it. Use when the user says "{{word}}"{{extra_trigger_phrases}}.
+description: {{flavor_description}} — this harness's word for equipping its cast: it splits a request into tools, code, procedures, skills, knowledge and settings, and proposes where each piece goes before building. Use when the user says "{{word}}"{{extra_trigger_phrases}}.
 ---
 
-# /{{word}} — this harness's word for adding a {{flow_file}}
+# /{{word}} — this harness's word for equipping the cast
 
 Scaffolded once by /the-world-start from this harness's `WORLD.md` Vocabulary table, so
 that this world's own word is a real command rather than narration.
@@ -11,9 +11,11 @@ that this world's own word is a real command rather than narration.
 Read `WORLD.md` for the cast, the vocabulary, and the naming pool, and `docs/philosophy.md`
 for why each boundary in this kit exists. Then equip the cast with what the user asked
 for — a capability and the knowledge to use it, not necessarily a tool — keeping what
-already holds for every other one here: authority declared in code and narrow,
-`write_scope` never empty, a scoped tool rather than a wider Bash allowlist, outward
-actions behind human approval, and a report that says what is still unverified. Keep
+already holds for every other one here: authority declared in code and narrow, a
+scoped tool rather than a wider Bash allowlist, outward actions behind human approval,
+and a report that says what is still unverified. A piece that only reads leaves
+`write_scope` empty, which blocks writes everywhere; a piece that must write gets a
+narrow `write_scope`, a reason for it, and a write tool bound to the same roots. Keep
 speaking in {{universe_name}}'s vocabulary.
 
 ## Split the request, place each piece, then build
@@ -52,18 +54,24 @@ automated proposals: in one harness, 7 of 89 automatically proposed entries were
 Propose a skill only when the cases are too many to put in the prompt, and write its cost
 in the table. In this kit (`world/runners/claude.py`):
 
-- The `Skill` tool is disallowed by default. It is added only when the agent has
-  `allow_plugins` and `Harness.plugins` is not empty. A poll agent opts in with
-  `Agent.allow_plugins=True`. A mention turn gets it whenever `Harness.mention_plugins`
-  is on (the default) and `Harness.plugins` is set, for every persona at once: it cannot
-  be granted to one persona alone.
-- A plugin is loaded whole: its own hooks and MCP servers come with it, and
+- The `Skill` tool is disallowed by default. It is added only when all of these hold:
+  the agent has `allow_plugins`, `Harness.plugins` is not empty, the installed SDK
+  supports plugins, and at least one enabled plugin resolves to a directory on disk. A
+  poll agent opts in with `Agent.allow_plugins=True`. A mention turn opts in whenever
+  `Harness.mention_plugins` is on (the default), for every persona at once: it cannot be
+  granted to one persona alone.
+- When nothing resolves, `Skill` stays disallowed. An unsynced marketplace, a name missing
+  from its `marketplace.json`, or a missing source directory is logged by name; an empty
+  `enabled` list shows only in the sync summary, as `0/0 enabled plugin(s) resolved`. An
+  SDK without plugin support logs that the setting was ignored.
+- A plugin is loaded whole: its own hooks and MCP servers come with it and run, and
   `strict_mcp_config` does not block them. That is the one full-trust exception to "a
   capability is a `ToolSpec`", so only a registry you trust to run code as you.
-- Claude runtime only. `CodexRunner` refuses an agent with `allow_plugins`, and an SDK
-  without plugin support logs the setting and ignores it.
-- Only the skill's text is used. No agent here has `Read`, and a bot has no `Bash`, so the
-  scripts and files beside a skill's `SKILL.md` do not run or load.
+- Claude runtime only. `CodexRunner` refuses to run an agent with `allow_plugins`.
+- What the skill's own files can do depends on the agent. No agent here gets the built-in
+  `Read`, and a mention turn has no `Bash`, so there the skill is its text: scripts beside
+  its `SKILL.md` are not run by the model. A poll agent with `allow_bash=True` has `Bash`
+  next to `Skill` and can run them, so count that agent's Bash in the cost.
 
 ### The proposal
 
