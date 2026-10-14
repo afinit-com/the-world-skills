@@ -1,6 +1,6 @@
 """Keep logs/harness.jsonl bounded: one dated gzip per day, and a cap within the day.
 
-The run log used to grow forever (one harness reached 4.8MB in eight weeks), and the
+The run log used to grow for as long as the harness ran, and the
 only way to bound it was an external rotator per harness. The kit writes this file, so
 the kit bounds it:
 
