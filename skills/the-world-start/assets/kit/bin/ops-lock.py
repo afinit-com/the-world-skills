@@ -16,8 +16,12 @@ The command holds the lock too, on fd 9 (LOCK_FD). Were only this process to hol
 SIGKILL here would release the lock while the command was still mid-way through its
 critical section, and a second `up` would start a second harness. So the lock lives as
 long as the command does. The scripts close fd 9 (`9>&-`) on everything they start in
-the background, so a long-running harness or console writer never holds it. POSIX only,
-like the scripts.
+the background, so a long-running harness or console writer never holds it.
+
+POSIX only. A Windows process cannot hand a lock to its child, so there the critical
+section takes the lock itself: scripts/<name>-up.ps1 and -watchdog.ps1 open
+`logs/.watchdog/lock` with no sharing allowed, and the OS closes that handle, and so
+frees the lock, when the PowerShell process holding it exits or is killed.
 
 Exit status is the command's, or 75 (EX_TEMPFAIL) when the lock stayed busy for
 --wait-s seconds, with the holder's pid on stderr.
@@ -26,7 +30,6 @@ Exit status is the command's, or 75 (EX_TEMPFAIL) when the lock stayed busy for
 from __future__ import annotations
 
 import argparse
-import fcntl
 import os
 import subprocess
 import sys
@@ -48,6 +51,11 @@ def main(argv: list[str] | None = None) -> int:
     split = argv.index("--")
     args = ap.parse_args(argv[:split])
     command = argv[split + 1:]
+    if os.name == "nt":
+        print("ops-lock: POSIX only; on Windows scripts/<name>-up.ps1 and -watchdog.ps1 "
+              "hold the lock themselves", file=sys.stderr)
+        return 2
+    import fcntl
 
     args.lock.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(args.lock, os.O_RDWR | os.O_CREAT, 0o644)  # non-inheritable (PEP 446)

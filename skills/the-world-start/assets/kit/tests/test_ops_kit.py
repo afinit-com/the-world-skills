@@ -3,7 +3,9 @@ launchd / systemd unit. Nothing here registers a service; the unit files are onl
 
 The launcher and watchdog are also run for real against a stub harness.py, because their
 failure modes (a second copy started, ANTHROPIC_API_KEY handed down, a deliberate `down`
-undone by the watchdog two minutes later) only show up in a running process.
+undone by the watchdog two minutes later) only show up in a running process. The bash
+scripts run on macOS and Linux; the PowerShell scripts and the scheduled task only on
+Windows (WindowsLauncherTest), where CI runs them on a throwaway VM.
 """
 
 import configparser
@@ -20,11 +22,14 @@ import tempfile
 import time
 import unittest
 import unittest.mock
-from datetime import datetime
+import xml.etree.ElementTree as ET
+from datetime import datetime, timedelta
 from pathlib import Path
 
 KIT = Path(__file__).resolve().parents[1]
 POSIX = os.name == "posix" and shutil.which("bash") and shutil.which("pgrep")
+WINDOWS = os.name == "nt"
+TASK_NS = {"t": "http://schemas.microsoft.com/windows/2004/02/mit/task"}
 
 
 def _load(name: str):
@@ -66,6 +71,12 @@ class RenderTest(unittest.TestCase):
                          ["/bin/bash", str(self.home.resolve() / "scripts" / "my-harness-watchdog")])
         self.assertIn("CAFFEINATE=1", files["scripts/my-harness-up"][0])
 
+    # The bash scripts and units are rendered only on the macOS or Linux machine that runs
+    # them (ops-kit.py check_host), so their paths are POSIX paths. On a Windows host the
+    # temp dir is C:\\..., and a systemd unit or a bash script for that path is nothing
+    # the kit produces: the unit's quoting doubles each backslash, and `bash` there is
+    # usually System32's WSL launcher, which fails without a distribution.
+    @unittest.skipUnless(os.name == "posix", "a systemd unit is rendered on Linux only")
     def test_linux_renders_a_systemd_user_timer(self):
         files = _render(self.home, "linux")
         service = configparser.ConfigParser(interpolation=None)
@@ -81,20 +92,98 @@ class RenderTest(unittest.TestCase):
         self.assertEqual(timer["Install"]["WantedBy"], "timers.target")
         self.assertIn("CAFFEINATE=0", files["scripts/my-harness-up"][0])
 
-    def test_windows_is_refused_loudly(self):
-        with self.assertRaisesRegex(ops_kit.OpsKitError, "Windows Task Scheduler is not supported"):
-            _render(self.home, "windows")
+    def test_systemd_quote_escapes_what_systemd_unescapes(self):
+        self.assertEqual(ops_kit.systemd_quote('a\\b "c" 100%'), '"a\\\\b \\"c\\" 100%%"')
 
+    def test_windows_renders_powershell_scripts_and_a_scheduled_task(self):
+        files = _render(self.home, "windows", user="WORKGROUP\\someone",
+                        now=datetime(2026, 10, 14, 9, 30, 5))
+        self.assertEqual(sorted(files), [
+            "scripts/my-harness-up.ps1", "scripts/my-harness-watchdog.ps1",
+            "scripts/windows/my-harness-watchdog.xml"])
+        up, watchdog = files["scripts/my-harness-up.ps1"][0], files["scripts/my-harness-watchdog.ps1"][0]
+        for script in (up, watchdog):
+            self.assertTrue(script.startswith("\ufeff"), "PowerShell 5.1 would read it as ANSI")
+            self.assertNotRegex(script, r"\{\{[A-Z_]+\}\}")
+        self.assertIn("'ANTHROPIC_API_KEY'", up)
+        self.assertIn("$RunPath = '/opt/cli/bin:/usr/bin:/bin'", up)
+        self.assertIn("$KeepDays = ''", up)
+        self.assertIn("$Notify = @()", watchdog)
+        self.assertIn("& $UpScript resume", watchdog)  # never `up`: that clears the marker
+
+        raw = files["scripts/windows/my-harness-watchdog.xml"][0]
+        self.assertTrue(raw.startswith(b"\xff\xfe"), "schtasks /XML wants UTF-16 with a BOM")
+        task = ET.fromstring(raw.decode("utf-16").lstrip("\ufeff").replace(
+            'encoding="UTF-16"', ""))
+        logon = task.find("t:Triggers/t:LogonTrigger", TASK_NS)
+        self.assertEqual(logon.find("t:UserId", TASK_NS).text, "WORKGROUP\\someone")
+        self.assertEqual(logon.find("t:Repetition/t:Interval", TASK_NS).text, "PT2M")
+        timed = task.find("t:Triggers/t:TimeTrigger", TASK_NS)
+        self.assertEqual(timed.find("t:StartBoundary", TASK_NS).text, "2026-10-14T09:30:05")
+        principal = task.find("t:Principals/t:Principal", TASK_NS)
+        self.assertEqual(principal.find("t:LogonType", TASK_NS).text, "InteractiveToken")
+        self.assertEqual(principal.find("t:RunLevel", TASK_NS).text, "LeastPrivilege")
+        self.assertEqual(task.find("t:Settings/t:MultipleInstancesPolicy", TASK_NS).text, "IgnoreNew")
+        action = task.find("t:Actions/t:Exec", TASK_NS)
+        self.assertEqual(action.find("t:Command", TASK_NS).text,
+                         str(self.home / ".venv" / "bin" / "pythonw.exe"))
+        arguments = action.find("t:Arguments", TASK_NS).text
+        self.assertIn("-ExecutionPolicy Bypass -File", arguments)
+        self.assertIn(str(self.home.resolve() / "scripts" / "my-harness-watchdog.ps1"), arguments)
+
+    def test_windows_scripts_quote_hostile_values_for_powershell(self):
+        files = _render(self.home, "windows", user="u", notify=("OBS_SLACK_BOT_TOKEN", "OBS_SLACK_CHANNEL"),
+                        keep_days=30)
+        watchdog = files["scripts/my-harness-watchdog.ps1"][0]
+        self.assertIn("$Notify = @('--token-env', 'OBS_SLACK_BOT_TOKEN', '--channel-env', "
+                      "'OBS_SLACK_CHANNEL')", watchdog)
+        self.assertIn("$KeepDays = '30'", watchdog)
+        self.assertEqual(ops_kit.ps_quote("it's \u2019x"), "'it''s \u2019\u2019x'")
+
+    def test_windows_process_match_finds_only_this_harness(self):
+        import re
+        from pathlib import PureWindowsPath
+        home = PureWindowsPath("C:/Users/a b/my harness (1)")
+        pattern = ops_kit.windows_process_match(home)
+        harness = str(home / "harness.py")
+        venv = str(home / ".venv" / "Scripts" / "python.exe")
+        self.assertTrue(re.match(pattern, f'"{venv}" "{harness}"', re.I))
+        self.assertTrue(re.match(pattern, f'C:\\Python312\\python.exe  "{harness}" --once', re.I))
+        writer = f'"{venv}" "{home / "bin" / "ops-log.py"}" --file x --run -- "{venv}" "{harness}"'
+        self.assertFalse(re.match(pattern, writer, re.I), "the console writer is not the harness")
+        self.assertFalse(re.match(pattern, f'notepad.exe "{harness}"', re.I))
+        self.assertFalse(re.match(pattern, f'"{venv}" "{harness}.bak"', re.I))
+
+    def test_a_profile_for_another_os_is_refused(self):
+        with self.assertRaisesRegex(ops_kit.OpsKitError, "this machine is windows"):
+            ops_kit.check_host("linux", "windows")
+        ops_kit.check_host("windows", "windows")
+        with self.assertRaisesRegex(ops_kit.OpsKitError, "only"):
+            ops_kit.check_os("plan9")
+
+    def test_windows_run_path_puts_the_cli_first(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cli_dir, other = Path(tmp) / "cli", Path(tmp) / "other"
+            cli_dir.mkdir()
+            other.mkdir()
+            cli = cli_dir / ("claude.cmd" if WINDOWS else "claude")
+            cli.write_text("", encoding="utf-8")
+            cli.chmod(0o755)
+            path = os.pathsep.join([str(other), str(cli_dir)])
+            self.assertEqual(ops_kit.resolve_windows_run_path("claude", path),
+                             os.pathsep.join([str(cli_dir), str(other)]))
+            with self.assertRaisesRegex(ops_kit.OpsKitError, "codex"):
+                ops_kit.resolve_windows_run_path("codex", path)
+
+    @unittest.skipUnless(POSIX, "bash scripts are rendered and run on macOS and Linux only")
     def test_scripts_are_valid_bash_and_keep_the_known_fixes(self):
-        if not shutil.which("bash"):
-            self.skipTest("no bash")
         files = _render(self.home, "macos", notify=("OBS_SLACK_BOT_TOKEN", "OBS_SLACK_CHANNEL"),
                         keep_days=30)
         for rel in ("scripts/my-harness-up", "scripts/my-harness-watchdog"):
             content, mode = files[rel]
             self.assertEqual(mode, 0o755)
             path = Path(self.tmp.name) / Path(rel).name
-            path.write_text(content, encoding="utf-8")
+            path.write_text(content, encoding="utf-8", newline="\n")
             check = subprocess.run(["bash", "-n", str(path)], capture_output=True, text=True)
             self.assertEqual(check.returncode, 0, f"{rel}: {check.stderr}")
         up = files["scripts/my-harness-up"][0]
@@ -111,10 +200,12 @@ class RenderTest(unittest.TestCase):
         self.assertIn("KEEP_DAYS=  ", watchdog)
 
     def test_next_steps_remove_the_watchdog_before_down(self):
-        for os_name, unregister in (("macos", "launchctl bootout"),
-                                    ("linux", "systemctl --user disable --now")):
+        for os_name, unregister, down in (
+                ("macos", "launchctl bootout", "my-harness-up down"),
+                ("linux", "systemctl --user disable --now", "my-harness-up down"),
+                ("windows", "schtasks /Delete", "my-harness-up.ps1 down")):
             steps = "\n".join(ops_kit.next_steps(self.home, "my harness", os_name))
-            self.assertLess(steps.index(unregister), steps.rindex("my-harness-up down"), os_name)
+            self.assertLess(steps.index(unregister), steps.rindex(down), os_name)
 
     def test_existing_scripts_are_not_replaced_without_force(self):
         files = _render(self.home, "linux")
@@ -213,7 +304,6 @@ def _read_rolled(logs: Path, stem: str, ext: str) -> list[str]:
     return lines
 
 
-@unittest.skipUnless(POSIX, "the console writer is POSIX only, like the scripts that start it")
 class ConsoleWriterTest(unittest.TestCase):
     """bin/ops-log.py: the console log's only writer, which rolls the file itself."""
 
@@ -236,6 +326,29 @@ class ConsoleWriterTest(unittest.TestCase):
             rolls = list(Path(tmp).glob("console.*.out.gz"))
             self.assertGreater(len(rolls), 10, "never rolled")
             lines = _read_rolled(Path(tmp), "console", ".out")
+            self.assertEqual([int(line.rsplit(" ", 1)[1]) for line in lines], list(range(3000)))
+
+    def test_a_detached_writer_runs_the_command_and_keeps_every_line_across_rolls(self):
+        """--detach is how the Windows launcher starts a harness: the writer runs it as a
+        child and reads its output, and returns before it finishes."""
+        chatty = ("for n in range(3000): print(f'2026-01-01T00:00:00+00:00 line {n}', "
+                  "flush=(n % 100 == 0))")
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "console.out"
+            started = subprocess.run(
+                [sys.executable, str(KIT / "bin" / "ops-log.py"), "--file", str(out),
+                 "--max-bytes", "2000", "--detach", "--", sys.executable, "-c", chatty],
+                capture_output=True, text=True, timeout=60)
+            self.assertEqual(started.returncode, 0, started.stderr)
+            self.assertTrue(started.stdout.strip().isdigit(), started.stdout)
+            lines: list[str] = []
+            for _ in range(600):
+                lines = _read_rolled(Path(tmp), "console", ".out")
+                if len(lines) >= 3000 and ops_log.writer_pid(out) is None:
+                    break
+                time.sleep(0.1)
+            self.assertIsNone(ops_log.writer_pid(out), "the writer outlived its command")
+            self.assertGreater(len(list(Path(tmp).glob("console.*.out.gz"))), 10, "never rolled")
             self.assertEqual([int(line.rsplit(" ", 1)[1]) for line in lines], list(range(3000)))
 
     def test_stamps_only_lines_without_a_time(self):
@@ -429,6 +542,21 @@ class LauncherAndWatchdogTest(unittest.TestCase):
         self.assertEqual(len(self.writers()), 1)
         self.assertTrue(self.lock_is_free(), "the harness or its writer inherited the lock")
 
+    @unittest.skipUnless(Path("/bin/bash").exists(), "no /bin/bash")
+    def test_under_bin_bash_too_nothing_in_the_background_holds_the_ops_lock(self):
+        """launchd runs the watchdog with /bin/bash, which on macOS is bash 3.2. It handed
+        the console writer a copy of fd 9 under another number, so the writer held the
+        ops lock and every later up, down and watchdog round timed out. A developer's PATH
+        usually finds a newer bash first, which hid it."""
+        shim = self.home / "shim"
+        shim.mkdir()
+        (shim / "bash").symlink_to("/bin/bash")
+        env = {"PATH": f"{shim}{os.pathsep}{os.environ['PATH']}"}
+        self.assertEqual(self.run_up("up", env=env).returncode, 0)
+        self.assertEqual(len(self.writers()), 1)
+        self.assertTrue(self.lock_is_free(), "the harness or its writer inherited the lock")
+        self.assertEqual(self.run_up("down", env=env).returncode, 0)
+
     def test_down_waits_for_a_draining_writer_so_up_never_makes_two(self):
         self.assertEqual(self.run_up("up", env={"STUB_ORPHAN_S": "3"}).returncode, 0)
         down = self.run_up("down", env={"WRITER_WAIT_S": "20"})
@@ -536,7 +664,6 @@ class LockAndRollOverlapTest(unittest.TestCase):
             finally:
                 subprocess.run(["pkill", "-f", "^sleep 3$"], capture_output=True)
 
-    @unittest.skipUnless(POSIX, "flock")
     def test_writers_rolling_one_file_keep_every_line_and_valid_gzips(self):
         """An old console writer still draining while a new one starts. Without the roll
         lock this loses about one line in eight here: one process renames and compresses
@@ -565,6 +692,205 @@ class LockAndRollOverlapTest(unittest.TestCase):
             for tag in tags:
                 mine = sorted(int(line.split()[1]) for line in lines if line.startswith(tag + " "))
                 self.assertEqual(mine, list(range(600)), tag)
+
+STUB_HARNESS_WINDOWS = """\
+import json, os, time
+with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "env-seen.json"), "w") as f:
+    json.dump({"api_key": os.environ.get("ANTHROPIC_API_KEY"),
+               "file_key": os.environ.get("STUB_FROM_FILE"), "path": os.environ["PATH"]}, f)
+print("stub harness up", flush=True)
+for n in range(3000):
+    time.sleep(0.1)
+"""
+PS = ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass"]
+
+
+@unittest.skipUnless(WINDOWS, "the PowerShell scripts and the scheduled task are Windows only")
+class WindowsLauncherTest(unittest.TestCase):
+    """Runs the rendered PowerShell scripts against a stub harness in a real venv, and
+    registers the rendered task with Task Scheduler. CI runs this on a throwaway
+    windows-latest VM; everything started or registered here is removed again."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(tmp.cleanup)
+        self.home = Path(tmp.name).resolve() / "stub"
+        (self.home / "bin").mkdir(parents=True)
+        for script in ("ops-log.py", "ops-notify.py"):
+            shutil.copy2(KIT / "bin" / script, self.home / "bin" / script)
+        (self.home / "world" / "process").mkdir(parents=True)
+        shutil.copy2(KIT / "world" / "process" / "runlog.py", self.home / "world" / "process")
+        subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(self.home / ".venv")],
+                       check=True)
+        self.python = self.home / ".venv" / "Scripts" / "python.exe"
+        (self.home / "harness.py").write_text(STUB_HARNESS_WINDOWS, encoding="utf-8")
+        (self.home / "env").mkdir()
+        (self.home / "env" / "harness.env").write_text("STUB_FROM_FILE=from-file\n# NOT_A_KEY=x\n",
+                                                       encoding="utf-8")
+        system32 = str(Path(os.environ.get("SYSTEMROOT", r"C:\Windows")) / "System32")
+        self.run_path = os.pathsep.join([str(self.home / "cli"), system32])
+        self.user = "\\".join(filter(None, (os.environ.get("USERDOMAIN"), os.environ["USERNAME"])))
+        files = ops_kit.render(self.home, "stub", "windows", self.python, self.run_path,
+                               user=self.user)
+        ops_kit.write(self.home, files, force=False)
+        self.up = self.home / "scripts" / "stub-up.ps1"
+        self.watchdog = self.home / "scripts" / "stub-watchdog.ps1"
+        self.state = self.home / "logs" / ".watchdog"
+        self.addCleanup(self.kill_all)
+
+    def processes(self) -> list[dict]:
+        script = ("@(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and "
+                  "$_.CommandLine.Contains($env:STUB_HOME) } | Select-Object ProcessId, "
+                  "ParentProcessId, Name, CommandLine) | ConvertTo-Json -Compress")
+        out = subprocess.run([*PS, "-Command", script], capture_output=True, text=True,
+                             encoding="utf-8", errors="replace",
+                             env={**os.environ, "STUB_HOME": str(self.home)}, timeout=60).stdout
+        found = json.loads(out) if out.strip() else []
+        return [found] if isinstance(found, dict) else found
+
+    @staticmethod
+    def roots(procs: list[dict]) -> list[int]:
+        """One pid per program: a venv's python.exe starts the real interpreter as its
+        child with the same command line, and the pair counts once."""
+        ids = {p["ProcessId"] for p in procs}
+        return [p["ProcessId"] for p in procs if p["ParentProcessId"] not in ids]
+
+    def pids(self) -> list[int]:
+        import re
+        pattern = ops_kit.windows_process_match(self.home)
+        return self.roots([p for p in self.processes() if re.match(pattern, p["CommandLine"], re.I)])
+
+    def writers(self) -> list[int]:
+        return self.roots([p for p in self.processes()
+                           if "ops-log.py" in p["CommandLine"] and "--run" in p["CommandLine"]])
+
+    def kill_all(self):
+        for _ in range(3):
+            procs = self.processes()
+            if not procs:
+                return
+            for p in procs:
+                subprocess.run(["taskkill", "/T", "/F", "/PID", str(p["ProcessId"])],
+                               capture_output=True)
+            time.sleep(1)
+
+    def run_ps(self, script: Path, *args, env=None):
+        full_env = {**os.environ, **(env or {})}
+        return subprocess.run([*PS, "-File", str(script), *args], capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", env=full_env, timeout=300)
+
+    def run_up(self, *args, env=None):
+        return self.run_ps(self.up, *args, env=env)
+
+    def wait_gone(self):
+        for _ in range(60):
+            if not self.pids():
+                return
+            time.sleep(0.5)
+
+    def test_scripts_parse_in_windows_powershell(self):
+        check = ("$errors = $null; [System.Management.Automation.Language.Parser]::ParseFile("
+                 "$env:PS_FILE, [ref]$null, [ref]$errors) | Out-Null; "
+                 "if ($errors) { $errors | ForEach-Object { $_.ToString() }; exit 1 }")
+        for script in (self.up, self.watchdog):
+            result = subprocess.run([*PS, "-Command", check], capture_output=True, text=True,
+                                    env={**os.environ, "PS_FILE": str(script)}, timeout=60)
+            self.assertEqual(result.returncode, 0, f"{script.name}: {result.stdout}{result.stderr}")
+
+    def test_lifecycle(self):
+        # up, with stale session values of both kinds the launcher must not hand down
+        started = self.run_up("up", env={"ANTHROPIC_API_KEY": "sk-shell",
+                                         "STUB_FROM_FILE": "stale-shell-value"})
+        self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
+        self.assertEqual(len(self.pids()), 1)
+        self.assertEqual(len(self.writers()), 1)
+        seen = json.loads((self.home / "env-seen.json").read_text(encoding="utf-8"))
+        self.assertIsNone(seen["api_key"])
+        self.assertIsNone(seen["file_key"], "a harness.env key set in the session leaked in")
+        self.assertEqual(seen["path"], self.run_path)
+        console = (self.home / "logs" / "console.out").read_text(encoding="utf-8")
+        self.assertRegex(console, r"^\d{4}-\d{2}-\d{2}T\S+ stub harness up$")
+
+        # a second up is a no-op, not a second copy
+        again = self.run_up("up")
+        self.assertEqual(again.returncode, 0, again.stdout + again.stderr)
+        self.assertIn("already running", again.stdout)
+        self.assertEqual(len(self.pids()), 1)
+        self.assertEqual(self.run_up("running").returncode, 0)
+        self.assertEqual(self.run_up("healthy").returncode, 0)
+        self.assertIn("console writer: running", self.run_up("status").stdout)
+
+        # a crash (no down marker) is restarted by one round, run exactly as the task
+        # runs it: pythonw.exe starting PowerShell without a window
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(self.pids()[0])], check=True,
+                       capture_output=True)
+        self.wait_gone()
+        self.assertNotEqual(self.run_up("running").returncode, 0)
+        self.run_task_action()
+        self.assertEqual(len(self.pids()), 1, (self.home / "logs" / "watchdog.log").read_text())
+        self.assertEqual((self.state / "failures").read_text().strip(), "1")
+        self.assertIn("restarted", (self.home / "logs" / "watchdog.log").read_text())
+
+        # the next round finds it running and resets the count
+        self.run_ps(self.watchdog)
+        self.assertFalse((self.state / "failures").exists())
+
+        # down is deliberate: the watchdog leaves it down, and so does resume
+        down = self.run_up("down")
+        self.assertEqual(down.returncode, 0, down.stdout + down.stderr)
+        self.assertEqual(self.pids(), [])
+        self.assertEqual(self.writers(), [], "down returned before the writer drained")
+        self.assertNotEqual(self.run_up("running").returncode, 0)
+        self.run_ps(self.watchdog)
+        self.assertEqual(self.pids(), [], "the watchdog undid a deliberate down")
+        self.assertEqual(self.run_up("resume").returncode, 3)
+        self.assertTrue((self.state / "down").exists())
+
+        # up clears the marker
+        self.assertEqual(self.run_up("up").returncode, 0)
+        self.assertFalse((self.state / "down").exists())
+        self.assertEqual(self.run_up("down").returncode, 0)
+
+    def run_task_action(self):
+        task = (self.home / "scripts" / "windows" / "stub-watchdog.xml").read_bytes().decode("utf-16")
+        root = ET.fromstring(task.lstrip("\ufeff").replace('encoding="UTF-16"', ""))
+        action = root.find("t:Actions/t:Exec", TASK_NS)
+        command = action.find("t:Command", TASK_NS).text
+        arguments = action.find("t:Arguments", TASK_NS).text
+        result = subprocess.run(f'"{command}" {arguments}', cwd=self.home, timeout=300)
+        self.assertEqual(result.returncode, 0)
+
+    def test_concurrent_ups_start_one_harness(self):
+        procs = [subprocess.Popen([*PS, "-File", str(self.up), "up"], stdout=subprocess.PIPE,
+                                  stderr=subprocess.STDOUT, text=True, encoding="utf-8",
+                                  errors="replace") for _ in range(4)]
+        outputs = [p.communicate(timeout=300)[0] for p in procs]
+        self.assertTrue(all(p.returncode == 0 for p in procs), outputs)
+        self.assertEqual(len(self.pids()), 1, outputs)
+        self.assertEqual(sum("started" in o for o in outputs), 1, outputs)
+        self.assertEqual(self.run_up("down").returncode, 0)
+
+    def test_the_rendered_task_registers_and_is_removed(self):
+        name = f"the-world-test-{os.getpid()}-watchdog"
+        # Starts tomorrow, so the time trigger cannot fire a round while it is registered.
+        files = ops_kit.render(self.home, "stub", "windows", self.python, self.run_path,
+                               user=self.user, now=datetime.now() + timedelta(days=1))
+        xml = self.home / "task.xml"
+        xml.write_bytes(files["scripts/windows/stub-watchdog.xml"][0])
+        self.addCleanup(subprocess.run, ["schtasks", "/Delete", "/TN", name, "/F"],
+                        capture_output=True)
+        created = subprocess.run(["schtasks", "/Create", "/TN", name, "/XML", str(xml)],
+                                 capture_output=True, text=True, errors="replace")
+        self.assertEqual(created.returncode, 0, created.stdout + created.stderr)
+        query = subprocess.run(["schtasks", "/Query", "/TN", name, "/XML"], capture_output=True)
+        self.assertEqual(query.returncode, 0, query.stderr)
+        self.assertIn(b"stub-watchdog.ps1", query.stdout.replace(b"\x00", b""))
+        deleted = subprocess.run(["schtasks", "/Delete", "/TN", name, "/F"], capture_output=True,
+                                 text=True, errors="replace")
+        self.assertEqual(deleted.returncode, 0, deleted.stdout + deleted.stderr)
+        gone = subprocess.run(["schtasks", "/Query", "/TN", name], capture_output=True)
+        self.assertNotEqual(gone.returncode, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,163 @@
+# {{NAME}}-watchdog.ps1 - one watchdog round, run every {{INTERVAL_S}}s by a scheduled task
+# (scripts\windows\{{NAME}}-watchdog.xml).
+#
+# Each round, under the same ops lock as `{{NAME}}-up.ps1 up/down`: if the harness is not
+# running and was not stopped on purpose (`{{NAME}}-up.ps1 down`), start it again. A
+# harness that keeps dying is retried with exponential backoff, {{BACKOFF_MIN_S}}s doubling to
+# {{BACKOFF_MAX_S}}s, and the count resets once a round finds it running. A harness running
+# without its console writer is restarted. Everything it does goes to logs\watchdog.log{{NOTIFY_NOTE}}.
+# The console log is not touched here; its writer rolls it (bin/ops-log.py).
+#
+# Windows PowerShell 5.1 or later. Rendered by bin/ops-kit.py from the kit's
+# templates/ops/. Re-render rather than edit.
+
+$ErrorActionPreference = 'Continue'
+$HomeDir = {{HOME_DIR}}
+$Py = {{PYTHON}}
+$UpScript = {{UP}}
+$Logs = Join-Path $HomeDir 'logs'
+$State = Join-Path $Logs '.watchdog'
+$Lock = Join-Path $State 'lock'
+$Log = Join-Path $Logs 'watchdog.log'
+$BackoffMinS = {{BACKOFF_MIN_S}}
+$BackoffMaxS = {{BACKOFF_MAX_S}}
+$KeepDays = {{KEEP_DAYS}}  # empty: rolled logs are never deleted
+$Notify = {{NOTIFY}}       # empty: no Slack message, watchdog.log only
+
+$Utf8 = New-Object System.Text.UTF8Encoding($false)
+try { [Console]::OutputEncoding = $Utf8 } catch { }
+$env:PYTHONIOENCODING = 'utf-8'
+New-Item -ItemType Directory -Force -Path $State | Out-Null
+
+function Stamp { (Get-Date).ToString('yyyy-MM-ddTHH:mm:sszzz') }
+
+function Write-Log([string]$Text) {
+  [System.IO.File]::AppendAllText($Log, "$(Stamp) $Text`n", $Utf8)
+}
+
+function Read-Number([string]$Path) {
+  try { return [int64]([System.IO.File]::ReadAllText($Path).Trim()) } catch { return 0 }
+}
+
+function Send-Note([string]$Text) {
+  Write-Log $Text
+  if (-not $Notify.Count) { return }
+  $out = & $Py (Join-Path $HomeDir 'bin\ops-notify.py') @Notify "{{NAME}} watchdog: $Text" 2>&1 |
+    ForEach-Object { "$_" }
+  if ($LASTEXITCODE -ne 0) {
+    foreach ($line in $out) { [System.IO.File]::AppendAllText($Log, "$line`n", $Utf8) }
+    Write-Log "WARNING: Slack notification failed (see the line above); the event is only in this log"
+  }
+}
+
+# The lock, or $null once it stayed busy for $WaitS seconds (see {{NAME}}-up.ps1).
+function Enter-OpsLock([double]$WaitS) {
+  $deadline = (Get-Date).AddSeconds($WaitS)
+  while ($true) {
+    try {
+      $stream = [System.IO.File]::Open($Lock, [System.IO.FileMode]::OpenOrCreate,
+        [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+      [System.IO.File]::WriteAllText("$Lock.pid", "$PID`n", $Utf8)
+      return $stream
+    } catch {
+      $e = $_.Exception
+      while ($e.InnerException) { $e = $e.InnerException }
+      if ($e -isnot [System.IO.IOException]) { throw }
+      if ((Get-Date) -ge $deadline) { return $null }
+      Start-Sleep -Milliseconds 100
+    }
+  }
+}
+
+function Invoke-Round {
+  # Only watchdog rounds write this log, one at a time under the lock, so rolling it by
+  # rename between rounds loses nothing.
+  $roll = @((Join-Path $HomeDir 'bin\ops-log.py'), '--file', $Log, '--roll-only')
+  if ($KeepDays) { $roll += @('--keep-days', $KeepDays) }
+  $err = @(& $Py @roll 2>&1 | ForEach-Object { "$_" })
+  foreach ($line in $err) {
+    [System.IO.File]::AppendAllText((Join-Path $Logs 'ops-log.err'), "$line`n", $Utf8)
+  }
+
+  # Lines the console writer could not write (a full disk, a read-only file): restarting
+  # would not help, so say it once each time it starts happening.
+  $dropping = Join-Path $Logs '.console.out.dropping'
+  $reported = Join-Path $State 'reported-dropping'
+  if (Test-Path -LiteralPath $dropping) {
+    if (-not (Test-Path -LiteralPath $reported)) {
+      Send-Note "the console writer is dropping lines: $([System.IO.File]::ReadAllText($dropping).Trim())"
+      [System.IO.File]::WriteAllText($reported, '', $Utf8)
+    }
+  } else {
+    Remove-Item -LiteralPath $reported -Force -ErrorAction SilentlyContinue
+  }
+
+  $down = Join-Path $State 'down'
+  $failuresFile = Join-Path $State 'failures'
+  $nextTryFile = Join-Path $State 'next_try'
+  & $UpScript running
+  if ($LASTEXITCODE -eq 0) {
+    # Running without its console writer: the harness's next line of output fails and
+    # kills it at a moment nobody chose, so restart it now instead.
+    & $UpScript healthy
+    if ($LASTEXITCODE -ne 0 -and -not (Test-Path -LiteralPath $down)) {
+      & $UpScript recycle
+      if ($LASTEXITCODE -eq 0) {
+        Send-Note "its console writer had died; restarted the harness before its output could kill it"
+      } else {
+        Send-Note "its console writer had died and restarting the harness failed; see $Log"
+      }
+      return
+    }
+    if (Test-Path -LiteralPath $failuresFile) {
+      Write-Log "running again after $(Read-Number $failuresFile) restart(s)"
+      Remove-Item -LiteralPath $failuresFile, $nextTryFile -Force -ErrorAction SilentlyContinue
+    }
+    return
+  }
+
+  # Stopped on purpose. Read under the lock, so a `down` either finished before this
+  # round (marker present) or starts after it.
+  if (Test-Path -LiteralPath $down) { return }
+
+  $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+  if ($now -lt (Read-Number $nextTryFile)) { return }
+  $failures = (Read-Number $failuresFile) + 1
+  $delay = $BackoffMinS
+  $i = 1
+  while ($i -lt $failures -and $delay -lt $BackoffMaxS) {
+    $delay *= 2
+    $i++
+  }
+  if ($delay -gt $BackoffMaxS) { $delay = $BackoffMaxS }
+  [System.IO.File]::WriteAllText($failuresFile, "$failures`n", $Utf8)
+  [System.IO.File]::WriteAllText($nextTryFile, "$($now + $delay)`n", $Utf8)
+
+  # `resume`, never `up`: only a person's explicit `up` clears the down marker.
+  & $UpScript resume
+  if ($LASTEXITCODE -eq 0) {
+    Send-Note "found it not running; restarted (attempt $failures; next retry no sooner than ${delay}s)"
+  } else {
+    Send-Note "found it not running and could not start it (attempt $failures; retrying in ${delay}s). See $Logs\console.out"
+  }
+}
+
+# The whole round holds the lock. A `down` in progress holds it too, so a round that
+# cannot get it within 30s is skipped; the next one comes soon.
+$lockStream = Enter-OpsLock 30
+if (-not $lockStream) {
+  [Console]::Error.WriteLine("{{NAME}} watchdog: $Lock is busy; skipped this round")
+  exit 75
+}
+# {{NAME}}-up.ps1 runs in this process (`&`), so it sees the lock is held here, and what
+# it prints goes to the watchdog log.
+$global:WorldOpsLockHeld = $HomeDir
+$global:WorldOpsLogFile = $Log
+try {
+  Invoke-Round
+} finally {
+  $global:WorldOpsLockHeld = $null
+  $global:WorldOpsLogFile = $null
+  $lockStream.Dispose()
+}
+exit 0

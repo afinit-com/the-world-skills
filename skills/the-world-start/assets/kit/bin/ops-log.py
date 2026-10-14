@@ -4,6 +4,7 @@
     <harness> 2>&1 | python bin/ops-log.py --file logs/console.out [--keep-days N]
     python bin/ops-log.py --file logs/console.out --check     # exit 0 if a writer is alive
     python bin/ops-log.py --file logs/watchdog.log --roll-only [--keep-days N]
+    python bin/ops-log.py --file logs/console.out --detach -- <harness command...>
 
 scripts/<name>-up pipes the harness's stdout and stderr through this. Each line is
 written as it arrives, prefixed with an ISO time and UTC offset unless it already starts
@@ -16,9 +17,10 @@ line appended after the copy read end-of-file and before the truncate is in neit
 copy nor the file. Here the process that rolls is the process that writes, so the rename
 happens between two lines and no line is in flight.
 
-One writer per file. It holds an flock on `.<name>.writer` (its pid inside) for its whole
-life, so a second writer exits at once instead of rolling the same file, and `--check`
-tells the launcher whether one is alive without trusting a pid file.
+One writer per file. It holds a lock on `.<name>.writer` (its pid inside; flock, or a
+byte-range lock on Windows) for its whole life, so a second writer exits at once instead
+of rolling the same file, and `--check` tells the launcher whether one is alive without
+trusting a pid file.
 
 It never stops reading. A line it cannot write (disk full, the file made read-only) is
 dropped, counted in `.<name>.dropping` beside the log and reported on stderr; once writes
@@ -26,9 +28,19 @@ work again, the log gets one line saying how many were lost. Stopping would clos
 pipe, and the harness would die of EPIPE at whatever line it printed next.
 
 `--roll-only` rolls a file whose writers take turns under the ops lock (the watchdog's
-own log) and exits. Standard library only; runlog.py is loaded by path, not through the
-`world` package, so a broken harness import cannot take its console log down with it.
-POSIX only, like the scripts that start it.
+own log) and exits.
+
+`--detach -- COMMAND` is how scripts/<name>-up.ps1 starts a harness on Windows, where a
+shell pipe between two background processes is not to be had from PowerShell 5.1. It
+starts a writer in the background (no window, its own process group, out of the
+caller's job when the job allows it, so it outlives the scheduled task that started it),
+prints the writer's pid and returns. That writer (`--run`) takes the writer lock, then
+starts COMMAND with its stdout and stderr on a pipe it reads, so the harness is the
+writer's child and the same rules hold: the writer exits on EOF, and a harness whose
+writer died gets EPIPE at its next line.
+
+Standard library only; runlog.py is loaded by path, not through the `world` package, so
+a broken harness import cannot take its console log down with it.
 """
 
 from __future__ import annotations
@@ -38,15 +50,11 @@ import importlib.util
 import os
 import re
 import signal
+import subprocess
 import sys
 import time
 from datetime import datetime
 from pathlib import Path
-
-try:
-    import fcntl
-except ImportError:  # Windows: the ops scripts that run this are POSIX only
-    fcntl = None
 
 ROOT = Path(__file__).resolve().parents[1]
 STAMPED = re.compile(rb"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}")
@@ -66,37 +74,58 @@ def stamp(line: bytes) -> bytes:
     return datetime.now().astimezone().isoformat(timespec="seconds").encode() + b" " + line
 
 
-def hold_writer_lock(path: Path, wait_s: float = 0) -> int | None:
+def hold_writer_lock(path: Path, wait_s: float = 0, runlog=None) -> int | None:
     """The fd holding this file's writer lock, or None if another writer has it.
 
     A writer starting up waits a moment (wait_s): `--check` takes the lock for an instant
     to see whether anyone holds it, and that instant must not turn a writer away."""
-    fd = os.open(path.with_name(f".{path.name}.writer"), os.O_RDWR | os.O_CREAT, 0o644)
+    runlog = runlog or _runlog()
+    fd = runlog.open_lock_file(path.with_name(f".{path.name}.writer"))
     deadline = time.monotonic() + wait_s
-    while True:
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            break
-        except BlockingIOError:
-            if time.monotonic() >= deadline:
-                os.close(fd)
-                return None
-            time.sleep(0.05)
-    os.ftruncate(fd, 0)
-    os.pwrite(fd, f"{os.getpid()}\n".encode(), 0)
+    while not runlog.try_lock(fd):
+        if time.monotonic() >= deadline:
+            os.close(fd)
+            return None
+        time.sleep(0.05)
+    runlog.write_pid(fd, os.getpid())
     return fd
 
 
-def writer_pid(path: Path) -> str | None:
+def writer_pid(path: Path, runlog=None) -> str | None:
     """The live writer's pid, or None when no writer holds the lock."""
     lock = path.with_name(f".{path.name}.writer")
     if not lock.exists():
         return None
-    fd = hold_writer_lock(path)
+    fd = hold_writer_lock(path, runlog=runlog)
     if fd is not None:
         os.close(fd)
         return None
     return lock.read_text(encoding="utf-8").strip() or "?"
+
+
+# Windows creation flags: no console window (the harness's own children inherit the
+# hidden console instead of each opening one), a process group of its own (a Ctrl-C in
+# the terminal that ran `up` does not reach it), and out of the caller's job object, so
+# a scheduled task's round ending does not take the harness with it.
+_CREATE_NEW_PROCESS_GROUP = 0x00000200
+_CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+_CREATE_NO_WINDOW = 0x08000000
+
+
+def detach(argv: list[str], err_file: Path) -> int:
+    """Start `ops-log.py --run` in the background and return its pid without waiting."""
+    command = [sys.executable, str(Path(__file__).resolve()), *argv]
+    with open(err_file, "ab") as err:
+        kw = dict(stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=err,
+                  close_fds=True)
+        if os.name != "nt":
+            return subprocess.Popen(command, start_new_session=True, **kw).pid
+        flags = _CREATE_NO_WINDOW | _CREATE_NEW_PROCESS_GROUP
+        try:
+            return subprocess.Popen(command, creationflags=flags | _CREATE_BREAKAWAY_FROM_JOB,
+                                    **kw).pid
+        except PermissionError:  # the caller's job forbids breakaway: stay in it
+            return subprocess.Popen(command, creationflags=flags, **kw).pid
 
 
 class Dropping:
@@ -144,7 +173,18 @@ def main(argv: list[str] | None = None, stdin=None) -> int:
     ap.add_argument("--roll-only", action="store_true")
     ap.add_argument("--check", action="store_true",
                     help="print the live writer's pid and exit 0, or exit 1 if there is none")
+    ap.add_argument("--run", action="store_true",
+                    help="start the command after -- and write its stdout and stderr")
+    ap.add_argument("--detach", action="store_true",
+                    help="--run in the background; print the writer's pid and return")
+    argv = sys.argv[1:] if argv is None else list(argv)
+    command: list[str] = []
+    if "--" in argv:
+        split = argv.index("--")
+        argv, command = argv[:split], argv[split + 1:]
     args = ap.parse_args(argv)
+    if (args.run or args.detach) and not command:
+        ap.error("--run and --detach need a command after --")
     runlog = _runlog()
     max_bytes = args.max_bytes if args.max_bytes is not None else runlog.RUN_LOG_MAX_BYTES
 
@@ -153,18 +193,41 @@ def main(argv: list[str] | None = None, stdin=None) -> int:
 
     args.file.parent.mkdir(parents=True, exist_ok=True)
     if args.check:
-        pid = writer_pid(args.file)
+        pid = writer_pid(args.file, runlog)
         if pid:
             print(pid)
         return 0 if pid else 1
     if args.roll_only:
         runlog.maybe_roll(args.file, max_bytes=max_bytes, keep_days=args.keep_days, log=log)
         return 0
-    if hold_writer_lock(args.file, wait_s=2) is None:
-        log(f"another writer (pid {writer_pid(args.file)}) already writes {args.file}; exiting")
+    if args.detach:
+        rest = ["--file", str(args.file.resolve()), "--run"]
+        if args.max_bytes is not None:
+            rest += ["--max-bytes", str(args.max_bytes)]
+        if args.keep_days is not None:
+            rest += ["--keep-days", str(args.keep_days)]
+        print(detach([*rest, "--", *command], args.file.parent / "ops-log.err"), flush=True)
+        return 0
+    writer_lock = hold_writer_lock(args.file, wait_s=2, runlog=runlog)
+    if writer_lock is None:
+        log(f"another writer (pid {writer_pid(args.file, runlog)}) already writes {args.file}; "
+            "exiting")
         return 1
-    # The terminal that ran `up` may close; the harness is nohup'd and so is its log.
-    signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    try:
+        return _write(args, runlog, max_bytes, log, command, stdin)
+    finally:
+        os.close(writer_lock)
+
+
+def _write(args, runlog, max_bytes: int, log, command: list[str], stdin) -> int:
+    if hasattr(signal, "SIGHUP"):
+        # The terminal that ran `up` may close; the harness is nohup'd and so is its log.
+        signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    child = None
+    if args.run:
+        child = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                 stderr=subprocess.STDOUT, close_fds=True)
+        stdin = child.stdout
     stdin = stdin or sys.stdin.buffer
     dropping = Dropping(args.file)
     for line in iter(stdin.readline, b""):
@@ -176,6 +239,8 @@ def main(argv: list[str] | None = None, stdin=None) -> int:
             dropping.failed(exc)
         else:
             dropping.cleared()
+    if child is not None:
+        child.wait()
     return 0
 
 

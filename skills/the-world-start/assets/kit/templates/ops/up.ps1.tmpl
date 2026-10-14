@@ -1,0 +1,335 @@
+# {{NAME}}-up.ps1 - run this harness in the background, and stop and inspect it (Windows).
+#
+#   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\{{NAME}}-up.ps1 <command>
+#
+#   up       start it, unless it is already running (the default)
+#   down     stop it on purpose; the watchdog leaves it down until `up`
+#   restart
+#   status   pid, uptime, console writer, watchdog state, last lines
+#   running  exit 0 if running, 1 if not (for scripts)
+#   healthy  exit 0 if running AND its console writer is alive
+#   attach   follow the console output (Ctrl-C leaves it running)
+#   resume   start it unless running or marked down (the watchdog's path)
+#   recycle  stop and start it without marking it down (the watchdog's path when the
+#            console writer died)
+#
+# up, down, restart, resume and recycle run under the harness's ops lock, the same one the
+# watchdog holds for its whole round, so checking and starting are one step. The lock is
+# logs\.watchdog\lock opened with no sharing allowed, by this PowerShell process itself:
+# the OS closes the handle, and so frees the lock, however this process ends. The handle
+# is not inheritable, so nothing started here holds it.
+#
+# Windows PowerShell 5.1 or later; nothing beyond what ships with Windows. Rendered by
+# bin/ops-kit.py from the kit's templates/ops/. Re-render rather than edit: the paths
+# below were resolved once, on the machine that rendered it.
+param([string]$Command = 'up')
+
+$ErrorActionPreference = 'Continue'
+$HomeDir = {{HOME_DIR}}
+$Py = {{PYTHON}}
+$Entry = Join-Path $HomeDir 'harness.py'
+$OpsLog = Join-Path $HomeDir 'bin\ops-log.py'
+# A python process whose first argument is this harness.py (bin/ops-kit.py
+# windows_process_match), so a second harness, an editor, or a search for the path never
+# counts. A venv's python.exe starts the real interpreter as its child with the same
+# arguments; Get-HarnessProcesses counts each such pair once.
+$Match = {{MATCH}}
+$Out = Join-Path $HomeDir 'logs\console.out'
+$State = Join-Path $HomeDir 'logs\.watchdog'
+$Lock = Join-Path $State 'lock'
+$DownFile = Join-Path $State 'down'
+# PATH with the agent CLI's directory first, resolved when this was rendered, so the
+# harness runs the CLI that was found then, whatever PATH a scheduled task starts with.
+$RunPath = {{RUN_PATH}}
+$KeepDays = {{KEEP_DAYS}}  # empty: rolled console logs are never deleted
+$DownWaitS = 60
+if ($env:DOWN_WAIT_S) { $DownWaitS = [int]$env:DOWN_WAIT_S }
+# How long to wait for the console writer to drain and exit once the harness is gone.
+$WriterWaitS = 30
+if ($env:WRITER_WAIT_S) { $WriterWaitS = [int]$env:WRITER_WAIT_S }
+$LockWaitS = $DownWaitS + 60
+if ($env:LOCK_WAIT_S) { $LockWaitS = [int]$env:LOCK_WAIT_S }
+
+$Utf8 = New-Object System.Text.UTF8Encoding($false)
+try { [Console]::OutputEncoding = $Utf8 } catch { }
+$env:PYTHONIOENCODING = 'utf-8'
+
+# Output goes straight to the console streams, never down the pipeline, so a function's
+# return value is only what it returns. Under the watchdog it goes to its log instead.
+function Say([string]$Text, [switch]$Err) {
+  if ($global:WorldOpsLogFile) {
+    [System.IO.File]::AppendAllText($global:WorldOpsLogFile, "$Text`n", $Utf8)
+  } elseif ($Err) {
+    [Console]::Error.WriteLine($Text)
+  } else {
+    [Console]::Out.WriteLine($Text)
+  }
+}
+
+function Stamp { (Get-Date).ToString('yyyy-MM-ddTHH:mm:sszzz') }
+
+function Read-Text([string]$Path) {
+  if (Test-Path -LiteralPath $Path) { return [System.IO.File]::ReadAllText($Path).Trim() }
+  return ''
+}
+
+# The lock, or $null once it stayed busy for $WaitS seconds.
+function Enter-OpsLock([double]$WaitS) {
+  New-Item -ItemType Directory -Force -Path $State | Out-Null
+  $deadline = (Get-Date).AddSeconds($WaitS)
+  while ($true) {
+    try {
+      $stream = [System.IO.File]::Open($Lock, [System.IO.FileMode]::OpenOrCreate,
+        [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+      [System.IO.File]::WriteAllText("$Lock.pid", "$PID`n", $Utf8)
+      return $stream
+    } catch {
+      $e = $_.Exception
+      while ($e.InnerException) { $e = $e.InnerException }
+      if ($e -isnot [System.IO.IOException]) { throw }
+      if ((Get-Date) -ge $deadline) { return $null }
+      Start-Sleep -Milliseconds 100
+    }
+  }
+}
+
+function Get-HarnessProcesses {
+  $found = @(Get-CimInstance -ClassName Win32_Process -Filter "Name LIKE 'python%'" -ErrorAction SilentlyContinue |
+    Where-Object { $_.CommandLine -and $_.CommandLine -match $Match })
+  $ids = @($found | ForEach-Object { [int]$_.ProcessId })
+  $found | Where-Object { $ids -notcontains [int]$_.ParentProcessId }
+}
+
+function Join-Ids($Processes) { ($Processes | ForEach-Object { $_.ProcessId }) -join ' ' }
+
+# Every key env\harness.env declares. The loader lets a variable already set win over
+# the file; under this launcher the file wins, because a stale value in the session that
+# ran `up` (a token, an OAuth client) is not something the harness was configured with.
+function Get-EnvKeys {
+  $file = Join-Path $HomeDir 'env\harness.env'
+  if (-not (Test-Path -LiteralPath $file)) { return }
+  foreach ($line in [System.IO.File]::ReadAllLines($file)) {
+    if ($line -match '^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=') { $Matches[1] }
+  }
+}
+
+# The pid of the live console writer (bin/ops-log.py holds a lock while it runs), or ''.
+# A pid file could outlive its process; the lock cannot.
+function Get-Writer {
+  $w = & $Py $OpsLog --file $Out --check 2>$null
+  if ($LASTEXITCODE -eq 0 -and $w) { return ("$w").Trim() }
+  return ''
+}
+
+# Wait for the console writer to drain and exit. It exits on EOF, which comes when the
+# last process holding the harness's output closes it: the harness, and anything the
+# harness started that inherited its stdout and is still running.
+function Wait-Writer {
+  $waited = 0
+  while ($true) {
+    $w = Get-Writer
+    if (-not $w) { return $true }
+    if ($waited -ge $WriterWaitS) {
+      Say "{{NAME}}: the console writer (pid $w) is still running ${WriterWaitS}s after" -Err
+      Say "  the harness stopped: something the harness started still holds its output" -Err
+      Say "  open. Find it with: Get-CimInstance Win32_Process -Filter 'ParentProcessId=$w'" -Err
+      return $false
+    }
+    Start-Sleep -Seconds 1
+    $waited++
+  }
+}
+
+# Start the harness; the caller holds the lock and has checked it is not running.
+function Start-Harness {
+  New-Item -ItemType Directory -Force -Path (Join-Path $HomeDir 'logs'), $State | Out-Null
+  # A second writer would exit at once and leave the new harness without a reader, so an
+  # old one still draining is waited for, not raced.
+  if (-not (Wait-Writer)) { return $false }
+  # ANTHROPIC_API_KEY is removed so the agent SDK stays on the subscription login
+  # (world/runners/claude.py refuses to run while it is set), and so is every key
+  # env\harness.env declares. Set on this process for the start only, then put back.
+  $saved = @{}
+  foreach ($key in @('ANTHROPIC_API_KEY', 'PATH') + @(Get-EnvKeys)) {
+    $saved[$key] = [Environment]::GetEnvironmentVariable($key, 'Process')
+  }
+  try {
+    foreach ($key in @($saved.Keys)) { [Environment]::SetEnvironmentVariable($key, $null, 'Process') }
+    [Environment]::SetEnvironmentVariable('PATH', $RunPath, 'Process')
+    # The harness's output goes through one writer that stamps and rolls the console log
+    # itself (bin/ops-log.py); nothing else writes or truncates that file. The writer
+    # starts the harness as its own child, detached from this console.
+    $argv = @($OpsLog, '--file', $Out, '--detach')
+    if ($KeepDays) { $argv += @('--keep-days', $KeepDays) }
+    $argv += @('--', $Py, $Entry)
+    Push-Location -LiteralPath $HomeDir
+    try { & $Py @argv | Out-Null } finally { Pop-Location }
+  } finally {
+    foreach ($key in @($saved.Keys)) { [Environment]::SetEnvironmentVariable($key, $saved[$key], 'Process') }
+  }
+  for ($i = 0; $i -lt 10; $i++) {
+    Start-Sleep -Milliseconds 500
+    $running = @(Get-HarnessProcesses)
+    if ($running.Count) {
+      Start-Sleep -Seconds 1
+      if (@(Get-HarnessProcesses).Count) {
+        if (-not (Get-Writer)) {
+          Say "{{NAME}}: started (pid $(Join-Ids $running)) but its console writer is not" -Err
+          Say "  running, so its output is lost; see $HomeDir\logs\ops-log.err" -Err
+          return $false
+        }
+        Say "{{NAME}}: started (pid $(Join-Ids $running)); console: $Out"
+        return $true
+      }
+    }
+  }
+  Say "{{NAME}}: did not stay up. Last console lines:" -Err
+  if (Test-Path -LiteralPath $Out) {
+    Get-Content -LiteralPath $Out -Tail 20 -Encoding UTF8 | ForEach-Object { Say $_ -Err }
+  }
+  return $false
+}
+
+# Stop the harness and wait for it, then for its console writer. Windows has no SIGTERM
+# for a Python process and the harness hooks no signal there, so it is ended with what it
+# started (taskkill /T /F): a run in flight ends with it and leaves no record.
+function Stop-Harness {
+  $running = @(Get-HarnessProcesses)
+  if ($running.Count) {
+    foreach ($p in $running) { & taskkill.exe /T /F /PID $p.ProcessId 2>&1 | Out-Null }
+    $waited = 0
+    while (@(Get-HarnessProcesses).Count) {
+      if ($waited -ge $DownWaitS) {
+        Say "{{NAME}}: still running ${DownWaitS}s after taskkill (pid $(Join-Ids @(Get-HarnessProcesses)))." -Err
+        return $false
+      }
+      Start-Sleep -Seconds 1
+      $waited++
+    }
+  }
+  return (Wait-Writer)
+}
+
+# An explicit `up` is the one thing that clears the down marker, even when the harness is
+# still running (a `down` that timed out leaves it running and marked; without this the
+# watchdog would never restart it again).
+function Invoke-Up {
+  Remove-Item -LiteralPath $DownFile -Force -ErrorAction SilentlyContinue
+  $running = @(Get-HarnessProcesses)
+  if ($running.Count) {
+    Say "{{NAME}}: already running (pid $(Join-Ids $running))"
+    return 0
+  }
+  if (Start-Harness) { return 0 }
+  return 1
+}
+
+# The watchdog's start: never clears the marker, and refuses while it is there.
+function Invoke-Resume {
+  if (Test-Path -LiteralPath $DownFile) {
+    Say "{{NAME}}: marked down since $(Read-Text $DownFile); not starting"
+    return 3
+  }
+  if (@(Get-HarnessProcesses).Count) { return 0 }
+  if (Start-Harness) { return 0 }
+  return 1
+}
+
+# The watchdog's restart of a harness whose console writer died: without a reader its
+# next line of output fails and it dies at a moment nobody chose.
+function Invoke-Recycle {
+  if (Test-Path -LiteralPath $DownFile) {
+    Say "{{NAME}}: marked down since $(Read-Text $DownFile); not restarting"
+    return 3
+  }
+  if ((Stop-Harness) -and (Start-Harness)) { return 0 }
+  return 1
+}
+
+function Invoke-Down {
+  New-Item -ItemType Directory -Force -Path $State | Out-Null
+  [System.IO.File]::WriteAllText($DownFile, "$(Stamp)`n", $Utf8)
+  if (-not @(Get-HarnessProcesses).Count -and -not (Get-Writer)) {
+    Say "{{NAME}}: not running (marked down; the watchdog leaves it down until up)"
+    return 0
+  }
+  if (-not (Stop-Harness)) {
+    Say "  It stays marked down." -Err
+    return 1
+  }
+  Say "{{NAME}}: stopped (marked down; the watchdog leaves it down until up)"
+  return 0
+}
+
+function Show-Status {
+  $running = @(Get-HarnessProcesses)
+  if ($running.Count) {
+    Say "{{NAME}}: running"
+    foreach ($p in $running) {
+      $uptime = (Get-Date) - $p.CreationDate
+      Say ("  pid, uptime: {0} {1:d\.hh\:mm\:ss}" -f $p.ProcessId, $uptime)
+    }
+  } else {
+    Say "{{NAME}}: not running"
+  }
+  $w = Get-Writer
+  if ($w) {
+    Say "  console writer: running (pid $w)"
+  } elseif ($running.Count) {
+    Say "  console writer: NOT RUNNING. UNHEALTHY: the harness's output goes nowhere and its"
+    Say "    next line kills it. The watchdog restarts it; by hand: restart"
+  }
+  $dropping = Join-Path $HomeDir 'logs\.console.out.dropping'
+  if (Test-Path -LiteralPath $dropping) { Say "  console writer is DROPPING lines: $(Read-Text $dropping)" }
+  if (Test-Path -LiteralPath $DownFile) { Say "  marked down since $(Read-Text $DownFile) (up clears it)" }
+  $failures = Join-Path $State 'failures'
+  if (Test-Path -LiteralPath $failures) { Say "  watchdog: $(Read-Text $failures) restart(s) without staying up" }
+  $watchdogLog = Join-Path $HomeDir 'logs\watchdog.log'
+  if (Test-Path -LiteralPath $watchdogLog) { Say "  watchdog log: $watchdogLog" }
+  if (Test-Path -LiteralPath $Out) {
+    Say "  last console lines ($Out):"
+    Get-Content -LiteralPath $Out -Tail 5 -Encoding UTF8 | ForEach-Object { Say "    $_" }
+  }
+  return 0
+}
+
+$code = 0
+$lockStream = $null
+# The variable names the harness whose lock is held: the watchdog runs this script in its
+# own process, already holding the lock, and another harness's script still takes its own.
+if (@('up', 'down', 'restart', 'resume', 'recycle') -contains $Command -and
+    $global:WorldOpsLockHeld -ne $HomeDir) {
+  if (-not (Test-Path -LiteralPath $Py)) {
+    Say "{{NAME}}: $Py not found; create the venv (uv venv .venv; uv pip install -e .)" -Err
+    exit 1
+  }
+  $lockStream = Enter-OpsLock $LockWaitS
+  if (-not $lockStream) {
+    Say "{{NAME}}: $Lock is held by pid $(Read-Text "$Lock.pid"); gave up after ${LockWaitS}s" -Err
+    exit 75
+  }
+  $global:WorldOpsLockHeld = $HomeDir
+}
+try {
+  switch ($Command) {
+    'up' { $code = Invoke-Up }
+    'resume' { $code = Invoke-Resume }
+    'down' { $code = Invoke-Down }
+    'restart' { $code = Invoke-Down; if ($code -eq 0) { $code = Invoke-Up } }
+    'status' { $code = Show-Status }
+    'running' { if (@(Get-HarnessProcesses).Count) { $code = 0 } else { $code = 1 } }
+    'healthy' { if (@(Get-HarnessProcesses).Count -and (Get-Writer)) { $code = 0 } else { $code = 1 } }
+    'recycle' { $code = Invoke-Recycle }
+    'attach' { Get-Content -LiteralPath $Out -Tail 50 -Wait -Encoding UTF8 }
+    default {
+      Say "usage: {{NAME}}-up.ps1 [up|down|restart|status|running|healthy|attach|resume|recycle]" -Err
+      $code = 2
+    }
+  }
+} finally {
+  if ($lockStream) {
+    $lockStream.Dispose()
+    $global:WorldOpsLockHeld = $null
+  }
+}
+exit $code

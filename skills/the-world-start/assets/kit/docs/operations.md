@@ -10,13 +10,15 @@ harness's own `scripts/`. It writes files and prints commands. It never
 loads, enables or starts anything.
 
 ```bash
-uv run python bin/ops-kit.py                        # macOS: launchd, Linux: systemd user timer
+uv run python bin/ops-kit.py                        # macOS: launchd, Linux: systemd user timer,
+                                                    # Windows: a Task Scheduler task
 uv run python bin/ops-kit.py --notify --prefix OBS  # also post restarts to the Slack channel
 uv run python bin/ops-kit.py --keep-days 30         # delete rolled console logs after 30 days
 ```
 
-Windows is not supported yet. On a `windows` profile the script says so and writes
-nothing.
+It renders for the machine it runs on. A profile for another OS is refused, since the
+scripts carry this machine's paths. On Windows the scripts are PowerShell (5.1, as
+shipped with Windows; nothing to install) and are described under [Windows](#windows).
 
 ## What it writes
 
@@ -26,6 +28,8 @@ nothing.
 | `scripts/<name>-watchdog` | One round: roll the console logs, restart the harness if it died |
 | `scripts/launchd/<label>.plist` | macOS: run the watchdog every 120s and at login |
 | `scripts/systemd/<name>-watchdog.{service,timer}` | Linux: the same as a user timer |
+| `scripts/<name>-up.ps1`, `scripts/<name>-watchdog.ps1` | Windows: the same two scripts |
+| `scripts/windows/<name>-watchdog.xml` | Windows: a scheduled task running the watchdog every 2 minutes from logon |
 
 The paths inside are resolved once, on the machine that rendered them. After moving the
 harness or changing its venv, render again with `--force`.
@@ -112,8 +116,56 @@ count, and that file may be on the same disk.
 | To | Run |
 |---|---|
 | Stop it for a while | `scripts/<name>-up down`. The watchdog leaves it down until `up`. |
-| Take it down for good | Remove the watchdog first, then `down`. On macOS `launchctl bootout gui/$(id -u)/<label>`, on Linux `systemctl --user disable --now <name>-watchdog.timer`. |
+| Take it down for good | Remove the watchdog first, then `down`. On macOS `launchctl bootout gui/$(id -u)/<label>`, on Linux `systemctl --user disable --now <name>-watchdog.timer`, on Windows `schtasks /Delete /TN the-world-<name>-watchdog /F`. |
 
 `down` sends SIGTERM and waits up to 5 minutes for runs already started to finish, then
 up to 30 seconds for the console writer to drain. If either is still going it says so
-and leaves the harness marked down.
+and leaves the harness marked down. On Windows `down` does not wait for runs; see below.
+
+## Windows
+
+```powershell
+uv run python bin/ops-kit.py
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\<name>-up.ps1 status
+schtasks /Create /TN the-world-<name>-watchdog /XML scripts\windows\<name>-watchdog.xml
+```
+
+The commands, the down marker, the backoff, the logs and the order for taking it down
+are the ones above. What differs, and why:
+
+- **The lock is held by the script itself.** A Windows process cannot hand a lock to its
+  child, so `bin/ops-lock.py` is not used. `<name>-up.ps1` and `<name>-watchdog.ps1`
+  open `logs\.watchdog\lock` allowing no sharing, and the OS frees it when that
+  PowerShell process ends, however it ends. The watchdog runs `<name>-up.ps1` in its own
+  process, so a round is one lock holder from start to end. The handle is not
+  inheritable, so the harness never holds it.
+- **The harness is the console writer's child.** PowerShell 5.1 cannot pipe one
+  background process into another, so `bin/ops-log.py --detach` starts the writer with
+  no window and in its own process group, and the writer starts the harness and reads
+  its output. The rules are unchanged: one writer per file, it exits on EOF, and a
+  harness whose writer died fails at its next line. The writer also leaves the job
+  object of the scheduled task that started it, where Windows allows that, so a round
+  ending does not take the harness with it.
+- **One copy** is found from each process's command line (`Get-CimInstance
+  Win32_Process`): a python interpreter whose first argument is this `harness.py`. A
+  venv's `python.exe` starts the real interpreter as its child with the same arguments,
+  and that pair counts as one harness.
+- **`down` does not drain.** Windows has no SIGTERM for a Python process and the
+  harness hooks no signal there, so `down` ends it with `taskkill /T /F`, together with
+  what it started. A run in progress ends without a record in `logs/harness.jsonl`.
+  Stop it between runs when that matters.
+- **The agent CLI is pinned the same way.** Windows has no login shell to ask, and a
+  scheduled task starts with the user's own environment, so the render takes the
+  current `PATH` and puts the directory of the `claude` (or `codex`) it finds first.
+  Render from a terminal opened after the CLI was installed.
+- **The task is not registered for you.** It runs every 2 minutes from the user's logon
+  and from the time it was rendered, only while that user is logged on, with the user's
+  own rights and no stored password. Its action is the venv's `pythonw.exe` starting
+  PowerShell without a window, so no console flashes up every round.
+- **Following the log holds up its roll.** Windows cannot rename a file another process
+  has open. While `<name>-up.ps1 attach` (or any `Get-Content -Wait`) follows
+  `logs\console.out`, a roll that falls due fails and is retried on each later line,
+  with a line in `logs\ops-log.err` each time. Nothing is lost; the file grows past
+  10MB until the follower stops.
+- **No sleep prevention.** There is no `caffeinate`; set the power plan so the machine
+  does not sleep while it should be running.

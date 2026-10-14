@@ -27,7 +27,13 @@ Rolling, recovering and appending happen under an flock on `.<name>.lock` beside
 file, and the temp .gz carries the pid that writes it. Two processes on one file (an old
 console writer still draining while a new one starts, a recovery overlapping a roll)
 then take turns instead of writing one shared temp file into a corrupt gzip and deleting
-the original. Windows has no fcntl; there the one harness process is the only writer.
+the original. On Windows the same lock is a byte-range lock (msvcrt.locking), which the
+OS likewise drops when its holder closes the file or dies.
+
+Windows cannot rename a file another process holds open without FILE_SHARE_DELETE, which
+neither Python nor PowerShell's Get-Content asks for. A roll that meets one (someone
+following the console log) fails, is logged, and is retried on the next write; the
+lines keep going to the current file meanwhile.
 """
 
 from __future__ import annotations
@@ -45,20 +51,59 @@ try:
     import fcntl
 except ImportError:  # Windows
     fcntl = None
+    import msvcrt
 
 RUN_LOG_MAX_BYTES = 10 * 1024 * 1024
+# Windows locks are mandatory: a locked byte cannot be read by anyone else. Lock one far
+# past the end, so a lock file can still carry its holder's pid at the start.
+_WIN_LOCK_OFFSET = 0x7FFFFFF0
+
+
+def open_lock_file(path: Path) -> int:
+    """An fd on a lock file (created if missing), not inherited by child processes."""
+    return os.open(path, os.O_RDWR | os.O_CREAT | getattr(os, "O_BINARY", 0), 0o644)
+
+
+def try_lock(fd: int) -> bool:
+    """Take an exclusive lock on the whole of `fd`'s file without waiting. The OS drops
+    it when the fd is closed or the process dies, however it dies."""
+    if fcntl is not None:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return False
+        return True
+    os.lseek(fd, _WIN_LOCK_OFFSET, os.SEEK_SET)
+    try:
+        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+    except OSError:
+        return False
+    return True
+
+
+def lock(fd: int) -> None:
+    """try_lock, waiting as long as it takes."""
+    if fcntl is not None:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        return
+    while not try_lock(fd):
+        time.sleep(0.01)
+
+
+def write_pid(fd: int, pid: int) -> None:
+    """Replace the lock file's content with `pid` (for a message naming the holder)."""
+    os.ftruncate(fd, 0)
+    os.lseek(fd, 0, os.SEEK_SET)
+    os.write(fd, f"{pid}\n".encode())
 
 
 @contextlib.contextmanager
 def _locked(path: Path):
     """Hold the per-file roll lock. Blocking: every holder is quick (one append, or one
     roll of at most max_bytes)."""
-    if fcntl is None:
-        yield
-        return
-    fd = os.open(path.with_name(f".{path.name}.lock"), os.O_RDWR | os.O_CREAT, 0o644)
+    fd = open_lock_file(path.with_name(f".{path.name}.lock"))
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        lock(fd)
         yield
     finally:
         os.close(fd)  # releases the lock

@@ -107,8 +107,12 @@ start() {
   cd "$HOME_DIR"
   # The harness's output goes through one writer that stamps and rolls the console log
   # itself (bin/ops-log.py); nothing else writes or truncates that file.
-  nohup "${run[@]}" > >(exec "${writer[@]}" >/dev/null 2>>"$HOME_DIR/logs/ops-log.err" 9>&-) \
-    2>&1 </dev/null 9>&- &
+  # `9>&-` comes before the process substitution: bash 3.2 (macOS /bin/bash, which
+  # launchd runs) forks `>(...)` while fd 9 is still open and hands the writer a copy of
+  # it under another number, which `9>&-` inside cannot close. The writer then held the
+  # ops lock for its whole life and every later up, down and watchdog round timed out.
+  nohup "${run[@]}" 9>&- > >(exec "${writer[@]}" >/dev/null 2>>"$HOME_DIR/logs/ops-log.err") \
+    2>&1 </dev/null &
   local started=$!
   if [ "$CAFFEINATE" = 1 ] && command -v caffeinate >/dev/null; then
     # Keep a laptop awake for as long as that process lives. `-w` rather than wrapping

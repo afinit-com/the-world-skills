@@ -389,11 +389,13 @@ does not check. Say which checks actually passed, what remains unverified, and o
 action. Also say that nothing runs unless `harness.py` is running: the kit sets up no
 service, so a reboot stops it until the user starts it again. If a worker runs on a
 schedule or a poll, offer once to keep it running ("상시 실행을 원하면…"), and do nothing
-more unless they say yes. On yes, on macOS or Linux, run `uv run python bin/ops-kit.py`
-from the harness (`--notify --prefix <PREFIX>` once Slack is connected, if they want
+more unless they say yes. On yes, run `uv run python bin/ops-kit.py` on the machine the
+harness runs on, from the harness (`--notify --prefix <PREFIX>` once Slack is connected, if they want
 restarts announced there). It only writes `scripts/`. Show the commands it prints that register the
 watchdog and let the user run them; don't run them yourself. Fill the README's "Stopping it
 on purpose" rows from that output: with a watchdog, remove the watchdog before `down`.
-On Windows, say that the ops kit does not support it yet. `docs/operations.md` has the rest.
+On Windows it writes PowerShell scripts and a Task Scheduler task to register with
+`schtasks`; there `down` stops a run in progress without waiting for it, so say that.
+`docs/operations.md` has the rest.
 The harness needs neither this plugin nor the kit to run. Re-running the installer is only
 for upgrades.

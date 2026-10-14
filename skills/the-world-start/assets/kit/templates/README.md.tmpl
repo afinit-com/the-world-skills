@@ -25,7 +25,7 @@
 | To | Run |
 |---|---|
 | Stop it for a while | Ctrl-C in its terminal, or `scripts/…-up down` (the watchdog leaves it down until `scripts/…-up`) |
-| Take it down for good | Remove the watchdog first (`launchctl bootout …` / `systemctl --user disable --now …`), then `scripts/…-up down` |
+| Take it down for good | Remove the watchdog first (`launchctl bootout …` / `systemctl --user disable --now …` / `schtasks /Delete /TN … /F`), then `scripts/…-up down` |
 
 ## Where to change what
 
