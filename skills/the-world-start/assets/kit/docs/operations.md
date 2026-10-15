@@ -41,6 +41,7 @@ state until it changes or a healthy round clears it.
 | `scripts/launchd/<label>.plist` | macOS: run the watchdog every 120s and at login |
 | `scripts/systemd/<name>-watchdog.{service,timer}` | Linux: the same as a user timer |
 | `scripts/<name>-up.ps1`, `scripts/<name>-watchdog.ps1` | Windows: the same two scripts |
+| `scripts/<name>-ops-common.ps1` | Windows: shared timestamp, exception and lock helpers, dot-sourced by both scripts |
 | `scripts/windows/<name>-watchdog.xml` | Windows: a scheduled task running the watchdog every 2 minutes from logon |
 
 The paths inside are resolved once, on the machine that rendered them. After moving the
