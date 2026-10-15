@@ -30,6 +30,8 @@ KIT = Path(__file__).resolve().parents[1]
 POSIX = os.name == "posix" and shutil.which("bash") and shutil.which("pgrep")
 WINDOWS = os.name == "nt"
 TASK_NS = {"t": "http://schemas.microsoft.com/windows/2004/02/mit/task"}
+# The first restart of a count: "(attempt 1; ..." in bash, "(attempt 1)" in PowerShell.
+FIRST_ATTEMPT = r"\(attempt 1[;)]"
 
 
 def _load(name: str):
@@ -691,7 +693,7 @@ class NotificationRetryTests:
         self.assertEqual(actions[-2:], ["running", "resume"])
         last = self.notification_attempts()[-1]
         self.assertEqual(last["thread"], "111.1")
-        self.assertIn("(attempt 1;", last["text"])
+        self.assertRegex(last["text"], FIRST_ATTEMPT)
         self.assertEqual((self.state / "incident").read_text().strip(), "111.1")
         self.assertFalse((self.state / "recovery_next_try").exists())
 
@@ -738,7 +740,7 @@ class NotificationRetryTests:
         for cycle in range(4):
             healthy.unlink(missing_ok=True)
             self.notification_round()
-            self.assertIn("(attempt 1;", self.notification_attempts()[-1]["text"], cycle)
+            self.assertRegex(self.notification_attempts()[-1]["text"], FIRST_ATTEMPT, cycle)
             healthy.touch()
             self.notification_round()
             self.assertFalse((self.state / "failures").exists(), cycle)
