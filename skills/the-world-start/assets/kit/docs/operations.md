@@ -92,9 +92,10 @@ Each of these was a bug in a hand-built launcher first.
   recovery notification keeps the incident open: `logs/.watchdog/recovery-failures`
   records pending recovery retries, using the same exponential backoff without
   increasing the restart count or restarting a healthy harness. Successful recovery
-  delivery clears the incident and retry state. If the thread no longer takes
-  replies (its message was deleted), the line is posted as a new message, which becomes
-  the thread. `--notify` is refused unless `env/harness.env` already holds the bot
+  delivery clears the incident and retry state. If Slack says the thread is gone (its
+  message was deleted), the line is posted as a new message, which becomes the thread.
+  Any other failure, a timeout included, is retried in the same thread, so delivery is
+  at least once: a line Slack took but whose answer was lost can appear twice. `--notify` is refused unless `env/harness.env` already holds the bot
   token and the channel.
 - **A deliberate stop stays stopped.** `down` leaves a marker
   (`logs/.watchdog/down`) the watchdog respects until the next `up`. Before it existed, a

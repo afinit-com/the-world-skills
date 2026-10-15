@@ -425,6 +425,36 @@ class NotifyTest(unittest.TestCase):
         self.assertEqual((code, ts), (0, "333.3"))
         self.assertEqual(requests[1], {"channel": "C1", "text": "again"})
 
+    def test_a_reply_to_a_deleted_message_becomes_a_new_message(self):
+        code, ts, requests = self.notify(
+            "--thread-ts", "111.1", "again",
+            replies=[{"ok": False, "error": "message_not_found"}, {"ok": True, "ts": "333.3"}])
+        self.assertEqual((code, ts), (0, "333.3"))
+        self.assertEqual(len(requests), 2)
+
+    def test_a_reply_refused_for_another_reason_is_a_failure_not_a_new_thread(self):
+        code, ts, requests = self.notify("--thread-ts", "111.1", "again",
+                                         replies=[{"ok": False, "error": "ratelimited"}])
+        self.assertEqual((code, ts), (1, ""))
+        self.assertEqual(len(requests), 1)
+
+    def test_a_reply_that_timed_out_is_a_failure_not_a_second_post(self):
+        # Slack may have taken it; posting it again as a new message would split the thread.
+        requests = []
+
+        def opener(req, timeout):
+            requests.append(json.loads(req.data))
+            raise TimeoutError("timed out")
+
+        env = {"WORLD_ENV_FILE": self.empty_env, "T_TOKEN": "xoxb-1", "T_CHAN": "C1"}
+        with unittest.mock.patch.dict(os.environ, env), \
+                unittest.mock.patch("sys.stdout", io.StringIO()) as out, \
+                unittest.mock.patch("sys.stderr", io.StringIO()):
+            code = ops_notify.main(["--token-env", "T_TOKEN", "--channel-env", "T_CHAN",
+                                    "--thread-ts", "111.1", "again"], opener=opener)
+        self.assertEqual((code, out.getvalue()), (1, ""))
+        self.assertEqual(len(requests), 1)
+
     def test_request_carries_the_token_only_in_the_header(self):
         req = ops_notify.build_request("xoxb-secret", "C1", "restarted")
         self.assertEqual(req.get_header("Authorization"), "Bearer xoxb-secret")
