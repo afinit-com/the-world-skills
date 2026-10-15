@@ -129,13 +129,15 @@ check_unknown() {
 now=$(date +%s)
 next_try=$(cat "$STATE/next_try" 2>/dev/null || echo 0)
 
-"$UP" running
+# Their output is why a round could not tell (a pgrep failure), so it goes to the log the
+# notification points at, as everything resume and recycle print does.
+"$UP" running >>"$LOG" 2>&1
 running_rc=$?
 check_unknown "$running_rc" running
 if [ "$running_rc" = 0 ]; then
   # Running without its console writer: the harness's next line of output fails with
   # EPIPE and kills it at a moment nobody chose, so restart it now instead.
-  "$UP" healthy
+  "$UP" healthy >>"$LOG" 2>&1
   healthy_rc=$?
   check_unknown "$healthy_rc" healthy
   if [ "$healthy_rc" != 0 ] && [ ! -f "$STATE/down" ]; then

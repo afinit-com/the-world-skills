@@ -612,6 +612,19 @@ class LauncherAndWatchdogTest(unittest.TestCase):
                 self.assertEqual(result.returncode, 4, result.stdout + result.stderr)
                 self.assertEqual(self.pids(), [])
 
+    def test_why_the_watchdog_could_not_tell_is_in_its_log(self):
+        shim = self.home / "shim"
+        shim.mkdir()
+        pgrep = shim / "pgrep"
+        pgrep.write_text("#!/bin/sh\nexit 3\n")
+        pgrep.chmod(0o755)
+        env = {**os.environ, "PATH": str(shim) + os.pathsep + os.environ["PATH"]}
+        result = subprocess.run([str(self.watchdog)], capture_output=True, text=True, env=env,
+                                timeout=120)
+        self.assertEqual(result.returncode, 4, result.stdout + result.stderr)
+        log = (self.home / "logs" / "watchdog.log").read_text(encoding="utf-8")
+        self.assertIn("cannot list harness processes (pgrep exit 3)", log)
+
     def test_relative_pgrep_error_refuses_start(self):
         shim = self.home / "shim"
         shim.mkdir()
