@@ -15,8 +15,10 @@ already holds for every other one here: authority declared in code and narrow, a
 scoped tool rather than a wider Bash allowlist, outward actions behind human approval,
 and a report that says what is still unverified. A piece that only reads leaves
 `write_scope` empty, which blocks writes everywhere; a piece that must write gets a
-narrow `write_scope`, a reason for it, and a write tool bound to the same roots. Keep
-speaking in {{universe_name}}'s vocabulary.
+narrow `write_scope`, a reason for it, and a write tool bound to the same roots. A tool
+that leaves something outside writes through one function that only writes (not the
+`run_cmd` its reads also use), so `docs/verify.md` can stub that function and test the
+tool's boundary without writing. Keep speaking in {{universe_name}}'s vocabulary.
 
 ## Split the request, place each piece, then build
 

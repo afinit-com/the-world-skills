@@ -125,6 +125,60 @@ class FakeListenerTests(unittest.TestCase):
         self.assertEqual([], WRITES)
         self.assertIs(gh_write, module.gh_write)  # put back after the check
 
+    def test_a_reached_stub_is_named_even_when_the_handler_then_breaks(self) -> None:
+        # Review of PR #6: `rc, out = await run_cmd(...)` on a stub raises ValueError, which
+        # hid that the write had been reached.
+        async def handler(args):
+            rc, out = gh_write(args["url"])
+            return result(rc, out)
+
+        tools = [ToolSpec("pr_comment", "Comment", {"url": str}, handler)]
+        with self.assertRaises(AssertionError) as caught:
+            asyncio.run(call(tools, "pr_comment", {"url": "https://evil.example/p/1"},
+                             outward=self.outward))
+        self.assertIn("boundary is open", str(caught.exception))
+        self.assertIsInstance(caught.exception.__cause__, (TypeError, ValueError))
+        self.assertEqual([], WRITES)
+
+    def test_a_write_left_in_a_task_is_still_caught_by_the_stub(self) -> None:
+        # Review of PR #6: a write handed to create_task ran after the stubs were removed.
+        async def handler(args):
+            async def later():
+                await asyncio.sleep(0.01)
+                gh_write(args["url"])
+
+            asyncio.create_task(later())
+            return result(1, "refused")
+
+        tools = [ToolSpec("pr_comment", "Comment", {"url": str}, handler)]
+
+        async def check():
+            await refuses(tools, "pr_comment", {"url": "https://evil.example/p/1"},
+                          outward=self.outward)
+            await asyncio.sleep(0.05)
+
+        with self.assertRaises(AssertionError) as caught:
+            asyncio.run(check())
+        self.assertIn("boundary is open", str(caught.exception))
+        self.assertEqual([], WRITES)
+
+    def test_a_task_outliving_the_check_is_cancelled_and_fails_it(self) -> None:
+        async def handler(args):
+            async def forever():
+                await asyncio.sleep(3600)
+                gh_write(args["url"])
+
+            asyncio.create_task(forever(), name="slow-write")
+            return result(1, "refused")
+
+        tools = [ToolSpec("pr_comment", "Comment", {"url": str}, handler)]
+        with mock.patch("world.tool_check.SETTLE_SECONDS", 0.01), \
+                self.assertRaises(AssertionError) as caught:
+            asyncio.run(refuses(tools, "pr_comment", {"url": "https://evil.example/p/1"},
+                                outward=self.outward))
+        self.assertIn("slow-write", str(caught.exception))
+        self.assertEqual([], WRITES)
+
     def test_a_write_check_will_not_run_without_a_stub(self) -> None:
         tools = asyncio.run(bind(comment_factory(), FakeListener(), "1.1"))
         with self.assertRaises(ValueError):
@@ -305,6 +359,15 @@ class VerifyDocTests(unittest.TestCase):
                      "outward=["):
             self.assertIn(line, doc)
         self.assertNotIn("where it landed", doc)  # an open boundary must not have written
+        # Review of PR #6: the doc offered `subprocess.run` as the thing to stub, which the
+        # kit's run_cmd never calls, and gave no way to stub writes apart from reads.
+        self.assertNotIn("an HTTP post, `subprocess.run`", doc)
+        for line in ("from world.toolkit import run_cmd", "async def gh_write(",
+                     "Stub a function that only writes", "Name the function where the tool "
+                     "looks it up", "asyncio.create_task"):
+            self.assertIn(line, doc)
+        tool = " ".join((KIT / "templates/skill-wrapper-tool.md.tmpl").read_text().split())
+        self.assertIn("writes through one function that only writes", tool)
         legacy = " ".join((KIT / ".claude/the-world/verify.md").read_text().split())
         self.assertIn("docs/verify.md", legacy)
         self.assertIn("never press an approve or deny button", legacy)

@@ -25,7 +25,13 @@ module that did `from tools.github import gh_write` holds its own name for the f
 and patching `tools.github.gh_write` alone would leave that name pointing at the real
 one. So every other module-level name bound to the same function is stubbed too. A
 reference kept anywhere else (a closure, a default argument, a dict of handlers) is not
-found; stub that name instead.
+found; stub that name instead. Name a function that only writes: the kit's
+`world.toolkit.run_cmd` also runs the reads, and `subprocess.run` does not cover it (it
+goes through `asyncio.create_subprocess_exec`), so wrap the write in its own function.
+
+A task the handler starts and does not wait for is waited for, still stubbed, for up to
+`SETTLE_SECONDS`; one still running then is cancelled and fails the check, because its
+write would land after the stubs are gone.
 
 What else is faked:
 
@@ -53,6 +59,8 @@ from typing import Any, Iterable
 from unittest import mock
 
 from .tools.spec import ToolResult, ToolSpec
+
+SETTLE_SECONDS = 2.0  # how long `call` waits, stubs still in place, for tasks a handler left
 
 class FakeListener:
     """The part of `SlackListener` a tool factory reads, with nothing behind it.
@@ -138,22 +146,49 @@ def _patch(stack: contextlib.ExitStack, target: Any) -> Any:
     return stub
 
 
+async def _settle(started: set) -> list[str]:
+    """Wait, stubs still in place, for the tasks a handler started and left; cancel and
+    name the ones still running after SETTLE_SECONDS."""
+    left = {t for t in asyncio.all_tasks() - started if not t.done()}
+    left.discard(asyncio.current_task())
+    if not left:
+        return []
+    _, pending = await asyncio.wait(left, timeout=SETTLE_SECONDS)
+    for task in pending:
+        task.cancel()
+    if pending:
+        await asyncio.wait(pending, timeout=SETTLE_SECONDS)
+    return sorted(task.get_name() for task in pending)
+
+
 async def call(tools: list[ToolSpec], name: str, args: dict[str, Any], *,
                outward: Iterable[Any]) -> dict[str, Any]:
     """Run the tool called `name` with `args`, every call in `outward` stubbed, and return
     its result as a dict (`content`, `is_error`). Raises AssertionError if a stub was
-    reached. `outward=()` declares the tool writes nothing outside; pass it only for a
-    tool that reads. A tool name that is not there is an error, not a skip."""
+    reached, even when the handler then raised, or if a task it started outlives
+    SETTLE_SECONDS. `outward=()` declares the tool writes nothing outside; pass it only
+    for a tool that reads. A tool name that is not there is an error, not a skip."""
     found = [t for t in tools if t.name == name]
     if not found:
         raise LookupError(f"no tool named {name!r}; bound: {[t.name for t in tools]}")
+    failure: BaseException | None = None
     with contextlib.ExitStack() as stack:
         stubs = {repr(t): _patch(stack, t) for t in outward}
-        out = await found[0].handler(dict(args))
+        started = asyncio.all_tasks()
+        try:
+            out = await found[0].handler(dict(args))
+        except Exception as exc:  # a stub's return value can break the handler; say why
+            failure = exc
+        unfinished = await _settle(started)
     reached = [t for t, stub in stubs.items() if stub.called]
     if reached:
         raise AssertionError(f"{name} reached outward call(s) {reached}; stubbed, so nothing "
-                             "was written, but this boundary is open")
+                             "was written, but this boundary is open") from failure
+    if unfinished:
+        raise AssertionError(f"{name} left task(s) {unfinished} running past the check; "
+                             "cancelled, but a write there would have run unstubbed")
+    if failure is not None:
+        raise failure
     return out.as_dict() if isinstance(out, ToolResult) else dict(out)
 
 
