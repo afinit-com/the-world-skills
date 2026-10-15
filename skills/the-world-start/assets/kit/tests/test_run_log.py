@@ -440,6 +440,56 @@ class RunLogOffTheLoopTest(unittest.TestCase):
             flush_run_log()
         self.assertTrue(any("disk full" in m for m in messages), messages)
 
+    @unittest.skipUnless(hasattr(os, "fork"), "fork is not available on Windows")
+    def test_a_forked_child_gets_a_live_writer_after_the_parent_used_it(self):
+        script = (
+            "import os,sys,warnings\n"
+            "from pathlib import Path\n"
+            "from types import SimpleNamespace\n"
+            f"sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r})\n"
+            "from world.process import orchestrator\n"
+            "h = SimpleNamespace(run_log_path=Path(sys.argv[1]), log=print)\n"
+            "orchestrator.append_run_log(h, {'parent': True})\n"
+            "orchestrator.flush_run_log()\n"
+            "with warnings.catch_warnings():\n"
+            "    warnings.simplefilter('ignore')\n"
+            "    pid = os.fork()\n"
+            "if pid == 0:\n"
+            "    orchestrator.append_run_log(h, {'child': True})\n"
+            "    try:\n"
+            "        orchestrator._run_log_writer.submit(lambda: None).result(timeout=2)\n"
+            "        orchestrator.flush_run_log()\n"
+            "    except TimeoutError:\n"
+            "        os._exit(7)\n"
+            "    os._exit(0)\n"
+            "_, status = os.waitpid(pid, 0)\n"
+            "sys.exit(os.waitstatus_to_exitcode(status))\n"
+        )
+        done = subprocess.run([sys.executable, "-c", script, str(self.h.run_log_path)],
+                              capture_output=True, text=True, timeout=30)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        entries = [json.loads(line) for line in self.h.run_log_path.read_text().splitlines()]
+        self.assertTrue(entries[0]["parent"])
+        self.assertTrue(entries[1]["child"])
+
+    def test_writer_also_starts_without_the_posix_at_fork_api(self):
+        script = (
+            "import importlib, os, sys\n"
+            "from pathlib import Path\n"
+            "from types import SimpleNamespace\n"
+            f"sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r})\n"
+            "from world.process import orchestrator\n"
+            "if hasattr(os, 'register_at_fork'): del os.register_at_fork\n"
+            "importlib.reload(orchestrator)\n"
+            "h = SimpleNamespace(run_log_path=Path(sys.argv[1]), log=print)\n"
+            "orchestrator.append_run_log(h, {'n': 1})\n"
+            "orchestrator.flush_run_log()\n"
+        )
+        done = subprocess.run([sys.executable, "-c", script, str(self.h.run_log_path)],
+                              capture_output=True, text=True, timeout=30)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(json.loads(self.h.run_log_path.read_text())["n"], 1)
+
     def test_entries_still_queued_at_exit_are_written(self):
         script = (
             "import sys, time\n"
