@@ -119,7 +119,8 @@ class RunLogRollTest(unittest.TestCase):
         with mock.patch.object(runlog.shutil, "copyfileobj", side_effect=OSError("disk full")):
             runlog.append(self.path, b"after failure\n", max_bytes=1, log=self.messages.append)
         self.assertEqual(stat.S_IMODE(self.path.stat().st_mode), 0o600)
-        runlog.append(self.path, b"after recovery\n", max_bytes=None, log=self.messages.append)
+        with mock.patch.object(runlog.time, "time", return_value=time.time() + runlog.ROLL_RETRY_S + 1):
+            runlog.append(self.path, b"after recovery\n", max_bytes=None, log=self.messages.append)
         for gz in self.logs.glob("*.gz"):
             self.assertEqual(stat.S_IMODE(gz.stat().st_mode), 0o600)
 
@@ -207,8 +208,9 @@ class RunLogRollTest(unittest.TestCase):
                          "a partial .gz must never carry the final name")
 
         h = SimpleNamespace(logs_dir=self.logs, run_log_path=self.path, log=self.messages.append)
-        append_run_log(h, {"n": "after"})
-        flush_run_log()
+        with mock.patch.object(runlog.time, "time", return_value=_at(0) + runlog.ROLL_RETRY_S + 1):
+            append_run_log(h, {"n": "after"})
+            flush_run_log()
         self.assertFalse(plain.exists())
         self.assertEqual(list(self.logs.glob("*.tmp")), [])
         with gzip.open(self.logs / f"harness.{day}.jsonl.gz", "rt", encoding="utf-8") as f:
@@ -310,6 +312,23 @@ class RollCostTest(unittest.TestCase):
                 recovered += f.read()
         self.assertEqual(len(recovered) + self.path.stat().st_size, 1000)
         self.assertEqual(old.read_bytes(), b"old\n")
+
+    def test_compression_failure_backs_off_and_warns_once_across_names(self):
+        clock = [time.time()]
+        with mock.patch.object(runlog.time, "time", side_effect=lambda: clock[0]), \
+                mock.patch.object(runlog, "_compress", side_effect=PermissionError("disk full")) as compress:
+            runlog.append(self.path, b"first\n", max_bytes=1, log=self.messages.append)
+            runlog.append(self.path, b"second\n", max_bytes=1, log=self.messages.append)
+            self.assertEqual(compress.call_count, 1)
+            runlog.append(self.path, b"third\n", max_bytes=1, log=self.messages.append)
+            self.assertEqual(compress.call_count, 1)
+            clock[0] += runlog.ROLL_RETRY_S + 1
+            runlog.append(self.path, b"fourth\n", max_bytes=1, log=self.messages.append)
+            self.assertGreater(compress.call_count, 1)
+        self.assertEqual(len(self.messages), 1, self.messages)
+        plain = b"".join(p.read_bytes() for p in self.logs.glob("console.*.out"))
+        self.assertCountEqual((plain + self.path.read_bytes()).splitlines(),
+                              [b"first", b"second", b"third", b"fourth"])
 
     def test_a_failing_roll_backs_off_and_warns_once(self):
         """Windows: someone follows the console log, so every rename fails. One warning

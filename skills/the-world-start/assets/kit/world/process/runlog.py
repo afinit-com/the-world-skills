@@ -227,12 +227,12 @@ class _RollState:
         self.scan_at = 0.0  # periodically find interrupted rolls from other processes
         self.retry_at = 0.0  # no current-file roll before this, after one failed
         self.recovery_retry_at = 0.0  # an old archive must not block a fresh roll
-        self.warned: str | None = None  # the last warning, said once until a roll works
+        self.warned: set[str] = set()  # failure kinds, independent of dated filenames
 
-    def warn(self, log: Callable[[str], None], msg: str) -> None:
-        if msg != self.warned:
+    def warn(self, log: Callable[[str], None], kind: str, msg: str) -> None:
+        if kind not in self.warned:
             log(msg)
-            self.warned = msg
+            self.warned.add(kind)
 
     def failed(self, now: float) -> None:
         self.retry_at = now + ROLL_RETRY_S
@@ -273,8 +273,6 @@ def _maybe_roll(path: Path, *, max_bytes: int | None, keep_days: int | None,
                 now: float | None, log: Callable[[str], None]) -> Path | None:
     now = time.time() if now is None else now
     state = _state(path)
-    if now < state.retry_at:
-        return None  # backing off after a failure; the line goes to the current file
     today = datetime.fromtimestamp(now).date()
     rolled = None
     try:
@@ -287,11 +285,12 @@ def _maybe_roll(path: Path, *, max_bytes: int | None, keep_days: int | None,
                 log(f"run log: finished an interrupted roll, {gz.name}")
         except OSError as exc:
             state.recovery_retry_at = now + ROLL_RETRY_S
-            state.warn(log, f"⚠️  could not finish an earlier roll of {path.name} ({exc}); its "
+            state.warn(log, "compression", f"⚠️  could not finish an earlier roll of {path.name} ({exc}); its "
                             f"lines are kept uncompressed in {path.parent}")
         else:
             state.recover_due = False
             state.scan_at = now + RECOVERY_SCAN_S
+            state.warned.discard("compression")
     if st is not None and st.st_size > 0:
         last_day = datetime.fromtimestamp(st.st_mtime).date()
         stamp = None
@@ -299,19 +298,22 @@ def _maybe_roll(path: Path, *, max_bytes: int | None, keep_days: int | None,
             stamp = last_day.isoformat()
         elif max_bytes is not None and st.st_size >= max_bytes:
             stamp = datetime.fromtimestamp(now).strftime("%Y-%m-%d-%H%M%S")
-        if stamp:
+        if stamp and now >= state.retry_at:
             try:
                 rolled = roll(path, stamp)
             except CompressError as exc:
                 # The current file is fresh already; only the compression is left over.
                 state.recover_due = True
-                state.warn(log, f"⚠️  rolled {path.name} but {exc}; retried on the next write")
+                state.failed(now)
+                state.recovery_retry_at = now + ROLL_RETRY_S
+                state.warn(log, "compression", f"⚠️  rolled {path.name} but {exc}; "
+                                              f"retrying after {ROLL_RETRY_S}s")
             except OSError as exc:
                 state.failed(now)
-                state.warn(log, f"⚠️  could not roll {path.name} ({exc}); still appending to "
+                state.warn(log, "roll", f"⚠️  could not roll {path.name} ({exc}); still appending to "
                                 f"it, which keeps growing until this is fixed")
             else:
-                state.warned = None
+                state.warned.discard("roll")
                 if keep_days is not None:
                     _prune(path, keep_days, today, log)
     return rolled
