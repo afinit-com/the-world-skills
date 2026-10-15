@@ -118,10 +118,15 @@ class RenderTest(unittest.TestCase):
         files = _render(self.home, "windows", user="WORKGROUP\\someone",
                         now=datetime(2026, 10, 14, 9, 30, 5))
         self.assertEqual(sorted(files), [
+            "scripts/my-harness-ops-common.ps1",
             "scripts/my-harness-up.ps1", "scripts/my-harness-watchdog.ps1",
             "scripts/windows/my-harness-watchdog.xml"])
         up, watchdog = files["scripts/my-harness-up.ps1"][0], files["scripts/my-harness-watchdog.ps1"][0]
-        for script in (up, watchdog):
+        common = files["scripts/my-harness-ops-common.ps1"][0]
+        for function in ("Stamp", "Inner", "Enter-OpsLock"):
+            self.assertEqual(common.count("function " + function), 1)
+            self.assertNotIn("function " + function, up + watchdog)
+        for script in (up, watchdog, common):
             self.assertTrue(script.startswith("\ufeff"), "PowerShell 5.1 would read it as ANSI")
             self.assertNotRegex(script, r"\{\{[A-Z_]+\}\}")
         self.assertIn("'ANTHROPIC_API_KEY'", up)
@@ -947,7 +952,7 @@ class WindowsLauncherTest(unittest.TestCase):
         check = ("$errors = $null; [System.Management.Automation.Language.Parser]::ParseFile("
                  "$env:PS_FILE, [ref]$null, [ref]$errors) | Out-Null; "
                  "if ($errors) { $errors | ForEach-Object { $_.ToString() }; exit 1 }")
-        for script in (self.up, self.watchdog):
+        for script in (self.up, self.watchdog, self.home / "scripts" / "stub-ops-common.ps1"):
             result = subprocess.run([*PS, "-Command", check], capture_output=True, text=True,
                                     env={**os.environ, "PS_FILE": str(script)}, timeout=60)
             self.assertEqual(result.returncode, 0, f"{script.name}: {result.stdout}{result.stderr}")

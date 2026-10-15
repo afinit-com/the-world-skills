@@ -335,7 +335,7 @@ home = Path.cwd()
 files = ops['render'](home, 'installed', OS_NAME, home / '.venv/python', '/bin',
                       user='tester')
 ops['write'](home, files, force=False)
-assert len(files) == (4 if OS_NAME == 'linux' else 3)
+assert len(files) == (3 if OS_NAME == 'macos' else 4)
 for rel in files:
     assert (home / rel).is_file(), rel
 """.replace("OS_NAME", repr(os_name))

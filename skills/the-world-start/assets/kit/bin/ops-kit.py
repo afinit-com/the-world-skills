@@ -231,6 +231,7 @@ def _render_windows(home: Path, name: str, python: Path, run_path: str, *,
         "HOME_DIR": ps_quote(str(home)),
         "PYTHON": ps_quote(str(python)),
         "UP": ps_quote(str(up)),
+        "COMMON": ps_quote(str(home / "scripts" / f"{name}-ops-common.ps1")),
         "MATCH": ps_quote(windows_process_match(home)),
         "RELATIVE_MATCH": ps_quote(relative_process_match(windows=True)),
         "RUN_PATH": ps_quote(run_path),
@@ -268,6 +269,7 @@ def _render_windows(home: Path, name: str, python: Path, run_path: str, *,
     # garbles a non-ASCII path (a Korean user name); schtasks /XML wants UTF-16.
     bom = "\ufeff"
     return {
+        f"scripts/{name}-ops-common.ps1": (bom + fill(read("ops-common.ps1.tmpl"), values), 0o644),
         f"scripts/{name}-up.ps1": (bom + fill(read("up.ps1.tmpl"), values), 0o755),
         f"scripts/{name}-watchdog.ps1": (bom + fill(read("watchdog.ps1.tmpl"), values), 0o755),
         f"scripts/windows/{name}-watchdog.xml": ((bom + task).encode("utf-16-le"), 0o644),

@@ -36,7 +36,11 @@ if (-not (Get-Command -Name $UpScript -CommandType ExternalScript -ErrorAction S
   $UpCall = [System.Management.Automation.WildcardPattern]::Escape($UpScript)
 }
 
-function Stamp { (Get-Date).ToString('yyyy-MM-ddTHH:mm:sszzz') }
+$CommonScript = {{COMMON}}
+if (-not (Get-Command -Name $CommonScript -CommandType ExternalScript -ErrorAction SilentlyContinue)) {
+  $CommonScript = [System.Management.Automation.WildcardPattern]::Escape($CommonScript)
+}
+. $CommonScript
 
 function Write-Log([string]$Text) {
   [System.IO.File]::AppendAllText($Log, "$(Stamp) $Text`n", $Utf8)
@@ -55,36 +59,6 @@ function Send-Note([string]$Text) {
     foreach ($line in $out) { [System.IO.File]::AppendAllText($Log, "$line`n", $Utf8) }
     Write-Log "WARNING: Slack notification failed (see the line above); the event is only in this log"
   }
-}
-
-function Inner([System.Exception]$e) {
-  while ($e.InnerException) { $e = $e.InnerException }
-  return $e
-}
-
-# The lock, or $null once it stayed busy for $WaitS seconds; any other error is thrown,
-# with the lock released first (see {{NAME}}-up.ps1).
-function Enter-OpsLock([double]$WaitS) {
-  $deadline = (Get-Date).AddSeconds($WaitS)
-  while ($true) {
-    try {
-      $stream = [System.IO.File]::Open($Lock, [System.IO.FileMode]::OpenOrCreate,
-        [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
-      break
-    } catch {
-      $e = Inner $_.Exception
-      if ($e -isnot [System.IO.IOException]) { throw "cannot open the lock ${Lock}: $($e.Message)" }
-      if ((Get-Date) -ge $deadline) { return $null }
-      Start-Sleep -Milliseconds 100
-    }
-  }
-  try {
-    [System.IO.File]::WriteAllText("$Lock.pid", "$PID`n", $Utf8)
-  } catch {
-    $stream.Dispose()
-    throw "took the lock but could not record its holder in $Lock.pid: $((Inner $_.Exception).Message)"
-  }
-  return $stream
 }
 
 # {{NAME}}-up.ps1 exits 4 when it could not complete or check a step (the process list,
