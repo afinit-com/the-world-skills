@@ -71,11 +71,15 @@ what the user keeps doing there by hand, and propose jobs from that:
   `~/.claude/projects/<the absolute path with every non-alphanumeric character replaced
   by '-'>/*.jsonl`; Codex in `${CODEX_HOME:-~/.codex}/sessions/**/rollout-*.jsonl`, where
   the first line's `cwd` names the directory. Read what the user typed and which commands
-  ran, not whole transcripts.
+  ran, not whole transcripts. The sibling skill `dig-my-sessions` does this reduction for
+  every agent at once: `python3 <its dir>/dig.py chores --project <project>`.
 
 Propose two or three jobs, each with the evidence behind it (how many sessions asked for
 it, which commits or journal entries show it), and let the user pick. If you found no
-history, say so and say the proposals come from the project alone.
+history, say so and say the proposals come from the project alone. If none of them fits
+and the user can't name a job either, suggest `dig-my-sessions` once, in a line: it digs
+through every agent's history across all projects for the chores the user keeps doing by
+hand, and a chore picked there comes back here as a job sentence.
 
 Once both are settled, ask which world the cast lives in (세계관), before you name a
 character, split the job into roles, or write `WORLD.md`. The world is the user's to

@@ -79,18 +79,19 @@ macOS, Linux, and native Windows. Stuck? `/the-world-skills:help-my-world`.
 
 </details>
 
-## The four skills
+## The five skills
 
 | Skill | What it does |
 |---|---|
 | `the-world-start` | Name a project or a job (given only a project, it reads the project and its local Claude Code/Codex session history and proposes jobs) → scaffold one worker with defaults → local verification → connect Slack and customize when ready. Also resumes incomplete setup. Carries the kit in `assets/kit/`. |
 | `the-world-audit` | Read-only risk review of an existing harness. Marks each item closed, open, or not verified across bot authority, tool scope, outward actions and approval, content-borne manipulation, self-reconfiguration, secrets, and silent failure; open items carry a file, a line, and a repro. Never fixes anything. |
+| `dig-my-sessions` | Dig through this machine's past sessions of Claude Code, Codex, opencode, Cursor and Gemini CLI, over a date range and projects you choose. Finds the session that touched a ticket, branch or topic, with its resume command. Or it mines the history for chores you keep doing by hand, drops the sessions a program started, and proposes what to hand to a world, a skill or a one-line script. Offline and read-only. The optional `--jev` mode sends redacted openers to TypeSafe's Jev for labelling, and only after you agree. |
 | `the-world-util` | Standalone utilities with no harness preconditions, dispatched by subcommand. Today: `slack icon generate`. |
 | `help-my-world` | Ask the maintainers for help without being a developer. You say what you wanted and what happened; it fills the repository's issue form with the rest — the steps, a redacted environment report, and your world's shape (characters, triggers, tools) — walks you through GitHub CLI setup if needed, and files nothing until you approve the draft. |
 
 `the-world-start` is `disable-model-invocation: true` — it writes into a git repo, so a
-human types it or it doesn't run. `help-my-world` is the same, because it publishes. `the-world-audit` only reads, so it can be invoked by
-the model as well.
+human types it or it doesn't run. `help-my-world` is the same, because it publishes. `the-world-audit` and `dig-my-sessions` only read, so the
+model can invoke them as well.
 
 Everything else a harness needs — adding a bot, wiring a scoped capability, verifying a new
 bot, connecting a plugin registry — is **installed into the harness itself** by

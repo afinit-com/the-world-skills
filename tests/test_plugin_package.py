@@ -32,7 +32,7 @@ class PluginPackageTests(unittest.TestCase):
         self.assertFalse((ROOT / "mcp.json").exists())
         self.assertEqual(
             sorted(path.parent.name for path in (ROOT / "skills").glob("*/SKILL.md")),
-            ["help-my-world", "the-world-audit", "the-world-start", "the-world-util"],
+            ["dig-my-sessions", "help-my-world", "the-world-audit", "the-world-start", "the-world-util"],
         )
         for name in ("the-world-start", "help-my-world"):
             skill = ROOT / "skills" / name
@@ -182,6 +182,7 @@ class PluginPackageTests(unittest.TestCase):
             self.assertEqual((plugin / "LICENSE").read_text(), (ROOT / "LICENSE").read_text())
             self.assertFalse((plugin / "skills/the-world-delegate").exists())
             self.assertTrue((plugin / "skills/the-world-audit/scan.py").is_file())
+            self.assertTrue((plugin / "skills/dig-my-sessions/dig.py").is_file())
             self.assertTrue((plugin / "skills/the-world-start/scripts/check-prereqs.py").is_file())
             self.assertFalse((plugin / "docs/img").exists())
             self.assertFalse((plugin / "docs/index.html").exists())
