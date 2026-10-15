@@ -7,13 +7,16 @@ link put a preview bigger than the card under it.
 
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from world.slack.approvals import ApprovalMixin
+from world.slack.mentions import MentionMixin
 from world.slack.post import PostingMixin
-from world.types import ApprovalPhrases, Persona
+from world.types import ApprovalPhrases, Persona, RunResult
 
 NO_PREVIEW = {"unfurl_links": False, "unfurl_media": False}
 
@@ -63,6 +66,26 @@ class ApprovalPointerUnfurlTests(unittest.IsolatedAsyncioTestCase):
             await obj.post_approval_buttons("t", "publish")
         self.assertIn("기존 승인 카드", obj.post.await_args.args[0])
         self.assertIs(obj.post.await_args.kwargs.get("unfurl"), False)
+
+
+class TaskCardUnfurlTests(unittest.IsolatedAsyncioTestCase):
+    async def test_a_task_card_has_no_preview(self):
+        from world.process import task as tasks
+
+        with tempfile.TemporaryDirectory() as raw:
+            home = Path(raw)
+            record = tasks.create(home, type="watch", title="링크 확인", agent="watch")
+            mixin = MentionMixin()
+            mixin.harness = SimpleNamespace(
+                home=home, agents=[], run_footer=False, knowledge_proposal_agent=None,
+            )
+            mixin.state = {"threads": {}}
+            mixin.save_state = lambda: None
+            mixin.post = AsyncMock(return_value="1.3")
+            run = RunResult(status="ok",
+                            result_text="[위키](https://en.wikipedia.org/wiki/Python)")
+            await mixin.announce_task(record, run, SimpleNamespace(key="main"))
+            self.assertIs(mixin.post.await_args.kwargs.get("unfurl"), False)
 
 
 if __name__ == "__main__":
