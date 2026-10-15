@@ -11,7 +11,9 @@
 #
 # One outage is one incident: it opens the first round that finds the harness down (or
 # cannot tell) and closes once its recovery notification is delivered. With Slack on, an
-# incident is one message, and every later line about it is a reply in that thread.
+# incident is one message, and every later line about it is a reply in that thread. A
+# notification Slack did not take is retried with the same backoff, on a schedule of its
+# own: waiting to deliver one never delays a restart or keeps the restart count.
 #
 # Rendered by bin/ops-kit.py from the kit's templates/ops/. Re-render rather than edit.
 set -uo pipefail
@@ -82,6 +84,35 @@ notify() {
 "$PY" "$HOME_DIR/bin/ops-log.py" --file "$LOG" --roll-only --err-file "$LOGS/ops-log.err" \
   ${KEEP_DAYS:+--keep-days "$KEEP_DAYS"} 2>&1 | log_lines
 
+now=$(date +%s)
+
+# Count one more failure in the counter file $1 and put the next try in the file $2,
+# BACKOFF_MIN_S doubling to BACKOFF_MAX_S. Sets count and delay.
+backoff() {
+  count=$(cat "$STATE/$1" 2>/dev/null || echo 0)
+  count=$((count + 1))
+  delay=$BACKOFF_MIN_S
+  i=1
+  while [ "$i" -lt "$count" ] && [ "$delay" -lt "$BACKOFF_MAX_S" ]; do
+    delay=$((delay * 2))
+    i=$((i + 1))
+  done
+  [ "$delay" -gt "$BACKOFF_MAX_S" ] && delay=$BACKOFF_MAX_S
+  echo "$count" >"$STATE/$1"
+  echo $((now + delay)) >"$STATE/$2"
+}
+
+# Whether the next try held in the file $1 is still to come.
+waiting() { [ "$now" -lt "$(cat "$STATE/$1" 2>/dev/null || echo 0)" ]; }
+
+# Failures, including an unreadable process list, share the same retry schedule.
+set_retry() {
+  [ "${retry_scheduled:-0}" = 1 ] && return 0
+  backoff failures next_try
+  failures=$count
+  retry_scheduled=1
+}
+
 # Lines the console writer could not write (a full disk, a read-only file): restarting
 # would not help, so say it once each time it starts happening.
 if [ -f "$LOGS/.console.out.dropping" ]; then
@@ -93,25 +124,6 @@ if [ -f "$LOGS/.console.out.dropping" ]; then
 else
   rm -f "$STATE/reported-dropping"
 fi
-
-# Failures, including an unreadable process list, share the same retry schedule.
-set_retry() {
-  [ "${retry_scheduled:-0}" = 1 ] && return 0
-  local counter=${1:-failures}
-  failures=$(cat "$STATE/$counter" 2>/dev/null || echo 0)
-  failures=$((failures + 1))
-  delay=$BACKOFF_MIN_S
-  i=1
-  while [ "$i" -lt "$failures" ] && [ "$delay" -lt "$BACKOFF_MAX_S" ]; do
-    delay=$((delay * 2))
-    i=$((i + 1))
-  done
-  [ "$delay" -gt "$BACKOFF_MAX_S" ] && delay=$BACKOFF_MAX_S
-  echo "$failures" >"$STATE/$counter"
-  echo $((now + delay)) >"$STATE/next_try"
-
-  retry_scheduled=1
-}
 
 open_incident() { [ -f "$INCIDENT" ] || : >"$INCIDENT"; }
 
@@ -153,7 +165,6 @@ check_unknown() {
   exit 4
 }
 
-now=$(date +%s)
 next_try=$(cat "$STATE/next_try" 2>/dev/null || echo 0)
 
 # Their output is why a round could not tell (a pgrep failure), so it goes to the log the
@@ -181,27 +192,31 @@ if [ "$running_rc" = 0 ]; then
     exit 0
   fi
   rm -f "$STATE/reported-failure"
-  if [ -f "$INCIDENT" ] || [ -f "$STATE/failures" ]; then
+  # The restart count resets here, whether or not Slack takes the recovery line. The
+  # line waits in recovery-pending, keeping the incident open, until it is delivered.
+  if [ -f "$STATE/failures" ] || { [ -f "$INCIDENT" ] && [ ! -f "$STATE/recovery-pending" ]; }; then
     again="running again after $(cat "$STATE/failures" 2>/dev/null || echo 0) restart(s)"
     if [ -f "$INCIDENT" ]; then
-      # A failed recovery post keeps the incident open, with its own backoff count.
-      # It never turns a healthy harness into a restart attempt.
-      if [ -f "$STATE/recovery-failures" ] && [ "$now" -lt "$next_try" ]; then exit 0; fi
-      if ! notify "recovered: $again; this incident is closed"; then
-        set_retry recovery-failures
-        exit 0
-      fi
-      rm -f "$INCIDENT" "$STATE/recovery-failures"
+      echo "recovered: $again; this incident is closed" >"$STATE/recovery-pending"
     else
       log "$again"
     fi
     rm -f "$STATE/failures" "$STATE/next_try"
   fi
+  if [ -f "$STATE/recovery-pending" ] && ! waiting recovery_next_try; then
+    if notify "$(cat "$STATE/recovery-pending")"; then
+      rm -f "$INCIDENT" "$STATE/recovery-pending" "$STATE/recovery-failures" \
+        "$STATE/recovery_next_try"
+    else
+      backoff recovery-failures recovery_next_try
+    fi
+  fi
   exit 0
 fi
 
-# It failed again before recovery could be delivered: resume the same incident.
-rm -f "$STATE/recovery-failures"
+# It failed again before its recovery was delivered: the same incident goes on, and the
+# next round that finds it running posts a recovery line of its own, without waiting.
+rm -f "$STATE/recovery-pending" "$STATE/recovery-failures" "$STATE/recovery_next_try"
 
 # Stopped on purpose. Read under the lock, so a `down` either finished before this
 # round (marker present) or starts after it.

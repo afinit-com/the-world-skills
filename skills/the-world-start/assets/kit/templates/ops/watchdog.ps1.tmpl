@@ -10,7 +10,9 @@
 #
 # One outage is one incident: it opens the first round that finds the harness down (or
 # cannot tell) and closes once its recovery notification is delivered. With Slack on, an
-# incident is one message, and every later line about it is a reply in that thread.
+# incident is one message, and every later line about it is a reply in that thread. A
+# notification Slack did not take is retried with the same backoff, on a schedule of its
+# own: waiting to deliver one never delays a restart or keeps the restart count.
 #
 # Windows PowerShell 5.1 or later. Rendered by bin/ops-kit.py from the kit's
 # templates/ops/. Re-render rather than edit.
@@ -120,20 +122,32 @@ function Send-Restart([string]$Key, [string]$Text) {
   }
 }
 
-function Set-Retry([string]$Counter = 'failures') {
-  if ($script:RetryScheduled) { return }
+# Count one more failure in the counter file $Counter and put the next try in the file
+# $Deadline, $BackoffMinS doubling to $BackoffMaxS.
+function Set-Backoff([string]$Counter, [string]$Deadline) {
   $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
-  $failuresFile = Join-Path $State $Counter
-  $failures = (Read-Number $failuresFile) + 1
+  $counterFile = Join-Path $State $Counter
+  $count = (Read-Number $counterFile) + 1
   $delay = $BackoffMinS
   $i = 1
-  while ($i -lt $failures -and $delay -lt $BackoffMaxS) {
+  while ($i -lt $count -and $delay -lt $BackoffMaxS) {
     $delay *= 2
     $i++
   }
   if ($delay -gt $BackoffMaxS) { $delay = $BackoffMaxS }
-  [System.IO.File]::WriteAllText($failuresFile, "$failures`n", $Utf8)
-  [System.IO.File]::WriteAllText((Join-Path $State 'next_try'), "$($now + $delay)`n", $Utf8)
+  [System.IO.File]::WriteAllText($counterFile, "$count`n", $Utf8)
+  [System.IO.File]::WriteAllText((Join-Path $State $Deadline), "$($now + $delay)`n", $Utf8)
+}
+
+# Whether the next try held in the file $Deadline is still to come.
+function Test-Waiting([string]$Deadline) {
+  return [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() -lt (Read-Number (Join-Path $State $Deadline))
+}
+
+# Failures, including an unreadable process list, share the same retry schedule.
+function Set-Retry {
+  if ($script:RetryScheduled) { return }
+  Set-Backoff 'failures' 'next_try'
   $script:RetryScheduled = $true
 }
 
@@ -141,8 +155,7 @@ function Set-Retry([string]$Counter = 'failures') {
 # the down marker). The round stops there: it acts on nothing it could not see.
 function Test-Stopped([string]$What) {
   if ($LASTEXITCODE -ne 4) { return $false }
-  if (-not $script:RetryScheduled -and
-      [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() -lt (Read-Number (Join-Path $State 'next_try'))) { return $true }
+  if (-not $script:RetryScheduled -and (Test-Waiting 'next_try')) { return $true }
   Set-Retry
   Send-State "unknown-$What" "stopped this round: '$What' could not tell or could not finish (exit 4); see $Log"
   $script:RoundCode = 4
@@ -177,6 +190,8 @@ function Invoke-Round {
   $down = Join-Path $State 'down'
   $failuresFile = Join-Path $State 'failures'
   $nextTryFile = Join-Path $State 'next_try'
+  $pending = Join-Path $State 'recovery-pending'
+  $recoveryRetry = @((Join-Path $State 'recovery-failures'), (Join-Path $State 'recovery_next_try'))
   & $UpCall running
   if (Test-Stopped 'running') { return }
   if ($LASTEXITCODE -eq 0) {
@@ -185,7 +200,7 @@ function Invoke-Round {
     & $UpCall healthy
     if (Test-Stopped 'healthy') { return }
     if ($LASTEXITCODE -ne 0 -and -not (Test-Path -LiteralPath $down)) {
-      if ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() -lt (Read-Number $nextTryFile)) { return }
+      if (Test-Waiting 'next_try') { return }
       Set-Retry
       & $UpCall recycle
       if (Test-Stopped 'recycle') { return }
@@ -197,34 +212,37 @@ function Invoke-Round {
       return
     }
     Remove-Item -LiteralPath (Join-Path $State 'reported-failure') -Force -ErrorAction SilentlyContinue
-    if ((Test-Path -LiteralPath $Incident) -or (Test-Path -LiteralPath $failuresFile)) {
+    # The restart count resets here, whether or not Slack takes the recovery line. The
+    # line waits in recovery-pending, keeping the incident open, until it is delivered.
+    if ((Test-Path -LiteralPath $failuresFile) -or
+        ((Test-Path -LiteralPath $Incident) -and -not (Test-Path -LiteralPath $pending))) {
       $again = "running again after $(Read-Number $failuresFile) restart(s)"
       if (Test-Path -LiteralPath $Incident) {
-        # Keep failed recovery delivery pending, with a separate backoff count.
-        $recoveryFile = Join-Path $State 'recovery-failures'
-        if ((Test-Path -LiteralPath $recoveryFile) -and
-            [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() -lt (Read-Number $nextTryFile)) { return }
-        if (-not (Send-Note "recovered: $again; this incident is closed")) {
-          Set-Retry 'recovery-failures'
-          return
-        }
-        Remove-Item -LiteralPath $Incident, $recoveryFile -Force -ErrorAction SilentlyContinue
+        [System.IO.File]::WriteAllText($pending, "recovered: $again; this incident is closed", $Utf8)
       } else {
         Write-Log $again
       }
       Remove-Item -LiteralPath $failuresFile, $nextTryFile -Force -ErrorAction SilentlyContinue
     }
+    if ((Test-Path -LiteralPath $pending) -and -not (Test-Waiting 'recovery_next_try')) {
+      if (Send-Note ([System.IO.File]::ReadAllText($pending).Trim())) {
+        Remove-Item -LiteralPath (@($Incident, $pending) + $recoveryRetry) -Force -ErrorAction SilentlyContinue
+      } else {
+        Set-Backoff 'recovery-failures' 'recovery_next_try'
+      }
+    }
     return
   }
 
-  # A new failure resumes the same incident, rather than a pending recovery.
-  Remove-Item -LiteralPath (Join-Path $State 'recovery-failures') -Force -ErrorAction SilentlyContinue
+  # It failed again before its recovery was delivered: the same incident goes on, and the
+  # next round that finds it running posts a recovery line of its own, without waiting.
+  Remove-Item -LiteralPath (@($pending) + $recoveryRetry) -Force -ErrorAction SilentlyContinue
 
   # Stopped on purpose. Read under the lock, so a `down` either finished before this
   # round (marker present) or starts after it.
   if (Test-Path -LiteralPath $down) { return }
 
-  if ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() -lt (Read-Number $nextTryFile)) { return }
+  if (Test-Waiting 'next_try') { return }
   Set-Retry
   $failures = Read-Number $failuresFile
 

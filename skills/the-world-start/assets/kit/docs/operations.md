@@ -88,11 +88,14 @@ Each of these was a bug in a hand-built launcher first.
   it is open). The next outage starts a new message. A restart that worked is posted
   every time, so a crash loop shows up as a run of replies; a failure that repeats
   unchanged is posted once and logged every round. Only successful delivery marks a
-  failure as posted; failed delivery is retried on the next backoff attempt. A failed
-  recovery notification keeps the incident open: `logs/.watchdog/recovery-failures`
-  records pending recovery retries, using the same exponential backoff without
-  increasing the restart count or restarting a healthy harness. Successful recovery
-  delivery clears the incident and retry state. If Slack says the thread is gone (its
+  failure as posted; failed delivery is retried on the next backoff attempt. The round
+  that finds the harness running resets the restart count whatever Slack does. A
+  recovery line Slack did not take waits in `logs/.watchdog/recovery-pending` and keeps
+  the incident open; it is retried with the same exponential backoff on its own
+  schedule (`recovery-failures`, `recovery_next_try`), so it never restarts a healthy
+  harness or delays restarting one that died again. A harness that dies before the line
+  is delivered goes on in the same incident, and the next recovery replaces the line.
+  Delivered, it closes the incident. If Slack says the thread is gone (its
   message was deleted), the line is posted as a new message, which becomes the thread.
   Any other failure, a timeout included, is retried in the same thread, so delivery is
   at least once: a line Slack took but whose answer was lost can appear twice. `--notify` is refused unless `env/harness.env` already holds the bot

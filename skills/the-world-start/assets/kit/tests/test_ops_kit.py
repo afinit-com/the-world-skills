@@ -640,31 +640,70 @@ class NotificationRetryTests:
         self.state.mkdir(parents=True, exist_ok=True)
         (self.state / "incident").write_text("111.1")
         (self.state / "failures").write_text("2")
+        (self.state / "next_try").write_text(str(int(time.time()) + 960))
         (self.home / "scripts/healthy").touch()
         self.notification_round()
         self.assertEqual((self.state / "incident").read_text().strip(), "111.1")
         self.assertEqual((self.state / "recovery-failures").read_text().strip(), "1")
-        self.assertEqual((self.state / "failures").read_text().strip(), "2")
+        # The restart count resets the round it is found running, whatever Slack does.
+        self.assertFalse((self.state / "failures").exists())
+        self.assertFalse((self.state / "next_try").exists())
         self.notification_round()
         self.assertEqual(len(self.notification_attempts()), 1, "backoff was ignored")
-        (self.state / "next_try").write_text("0")
+        (self.state / "recovery_next_try").write_text("0")
         self.notification_round()
         self.assertEqual((self.state / "recovery-failures").read_text().strip(), "2")
-        self.assertGreaterEqual(int((self.state / "next_try").read_text()), int(time.time()) + 55)
+        self.assertGreaterEqual(int((self.state / "recovery_next_try").read_text()),
+                                int(time.time()) + 55)
         self.failed_delivery.unlink()
-        (self.state / "next_try").write_text("0")
+        (self.state / "recovery_next_try").write_text("0")
         self.notification_round()
         attempts = self.notification_attempts()
         self.assertEqual([p["thread"] for p in attempts], ["111.1"] * 3)
         self.assertTrue(all("recovered" in p["text"] and "2 restart(s)" in p["text"]
                             for p in attempts))
-        for name in ("incident", "failures", "next_try", "recovery-failures"):
+        for name in ("incident", "failures", "next_try", "recovery-failures",
+                     "recovery_next_try", "recovery-pending"):
             self.assertFalse((self.state / name).exists(), name)
         self.notification_round()
         self.assertEqual(len(self.notification_attempts()), 3)
         actions = (self.home / "scripts/actions").read_text().splitlines()
         self.assertEqual(actions, ["running", "healthy"] * 5)
 
+    def test_a_pending_recovery_never_delays_restarting_a_dead_harness(self):
+        self.prepare_notification_retry()
+        self.state.mkdir(parents=True, exist_ok=True)
+        (self.state / "incident").write_text("111.1")
+        (self.state / "failures").write_text("3")
+        (self.home / "scripts/healthy").touch()
+        for _ in range(3):
+            (self.state / "recovery_next_try").unlink(missing_ok=True)
+            self.notification_round()
+        self.assertGreater(int((self.state / "recovery_next_try").read_text()), int(time.time()))
+        # It dies while the recovery line is still waiting for Slack: the same round
+        # restarts it, as the first attempt of a fresh count, in the same thread.
+        (self.home / "scripts/healthy").unlink()
+        self.notification_round()
+        actions = (self.home / "scripts/actions").read_text().splitlines()
+        self.assertEqual(actions[-2:], ["running", "resume"])
+        last = self.notification_attempts()[-1]
+        self.assertEqual(last["thread"], "111.1")
+        self.assertIn("(attempt 1;", last["text"])
+        self.assertEqual((self.state / "incident").read_text().strip(), "111.1")
+        self.assertFalse((self.state / "recovery_next_try").exists())
+
+    def test_slack_that_keeps_failing_never_keeps_the_restart_count(self):
+        self.prepare_notification_retry()
+        healthy = self.home / "scripts/healthy"
+        for cycle in range(4):
+            healthy.unlink(missing_ok=True)
+            self.notification_round()
+            self.assertIn("(attempt 1;", self.notification_attempts()[-1]["text"], cycle)
+            healthy.touch()
+            self.notification_round()
+            self.assertFalse((self.state / "failures").exists(), cycle)
+            self.assertFalse((self.state / "next_try").exists(), cycle)
+            self.assertTrue((self.state / "incident").exists(), cycle)
 
 @unittest.skipUnless(POSIX, "the launcher and watchdog are bash + pgrep (macOS, Linux)")
 class LauncherAndWatchdogTest(NotificationRetryTests, unittest.TestCase):
