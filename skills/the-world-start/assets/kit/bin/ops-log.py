@@ -148,12 +148,25 @@ class Dropping:
         self.name = path.name
         self.state = path.with_name(f".{path.name}.dropping")
         self.count = 0
+        self.warned = False
         self.since = ""
+        # A writer may have stopped while the log was unwritable. Keep its count until
+        # this writer lands the loss notice and the next line together.
+        try:
+            previous = self.state.read_text(encoding="utf-8")
+        except OSError:
+            previous = ""
+        match = re.match(r"(\d+) line\(s\) dropped since (\S+): ", previous)
+        if match:
+            self.count = int(match[1])
+            self.since = match[2]
 
     def failed(self, exc: OSError) -> None:
         if not self.count:
             self.since = datetime.now().astimezone().isoformat(timespec="seconds")
+        if not self.warned:
             self.log(f"cannot write {self.name} ({exc}); dropping lines until it can")
+            self.warned = True
         self.count += 1
         try:
             self.state.write_text(f"{self.count} line(s) dropped since {self.since}: {exc}\n",
@@ -172,6 +185,7 @@ class Dropping:
         if self.count:
             self.log(f"writing {self.name} again after dropping {self.count} line(s)")
             self.count = 0
+            self.warned = False
             self.state.unlink(missing_ok=True)
 
 

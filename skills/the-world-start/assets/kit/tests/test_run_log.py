@@ -605,6 +605,28 @@ class OpsLogErrFileTest(unittest.TestCase):
         self.assertTrue(list(self.logs.glob("ops-log.*.err.gz")))
         self.assertEqual(old.read_bytes(), b"old\n")
 
+    def test_a_restarted_writer_reports_and_clears_previous_drops(self):
+        console = self.logs / "restarted.out"
+        previous = ops_log.Dropping(console, log=lambda _: None)
+        previous.failed(PermissionError("read only"))
+        previous.failed(PermissionError("read only"))
+        ops_log.main(["--file", str(console), "--err-file", str(self.err)],
+                     stdin=io.BytesIO(b"writing again\n"))
+        self.assertFalse(previous.state.exists())
+        content = console.read_text()
+        self.assertIn("2 line(s) were dropped", content)
+        self.assertIn(previous.since, content)
+        self.assertIn("writing again", content)
+        self.assertIn("again after dropping 2 line(s)", self.err.read_text())
+
+    def test_a_restarted_writer_keeps_counting_until_a_write_succeeds(self):
+        previous = ops_log.Dropping(self.console, log=lambda _: None)
+        previous.failed(PermissionError("read only"))
+        ops_log.main(["--file", str(self.console), "--err-file", str(self.err)],
+                     stdin=io.BytesIO(b"another failure\n"))
+        self.assertTrue(previous.state.read_text().startswith("2 line(s) dropped since "))
+        self.assertIn(previous.since, previous.state.read_text())
+
     def test_without_err_file_warnings_stay_on_stderr(self):
         stderr = io.StringIO()
         with contextlib.redirect_stderr(stderr):
