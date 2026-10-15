@@ -12,7 +12,7 @@ import calendar
 import os
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, Awaitable, Callable, Union
 from zoneinfo import ZoneInfo
 
@@ -502,9 +502,27 @@ class Agent:
                                     # explicit, defensible opt-in.
     buttons: tuple[Button, ...] = ()  # under this agent's result announcement. Empty →
                                     # no buttons at all; the kit adds none of its own.
+    announce: str = "result"        # card body: final message, completion evidence, or
+                                    # the opening of this run's report under work/.
+    announce_file: str = ""         # announce="file" only: the report to show, a path
+                                    # or glob relative to the task's work/ ("briefing.md",
+                                    # "reports/*.md"). Empty → the first .md, then .txt.
 
     def __post_init__(self) -> None:
+        if self.announce not in ("result", "evidence", "file"):
+            raise ValueError(f"{self.name}: announce must be 'result', 'evidence', or 'file'; "
+                             f"got {self.announce!r}")
         self.writes_report = self.writes_report or self.writes_finding
+        if self.announce == "file" and not self.writes_report:
+            # Only a writes_report run has artifacts, so file would always fall back.
+            raise ValueError(f"{self.name}: announce='file' needs writes_report=True")
+        if self.announce_file:
+            path = PureWindowsPath(self.announce_file)  # splits on / and \ alike
+            if self.announce != "file":
+                raise ValueError(f"{self.name}: announce_file needs announce='file'")
+            if path.drive or path.root or ".." in path.parts:
+                raise ValueError(f"{self.name}: announce_file must be a path inside work/, "
+                                 f"got {self.announce_file!r}")
         self.buttons = tuple(self.buttons)
         if len(self.buttons) > MAX_BUTTONS:
             raise ValueError(f"{self.name}: at most {MAX_BUTTONS} buttons, got {len(self.buttons)}")

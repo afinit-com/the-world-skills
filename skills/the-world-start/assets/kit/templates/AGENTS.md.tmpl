@@ -15,3 +15,26 @@
 - Outward side effects require the existing one-shot approval gate.
 - A successful process is not completion when an agent promises a report; verify the
   expected file exists.
+- Scheduled workers finish with a summary a person can read, rather than "done" or
+  "saved report.md". `Agent(announce="result")` shows that final message in the card;
+  `announce="evidence"` shows the completion check, and `announce="file"` (needs
+  `writes_report=True`) shows the report's opening: front matter and a leading `# `
+  title are skipped, then up to the first `## ` (the first section, if that comes next).
+  Put the summary first in the report for `file`, and keep a readable final message for
+  its fallback. Other values are rejected when the Agent is constructed.
+- `file` picks from this attempt's files in that task's `work/` (its artifacts, and files
+  modified since the attempt was claimed), not older reports (judged by modification time). `announce_file="briefing.md"`
+  (a path or glob under `work/`) names the report; otherwise `.md`, then `.txt`, top level
+  first, skipping hidden files, logs, and data. It tries them in order and reads at most
+  64 KiB of regular, single-linked UTF-8 text; when none is usable, `result` is shown.
+  The best 500 matches are retained after filtering/ranking; discovery still walks the
+  tree. Claims record nanoseconds, but preserved mtimes and clock changes can affect
+  this time-based selection. Files are opened from a pinned work-directory fd,
+  rejecting symlinks at every component and all multiply linked files. Platforms
+  without safe descriptor-relative opens show `result`. On native Windows `file` never
+  shows a report: every card falls back to `result`, with no warning when the Agent
+  starts, so use `result` there.
+  All modes keep the channel's normal card limits and mention handling. File excerpts
+  additionally mask provider tokens, named credentials and whole secret env values;
+  result, evidence and error masking keep their existing behavior. Masking cannot
+  catch every secret: do not announce raw logs or dumps.

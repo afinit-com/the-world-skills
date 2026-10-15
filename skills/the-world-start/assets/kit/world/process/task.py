@@ -36,6 +36,7 @@ import json
 import re
 import secrets
 import shutil
+import time
 from dataclasses import dataclass, field, replace
 from hashlib import sha256
 from pathlib import Path
@@ -684,6 +685,8 @@ def transition(home: Path, task: Task, to: str, *, reason: str = "", **fields) -
     if task.status in TERMINAL:
         raise TaskError(f"{task.id} is already {task.status} — a settled task does not move again")
 
+    if to == "running":
+        fields.setdefault("started_ns", time.time_ns())
     was, task.status = task.status, to
     save(home, task)
     append_event(home, task.id, "transition", **{"from": was, "to": to, "reason": reason, **fields})
@@ -860,7 +863,8 @@ def claim(home: Path, task: Task, task_type: TaskType, *, now: float) -> Task:
     the crash marker at once — see `reclaim_expired`."""
     task.lease_until = from_epoch(now + task_type.timeout_s)
     save(home, task)
-    return transition(home, task, "running", reason="claimed", lease_until=task.lease_until)
+    return transition(home, task, "running", reason="claimed", lease_until=task.lease_until,
+                      started_ns=int(now * 1_000_000_000))
 
 
 def reclaim_expired(home: Path, now: float) -> list[Task]:
