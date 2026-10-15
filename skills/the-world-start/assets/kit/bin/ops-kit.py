@@ -99,6 +99,18 @@ def windows_process_match(home: Path) -> str:
             rf'\s+"?{harness}"?(?:\s|$)')
 
 
+def relative_process_match(*, windows: bool = False) -> str:
+    """A README-style launch whose home cannot be established from its command line.
+    Refuse to start while one exists, rather than adopt or stop another home's process.
+    `uv run python harness.py` has a Python child with exactly this command line too.
+    """
+    if windows:
+        exe = r'pythonw?[0-9.]*(?:\.exe)?'
+        return (rf'^(?:"(?:[^"]*\\)?{exe}"|(?:[^"\s]*\\)?{exe})'
+                r'\s+"?(?:\.[\\/])?harness\.py"?(?:\s|$)')
+    return r'^(.*/)?[Pp]ython[0-9.]* (\./)?harness\.py( |$)'
+
+
 def ps_quote(text: str) -> str:
     """A PowerShell single-quoted string. PowerShell also takes the curly single quotes
     as quote marks, so they are doubled too."""
@@ -108,7 +120,7 @@ def ps_quote(text: str) -> str:
 
 
 def systemd_quote(text: str) -> str:
-    return '"' + text.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%") + '"'
+    return '"' + text.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%").replace("$", "$$") + '"'
 
 
 def fill(template: str, values: dict[str, str]) -> str:
@@ -174,6 +186,7 @@ def render(home: Path, name: str, os_name: str, python: Path, run_path: str, *,
         "UP": q(str(up)),
         "WATCHDOG": q(str(watchdog)),
         "MATCH": q(process_match(home)),
+        "RELATIVE_MATCH": q(relative_process_match()),
         "RUN_PATH": q(run_path),
         "CAFFEINATE": "1" if os_name == "macos" else "0",
         "INTERVAL_S": str(INTERVAL_S),
@@ -219,6 +232,7 @@ def _render_windows(home: Path, name: str, python: Path, run_path: str, *,
         "PYTHON": ps_quote(str(python)),
         "UP": ps_quote(str(up)),
         "MATCH": ps_quote(windows_process_match(home)),
+        "RELATIVE_MATCH": ps_quote(relative_process_match(windows=True)),
         "RUN_PATH": ps_quote(run_path),
         "INTERVAL_S": str(INTERVAL_S),
         "BACKOFF_MIN_S": str(BACKOFF_MIN_S),

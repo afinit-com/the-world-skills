@@ -25,6 +25,8 @@ Ownership is the whole point of the split below:
                docs/integrations.md docs/operations.md docs/verify.md
                Overwritten on every run — that is what makes a re-run an upgrade.
                Never fork these per-harness (see docs/philosophy.md).
+               Newly owned ops/verify files with differing content are copied to .bak
+               before replacement (numbered if needed), and named in the log.
 
   harness-own  pyproject.toml env/harness.env.example AGENTS.md README.md .gitignore
                Created if missing, otherwise left alone. Provider hook registries are
@@ -86,6 +88,9 @@ KIT_FILES = [
     # time (docs/operations.md).
     "templates/ops/up.sh.tmpl",
     "templates/ops/watchdog.sh.tmpl",
+    "templates/ops/up.ps1.tmpl",
+    "templates/ops/watchdog.ps1.tmpl",
+    "templates/ops/task.xml.tmpl",
     "templates/ops/launchd.plist.tmpl",
     "templates/ops/systemd.service.tmpl",
     "templates/ops/systemd.timer.tmpl",
@@ -108,6 +113,14 @@ KIT_FILES = [
     "docs/operations.md",
     "docs/verify.md",
 ]
+# These individual paths became kit-owned after harnesses could already have used
+# them. Preserve differing content on upgrade; never overwrite an earlier backup.
+BACKUP_ON_REPLACE = {
+    rel for rel in KIT_FILES if rel.startswith(("templates/ops/", "bin/ops-"))
+} | {
+    "templates/skill-wrapper-tool.md.tmpl", "templates/verify-wrapper.md.tmpl",
+    "docs/operations.md", "docs/verify.md",
+}
 # harness-owned: only created when absent
 SEED_FILES = ["env/harness.env.example"]
 
@@ -430,6 +443,14 @@ def copy_kit(target: Path, trees: list[str], files: list[str], excluded: list[st
         src, dest = KIT / rel, target / rel
         verb = "replaced" if dest.exists() else "wrote   "
         dest.parent.mkdir(parents=True, exist_ok=True)
+        if rel in BACKUP_ON_REPLACE and dest.is_file() and dest.read_bytes() != src.read_bytes():
+            backup = dest.with_name(dest.name + ".bak")
+            n = 0
+            while backup.exists() or backup.is_symlink():
+                n += 1
+                backup = dest.with_name(f"{dest.name}.bak.{n}")
+            shutil.copy2(dest, backup)
+            log.append(f"backed up {rel} -> {backup.relative_to(target).as_posix()}")
         shutil.copy2(src, dest)
         log.append(f"{verb} {rel}")
 

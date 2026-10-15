@@ -29,6 +29,7 @@ ENTRY="$HOME_DIR/harness.py"
 # A python process whose first argument is this harness.py (bin/ops-kit.py
 # process_match), so a second harness, an editor, or a grep for the path never counts.
 MATCH={{MATCH}}
+RELATIVE_MATCH={{RELATIVE_MATCH}}
 OUT="$HOME_DIR/logs/console.out"
 STATE="$HOME_DIR/logs/.watchdog"
 # The login shell's PATH, with the agent CLI's directory first, resolved when this was
@@ -92,6 +93,29 @@ wait_writer() {
 
 # Start the harness; the caller holds the lock and has checked it is not running.
 start() {
+  # POSIX process lists do not portably expose cwd. A relative README launch could
+  # belong to this home, so leave it alone and refuse a potentially duplicate start.
+  local relative rc=0
+  relative=$(pgrep -f "$RELATIVE_MATCH") || rc=$?
+  if [ "$rc" -gt 1 ]; then
+    echo "{{NAME}}: cannot check for a relative harness.py launch; not starting" >&2
+    return 1
+  fi
+  local pid cwd
+  for pid in $relative; do
+    cwd=
+    if [ -d "/proc/$pid" ]; then
+      cwd=$(readlink "/proc/$pid/cwd" 2>/dev/null || true)
+    elif command -v lsof >/dev/null; then
+      cwd=$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' || true)
+    fi
+    # Ignore only a positively identified other home. Missing tools, permissions,
+    # an exited process or an unreadable cwd all leave the start refused.
+    if [ -n "$cwd" ] && [ -d "$cwd" ] && [ "$cwd" != "$HOME_DIR" ]; then continue; fi
+    echo "{{NAME}}: relative harness.py launch found (pid $pid); not starting." >&2
+    echo "  Stop it in its original terminal, then retry up; its home is this one or unknown." >&2
+    return 1
+  done
   mkdir -p "$HOME_DIR/logs" "$STATE"
   # A second writer would exit at once and leave the new harness writing into a closed
   # pipe, so an old one still draining is waited for, not raced.

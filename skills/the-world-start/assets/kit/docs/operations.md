@@ -20,6 +20,15 @@ It renders for the machine it runs on. A profile for another OS is refused, sinc
 scripts carry this machine's paths. On Windows the scripts are PowerShell (5.1, as
 shipped with Windows; nothing to install) and are described under [Windows](#windows).
 
+Before the first `up`, stop any foreground `uv run python harness.py` or
+`.venv/bin/python harness.py` in its original terminal. A relative `harness.py` launch
+does not reveal its home in the process list. Ops refuses to start a second copy if a
+relative launch belongs to this home or its home cannot be identified. Linux uses
+`/proc/<pid>/cwd` and macOS uses `lsof` to ignore confirmed other homes; without access
+to that information it refuses safely. It never stops an unidentified process. Windows
+cannot query cwd through `Win32_Process`, so all ops commands refuse while any relative
+launch exists, including one in another home.
+
 ## What it writes
 
 | File | What it does |

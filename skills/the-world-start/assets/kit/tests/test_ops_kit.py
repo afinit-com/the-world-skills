@@ -92,8 +92,26 @@ class RenderTest(unittest.TestCase):
         self.assertEqual(timer["Install"]["WantedBy"], "timers.target")
         self.assertIn("CAFFEINATE=0", files["scripts/my-harness-up"][0])
 
+    def test_relative_process_patterns_match_readme_launches_only(self):
+        import re
+        for windows, commands in (
+            (False, ["python harness.py", "/opt/python3 ./harness.py"]),
+            (True, [r'"C:\Python\python.exe" harness.py', r'python.exe ".\harness.py"']),
+        ):
+            pattern = ops_kit.relative_process_match(windows=windows)
+            for command in commands:
+                self.assertRegex(command, pattern)
+            for command in ("python /other/harness.py", "python ops-log.py python harness.py",
+                            r'python.exe C:\other\harness.py', "uv run python harness.py"):
+                self.assertIsNone(re.search(pattern, command), command)
+
     def test_systemd_quote_escapes_what_systemd_unescapes(self):
         self.assertEqual(ops_kit.systemd_quote('a\\b "c" 100%'), '"a\\\\b \\"c\\" 100%%"')
+
+    def test_systemd_quote_keeps_dollar_paths_literal(self):
+        home = self.home / 'harness-${NOT_SET}-$HOME'
+        service = _render(home, "linux")["scripts/systemd/my-harness-watchdog.service"][0]
+        self.assertIn('harness-$${NOT_SET}-$$HOME/scripts/', service)
 
     def test_windows_renders_powershell_scripts_and_a_scheduled_task(self):
         files = _render(self.home, "windows", user="WORKGROUP\\someone",
@@ -278,6 +296,24 @@ class NotifyTest(unittest.TestCase):
                                    opener=lambda req, timeout: Resp(b'{"ok": true}'))
         self.assertEqual((bad, good), (1, 0))
 
+    def test_harness_env_overrides_stale_shell_for_notifications(self):
+        Path(self.empty_env).write_text(
+            'export T_TOKEN="file-token"\nT_CHAN=file-channel # channel\n', encoding="utf-8")
+        requests = []
+
+        def opener(req, timeout):
+            requests.append(req)
+            return io.BytesIO(b'{"ok": true}')
+
+        env = {"WORLD_ENV_FILE": self.empty_env, "T_TOKEN": "stale-token", "T_CHAN": "stale-channel"}
+        with unittest.mock.patch.dict(os.environ, env):
+            code = ops_notify.main(["--token-env", "T_TOKEN", "--channel-env", "T_CHAN", "hi"],
+                                   opener=opener)
+            self.assertEqual(os.environ["T_TOKEN"], "stale-token")
+        self.assertEqual(code, 0)
+        self.assertEqual(requests[0].get_header("Authorization"), "Bearer file-token")
+        self.assertEqual(json.loads(requests[0].data)["channel"], "file-channel")
+
     def test_request_carries_the_token_only_in_the_header(self):
         req = ops_notify.build_request("xoxb-secret", "C1", "restarted")
         self.assertEqual(req.get_header("Authorization"), "Bearer xoxb-secret")
@@ -460,6 +496,55 @@ class LauncherAndWatchdogTest(unittest.TestCase):
             if not self.pids():
                 return
             time.sleep(0.1)
+
+    def test_relative_launch_in_a_confirmed_other_home_is_left_alone(self):
+        other = self.home.parent / "other"
+        other.mkdir()
+        (other / "harness.py").write_text(STUB_HARNESS, encoding="utf-8")
+        child = subprocess.Popen([sys.executable, "harness.py"], cwd=other,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            for _ in range(100):
+                if (other / "env-seen.json").exists():
+                    break
+                time.sleep(0.05)
+            self.assertTrue((other / "env-seen.json").exists())
+            result = self.run_up("up")
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(len(self.pids()), 1)
+            self.assertEqual(self.run_up("down").returncode, 0)
+            self.assertIsNone(child.poll())
+        finally:
+            child.terminate()
+            child.wait(timeout=10)
+
+    def test_relative_readme_launch_blocks_a_second_start(self):
+        commands = [[str(self.home / ".venv" / "bin" / "python"), "harness.py"]]
+        if shutil.which("uv"):
+            commands.append([shutil.which("uv"), "run", "python", "harness.py"])
+        for command in commands:
+            with self.subTest(command=command):
+                seen = self.home / "env-seen.json"
+                seen.unlink(missing_ok=True)
+                child = subprocess.Popen(command, cwd=self.home, stdout=subprocess.DEVNULL,
+                                         stderr=subprocess.DEVNULL, start_new_session=True)
+                try:
+                    for _ in range(100):
+                        if seen.exists():
+                            break
+                        time.sleep(0.05)
+                    self.assertTrue(seen.exists(), "the original harness did not start")
+                    for action in ("up", "resume"):
+                        result = self.run_up(action)
+                        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                        self.assertIn("relative", result.stderr)
+                        self.assertEqual(self.pids(), [], "a second harness started")
+                    self.assertIsNone(child.poll(), "the original was stopped")
+                finally:
+                    import signal
+                    os.killpg(child.pid, signal.SIGTERM)
+                    child.wait(timeout=10)
+                    self.kill_all()
 
     def test_lifecycle(self):
         # up, with a stale shell export of both kinds the launcher must not hand down
@@ -810,6 +895,25 @@ class WindowsLauncherTest(unittest.TestCase):
             if not self.pids():
                 return
             time.sleep(0.5)
+
+    def test_relative_readme_launch_blocks_a_second_start(self):
+        child = subprocess.Popen([str(self.python), "harness.py"], cwd=self.home,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            for _ in range(100):
+                if (self.home / "env-seen.json").exists():
+                    break
+                time.sleep(0.05)
+            self.assertTrue((self.home / "env-seen.json").exists())
+            for action in ("up", "resume"):
+                result = self.run_up(action)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("relative", result.stdout + result.stderr)
+                self.assertEqual(self.pids(), [])
+            self.assertIsNone(child.poll())
+        finally:
+            subprocess.run(["taskkill", "/PID", str(child.pid), "/T", "/F"], capture_output=True)
+            child.wait(timeout=10)
 
     def test_scripts_parse_in_windows_powershell(self):
         check = ("$errors = $null; [System.Management.Automation.Language.Parser]::ParseFile("
