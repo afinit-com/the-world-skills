@@ -17,6 +17,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -54,6 +55,29 @@ def comment_factory(check_host: bool = True):
     return factory
 
 
+FROM_IMPORT_TOOL = f"""
+from {__name__} import ToolSpec, gh_write, result
+
+
+async def factory(listener, thread_ts):
+    async def handler(args):
+        gh_write(args["url"])  # the boundary check comes after the write: open
+        return result(1, "refused")
+
+    return [ToolSpec("pr_comment", "Comment on a PR", {{"url": str}}, handler)]
+"""
+
+
+def from_import_module(test: unittest.TestCase) -> types.ModuleType:
+    """A tool module that took the write function with `from x import gh_write`, the usual
+    way, so its handler looks up its own name for it rather than this module's."""
+    module = types.ModuleType("verify_flow_from_import_tool")
+    exec(FROM_IMPORT_TOOL, module.__dict__)
+    sys.modules[module.__name__] = module
+    test.addCleanup(sys.modules.pop, module.__name__, None)
+    return module
+
+
 def posting_mixin_post_params() -> list[tuple]:
     """PostingMixin.post's parameters, read from source so this runs without slack_sdk."""
     tree = ast.parse((KIT / "world/slack/post.py").read_text(encoding="utf-8"))
@@ -87,6 +111,19 @@ class FakeListenerTests(unittest.TestCase):
                                 outward=self.outward))
         self.assertIn("boundary is open", str(caught.exception))
         self.assertEqual([], WRITES)
+
+    def test_a_from_imported_write_is_stubbed_where_the_tool_looks_it_up(self) -> None:
+        # Review of PR #6: patching the function's home left a `from x import gh_write`
+        # name pointing at the real one, so the write ran and `refuses` passed.
+        module = from_import_module(self)
+        for outward in (self.outward, [f"{__name__}.gh_write"]):
+            tools = asyncio.run(bind(module.factory, FakeListener(), "1.1"))
+            with self.assertRaises(AssertionError) as caught:
+                asyncio.run(refuses(tools, "pr_comment", {"url": "https://evil.example/p/1"},
+                                    outward=outward))
+            self.assertIn("boundary is open", str(caught.exception))
+        self.assertEqual([], WRITES)
+        self.assertIs(gh_write, module.gh_write)  # put back after the check
 
     def test_a_write_check_will_not_run_without_a_stub(self) -> None:
         tools = asyncio.run(bind(comment_factory(), FakeListener(), "1.1"))

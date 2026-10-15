@@ -11,7 +11,7 @@ listener in every harness. This is that fake, once:
     listener = FakeListener(state={"worktrees": {...}})
     tools = await bind(PERSONA.mention_tools, listener, "1700000000.000100")
     await refuses(tools, "github_pr_comment", {"number": 999999, "body": "x"},
-                  outward=["tools.github.gh_write"])
+                  outward=["abilities.reviewer.tools.gh_write"])
 
 A boundary check must never be able to write. The tool handler runs for real, so a write
 tool whose boundary turns out to be open would comment, push, or merge from inside the
@@ -19,6 +19,13 @@ check. `refuses` therefore stubs every outward call named in `outward` for the l
 the call, and fails if any stub was reached, whatever the tool returned. It refuses to
 run without at least one, and `call` makes the same choice explicit: `outward=()` is a
 declaration that the tool writes nothing outside, not a default.
+
+Name the function the tool looks up when it writes, as the tool's module sees it. A
+module that did `from tools.github import gh_write` holds its own name for the function,
+and patching `tools.github.gh_write` alone would leave that name pointing at the real
+one. So every other module-level name bound to the same function is stubbed too. A
+reference kept anywhere else (a closure, a default argument, a dict of handlers) is not
+found; stub that name instead.
 
 What else is faked:
 
@@ -38,6 +45,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import itertools
+import pkgutil
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Iterable
@@ -102,13 +111,31 @@ async def bind(tools: Any, listener: FakeListener, thread_ts: str) -> list[ToolS
     return list(tools)
 
 
-def _patch(target: Any):
-    """A stub for one outward call: a dotted path as `unittest.mock.patch` takes it
-    ("tools.github.gh_write", "subprocess.run"), or an (object, attribute) pair."""
+def _owner(target: Any) -> tuple[Any, str]:
+    """The object and attribute a stub target names: a dotted path as `unittest.mock.patch`
+    takes it ("abilities.reviewer.tools.gh_write", "subprocess.run"), or an (object,
+    attribute) pair."""
     if isinstance(target, str):
-        return mock.patch(target, autospec=True)
-    owner, attribute = target
-    return mock.patch.object(owner, attribute, autospec=True)
+        owner, _, attribute = target.rpartition(".")
+        return pkgutil.resolve_name(owner), attribute
+    return target
+
+
+def _patch(stack: contextlib.ExitStack, target: Any) -> Any:
+    """Stub one outward call where it was named, and under every other module-level name
+    bound to the same object, so a `from x import f` in the tool's module is covered too.
+    Returns the stub."""
+    owner, attribute = _owner(target)
+    original = getattr(owner, attribute)
+    stub = stack.enter_context(mock.patch.object(owner, attribute, autospec=True))
+    for module in list(sys.modules.values()):
+        names = getattr(module, "__dict__", None)
+        if not isinstance(names, dict):
+            continue
+        for name, value in list(names.items()):
+            if value is original and not (module is owner and name == attribute):
+                stack.enter_context(mock.patch.object(module, name, stub))
+    return stub
 
 
 async def call(tools: list[ToolSpec], name: str, args: dict[str, Any], *,
@@ -121,7 +148,7 @@ async def call(tools: list[ToolSpec], name: str, args: dict[str, Any], *,
     if not found:
         raise LookupError(f"no tool named {name!r}; bound: {[t.name for t in tools]}")
     with contextlib.ExitStack() as stack:
-        stubs = {repr(t): stack.enter_context(_patch(t)) for t in outward}
+        stubs = {repr(t): _patch(stack, t) for t in outward}
         out = await found[0].handler(dict(args))
     reached = [t for t, stub in stubs.items() if stub.called]
     if reached:

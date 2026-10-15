@@ -42,7 +42,7 @@ async def main():
     listener = FakeListener(state={})
     tools = await bind(PERSONA.mention_tools, listener, "1700000000.000100")
     refused = await refuses(tools, "pr_comment", {"url": "https://example.com/x/y/pull/1"},
-                            outward=["tools.github.gh_write"])   # the function that writes
+                            outward=["abilities.reviewer.tools.gh_write"])  # the name it writes through
     print("other host refused:", text(refused))
 
 asyncio.run(main())
@@ -57,6 +57,12 @@ the call and fails if any was reached, even when the tool then reported an error
 will not run with none named. An open boundary then shows up as a failed check with
 nothing written. If the tool has no single function to stub, that is worth fixing in the
 tool before checking it.
+
+Name the function where the tool looks it up: `abilities.reviewer.tools.gh_write`, the name
+in the tool's own module, not only the module it came from. A tool module that did
+`from tools.github import gh_write` has its own name for it. `refuses` stubs every other
+module-level name bound to the same function as well, but a reference kept in a closure, a
+default argument, or a dict of handlers is not found, and the real write would run.
 
 `bind` returns the tools without the approval gate the listener wraps around
 `mention_tools`. That is on purpose: this step checks the tool's own code. The gate is the
