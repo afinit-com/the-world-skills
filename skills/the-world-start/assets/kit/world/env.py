@@ -72,7 +72,11 @@ def parse_value(raw: str) -> str:
 
 
 def parse_env_file(path: pathlib.Path) -> dict[str, str]:
-    """Read one env file without imports or environment changes; missing means empty."""
+    """Read one env file without imports or environment changes; missing means empty.
+
+    A key declared twice keeps its first value, as the harness loader always did: the
+    later line is ignored, never a silent override of what the file said first.
+    """
     try:
         text = path.read_text(encoding="utf-8")
     except FileNotFoundError:
@@ -81,7 +85,7 @@ def parse_env_file(path: pathlib.Path) -> dict[str, str]:
     for line in text.splitlines():
         match = re.match(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$", line)
         if match:
-            values[match.group(1)] = parse_value(match.group(2))
+            values.setdefault(match.group(1), parse_value(match.group(2)))
     return values
 
 
