@@ -88,13 +88,19 @@ Each of these was a bug in a hand-built launcher first.
   it is open). The next outage starts a new message. A restart that worked is posted
   every time, so a crash loop shows up as a run of replies; a failure that repeats
   unchanged is posted once and logged every round. Only successful delivery marks a
-  failure as posted; failed delivery is retried on the next backoff attempt. A failed
-  recovery notification keeps the incident open: `logs/.watchdog/recovery-failures`
-  records pending recovery retries, using the same exponential backoff without
-  increasing the restart count or restarting a healthy harness. Successful recovery
-  delivery clears the incident and retry state. If the thread no longer takes
-  replies (its message was deleted), the line is posted as a new message, which becomes
-  the thread. `--notify` is refused unless `env/harness.env` already holds the bot
+  failure as posted; failed delivery is retried on the next backoff attempt. The round
+  that finds the harness running resets the restart count whatever Slack does. A
+  recovery line Slack did not take waits in `logs/.watchdog/recovery-pending` and keeps
+  the incident open; it is retried with the same exponential backoff on its own
+  schedule (`recovery-failures`, `recovery_next_try`), so it never restarts a healthy
+  harness or delays restarting one that died again. A harness that dies before the line
+  is delivered goes on in the same incident, and the next recovery replaces the line.
+  A console writer that dies also discards the pending line and its delivery backoff,
+  so the next healthy round can post the new recovery immediately in the same thread.
+  Delivered, it closes the incident. If Slack says the thread is gone (its
+  message was deleted), the line is posted as a new message, which becomes the thread.
+  Any other failure, a timeout included, is retried in the same thread, so delivery is
+  at least once: a line Slack took but whose answer was lost can appear twice. `--notify` is refused unless `env/harness.env` already holds the bot
   token and the channel.
 - **A deliberate stop stays stopped.** `down` leaves a marker
   (`logs/.watchdog/down`) the watchdog respects until the next `up`. Before it existed, a
@@ -150,7 +156,7 @@ while it runs, so a second writer exits at once. What happens when it fails:
 
 | Failure | What happens | Who notices |
 |---|---|---|
-| A line cannot be written (disk full, file made read-only) | The writer drops it and keeps reading, so the harness never gets EPIPE. The count goes to `logs/.console.out.dropping`; bounded warnings go to `logs/ops-log.err`. When writing works again, the log gets one line saying how many were lost. | `status` shows `DROPPING`. The watchdog notes it once per episode, with `--notify` in Slack too. It does not restart: that would not free the disk. |
+| A line cannot be written (disk full, file made read-only) | The writer drops it and keeps reading, so the harness never gets EPIPE. The count goes to `logs/.console.out.dropping`; bounded warnings go to `logs/ops-log.err`. When writing works again, the log gets one line saying how many were lost. | `status` shows `DROPPING`. The watchdog notes it once per episode, with `--notify` in Slack too, retrying a post Slack did not take with the same backoff. It does not restart: that would not free the disk. |
 | The writer dies | The harness keeps running until its next line of output, which fails with EPIPE and kills it at a moment nobody chose. | `status` shows `UNHEALTHY` and `healthy` exits 1. The next watchdog round restarts the harness with a fresh writer and says so (`--notify`: in Slack). |
 | The writer does not exit after the harness stops | Something the harness started still holds its output open. | `down`, `restart` and `up` wait `WRITER_WAIT_S` (30s) for it, then fail loudly and name it. Nothing is started beside it. |
 

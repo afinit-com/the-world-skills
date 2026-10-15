@@ -5,10 +5,12 @@
         [--thread-ts TS] "text"
 
 With --thread-ts the line is a reply in that thread; the watchdog keeps one thread per
-incident. If the reply is not accepted (the parent was deleted, the ts is stale) it is
-posted as a new message instead. On success the ts of the thread it landed in is
-printed on stdout: the given --thread-ts, or the new message's own ts, which the
-watchdog keeps as the incident's thread from then on.
+incident. If Slack says the thread is gone (its parent was deleted) the line is posted
+as a new message instead. Any other failure, a timeout included, is only a failure: Slack
+may have taken a reply whose answer was lost, and a second copy as a new message would
+split the thread. On success the ts of the thread it landed in is printed on stdout: the
+given --thread-ts, or the new message's own ts, which the watchdog keeps as the
+incident's thread from then on.
 
 Only scripts/<name>-watchdog calls this, and only when bin/ops-kit.py rendered it with
 --notify. It is operator tooling, not an agent capability: no agent can reach it, and it
@@ -32,6 +34,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 API = "https://slack.com/api/chat.postMessage"
+# Slack's answers for a reply whose thread no longer takes replies.
+THREAD_GONE = frozenset({"thread_not_found", "message_not_found", "cannot_reply_to_message"})
 
 
 def build_request(token: str, channel: str, text: str,
@@ -66,13 +70,17 @@ def main(argv: list[str] | None = None, opener=urllib.request.urlopen) -> int:
               file=sys.stderr)
         return 1
     if args.thread_ts:
-        ts, error = post(opener, build_request(token, channel, args.text, args.thread_ts))
+        ts, error, refusal = post(opener, build_request(token, channel, args.text, args.thread_ts))
         if not error:
             print(args.thread_ts)
             return 0
+        if refusal not in THREAD_GONE:
+            print(f"ops-notify: the reply in thread {args.thread_ts} was not posted ({error})",
+                  file=sys.stderr)
+            return 1
         print(f"ops-notify: the reply in thread {args.thread_ts} was not posted ({error}); "
               "posting it as a new message", file=sys.stderr)
-    ts, error = post(opener, build_request(token, channel, args.text))
+    ts, error, _ = post(opener, build_request(token, channel, args.text))
     if error:
         print(f"ops-notify: {error}; not posted", file=sys.stderr)
         return 1
@@ -80,16 +88,18 @@ def main(argv: list[str] | None = None, opener=urllib.request.urlopen) -> int:
     return 0
 
 
-def post(opener, request: urllib.request.Request) -> tuple[str, str | None]:
-    """(the message's ts, None) once Slack took it, or ("", why it did not)."""
+def post(opener, request: urllib.request.Request) -> tuple[str, str | None, str]:
+    """(the message's ts, None, "") once Slack took it, or ("", why it did not, Slack's
+    error code when Slack answered with one)."""
     try:
         with opener(request, timeout=15) as resp:
             body = json.loads(resp.read().decode("utf-8"))
     except (urllib.error.URLError, OSError, ValueError) as exc:
-        return "", f"Slack unreachable ({exc})"
+        return "", f"Slack unreachable ({exc})", ""
     if not body.get("ok"):
-        return "", f"Slack refused it ({body.get('error', 'no error given')})"
-    return str(body.get("ts") or ""), None
+        refusal = str(body.get("error") or "")
+        return "", f"Slack refused it ({refusal or 'no error given'})", refusal
+    return str(body.get("ts") or ""), None, ""
 
 
 if __name__ == "__main__":

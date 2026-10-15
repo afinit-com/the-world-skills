@@ -425,6 +425,36 @@ class NotifyTest(unittest.TestCase):
         self.assertEqual((code, ts), (0, "333.3"))
         self.assertEqual(requests[1], {"channel": "C1", "text": "again"})
 
+    def test_a_reply_to_a_deleted_message_becomes_a_new_message(self):
+        code, ts, requests = self.notify(
+            "--thread-ts", "111.1", "again",
+            replies=[{"ok": False, "error": "message_not_found"}, {"ok": True, "ts": "333.3"}])
+        self.assertEqual((code, ts), (0, "333.3"))
+        self.assertEqual(len(requests), 2)
+
+    def test_a_reply_refused_for_another_reason_is_a_failure_not_a_new_thread(self):
+        code, ts, requests = self.notify("--thread-ts", "111.1", "again",
+                                         replies=[{"ok": False, "error": "ratelimited"}])
+        self.assertEqual((code, ts), (1, ""))
+        self.assertEqual(len(requests), 1)
+
+    def test_a_reply_that_timed_out_is_a_failure_not_a_second_post(self):
+        # Slack may have taken it; posting it again as a new message would split the thread.
+        requests = []
+
+        def opener(req, timeout):
+            requests.append(json.loads(req.data))
+            raise TimeoutError("timed out")
+
+        env = {"WORLD_ENV_FILE": self.empty_env, "T_TOKEN": "xoxb-1", "T_CHAN": "C1"}
+        with unittest.mock.patch.dict(os.environ, env), \
+                unittest.mock.patch("sys.stdout", io.StringIO()) as out, \
+                unittest.mock.patch("sys.stderr", io.StringIO()):
+            code = ops_notify.main(["--token-env", "T_TOKEN", "--channel-env", "T_CHAN",
+                                    "--thread-ts", "111.1", "again"], opener=opener)
+        self.assertEqual((code, out.getvalue()), (1, ""))
+        self.assertEqual(len(requests), 1)
+
     def test_request_carries_the_token_only_in_the_header(self):
         req = ops_notify.build_request("xoxb-secret", "C1", "restarted")
         self.assertEqual(req.get_header("Authorization"), "Bearer xoxb-secret")
@@ -568,13 +598,16 @@ class NotificationRetryTests:
         if WINDOWS:
             self.up.write_text(
                 "Add-Content -LiteralPath (Join-Path $PSScriptRoot 'actions') -Value $args[0]\n"
+                "if ($args[0] -eq 'healthy' -and "
+                "(Test-Path -LiteralPath (Join-Path $PSScriptRoot 'writerdead'))) { exit 1 }\n"
                 "if ((Test-Path -LiteralPath (Join-Path $PSScriptRoot 'healthy')) -and "
-                "($args[0] -in @('running', 'healthy'))) { exit 0 }\nexit 1\n")
+                "($args[0] -in @('running', 'healthy', 'recycle'))) { exit 0 }\nexit 1\n")
         else:
             self.up.write_text(
                 '#!/bin/sh\ndir=$(dirname "$0")\necho "$1" >>"$dir/actions"\n'
+                'if [ "$1" = healthy ] && [ -f "$dir/writerdead" ]; then exit 1; fi\n'
                 'if [ -f "$dir/healthy" ]; then\n'
-                '  case "$1" in running|healthy) exit 0;; esac\nfi\nexit 1\n')
+                '  case "$1" in running|healthy|recycle) exit 0;; esac\nfi\nexit 1\n')
         self.failed_delivery = self.home / "bin" / "notify-fail"
         self.failed_delivery.touch()
 
@@ -610,30 +643,136 @@ class NotificationRetryTests:
         self.state.mkdir(parents=True, exist_ok=True)
         (self.state / "incident").write_text("111.1")
         (self.state / "failures").write_text("2")
+        (self.state / "next_try").write_text(str(int(time.time()) + 960))
         (self.home / "scripts/healthy").touch()
         self.notification_round()
         self.assertEqual((self.state / "incident").read_text().strip(), "111.1")
         self.assertEqual((self.state / "recovery-failures").read_text().strip(), "1")
-        self.assertEqual((self.state / "failures").read_text().strip(), "2")
+        # The restart count resets the round it is found running, whatever Slack does.
+        self.assertFalse((self.state / "failures").exists())
+        self.assertFalse((self.state / "next_try").exists())
         self.notification_round()
         self.assertEqual(len(self.notification_attempts()), 1, "backoff was ignored")
-        (self.state / "next_try").write_text("0")
+        (self.state / "recovery_next_try").write_text("0")
         self.notification_round()
         self.assertEqual((self.state / "recovery-failures").read_text().strip(), "2")
-        self.assertGreaterEqual(int((self.state / "next_try").read_text()), int(time.time()) + 55)
+        self.assertGreaterEqual(int((self.state / "recovery_next_try").read_text()),
+                                int(time.time()) + 55)
         self.failed_delivery.unlink()
-        (self.state / "next_try").write_text("0")
+        (self.state / "recovery_next_try").write_text("0")
         self.notification_round()
         attempts = self.notification_attempts()
         self.assertEqual([p["thread"] for p in attempts], ["111.1"] * 3)
         self.assertTrue(all("recovered" in p["text"] and "2 restart(s)" in p["text"]
                             for p in attempts))
-        for name in ("incident", "failures", "next_try", "recovery-failures"):
+        for name in ("incident", "failures", "next_try", "recovery-failures",
+                     "recovery_next_try", "recovery-pending"):
             self.assertFalse((self.state / name).exists(), name)
         self.notification_round()
         self.assertEqual(len(self.notification_attempts()), 3)
         actions = (self.home / "scripts/actions").read_text().splitlines()
         self.assertEqual(actions, ["running", "healthy"] * 5)
+
+    def test_a_pending_recovery_never_delays_restarting_a_dead_harness(self):
+        self.prepare_notification_retry()
+        self.state.mkdir(parents=True, exist_ok=True)
+        (self.state / "incident").write_text("111.1")
+        (self.state / "failures").write_text("3")
+        (self.home / "scripts/healthy").touch()
+        for _ in range(3):
+            (self.state / "recovery_next_try").unlink(missing_ok=True)
+            self.notification_round()
+        self.assertGreater(int((self.state / "recovery_next_try").read_text()), int(time.time()))
+        # It dies while the recovery line is still waiting for Slack: the same round
+        # restarts it, as the first attempt of a fresh count, in the same thread.
+        (self.home / "scripts/healthy").unlink()
+        self.notification_round()
+        actions = (self.home / "scripts/actions").read_text().splitlines()
+        self.assertEqual(actions[-2:], ["running", "resume"])
+        last = self.notification_attempts()[-1]
+        self.assertEqual(last["thread"], "111.1")
+        self.assertIn("(attempt 1;", last["text"])
+        self.assertEqual((self.state / "incident").read_text().strip(), "111.1")
+        self.assertFalse((self.state / "recovery_next_try").exists())
+
+    def test_a_dead_writer_discards_the_previous_pending_recovery(self):
+        self.prepare_notification_retry()
+        self.state.mkdir(parents=True, exist_ok=True)
+        (self.state / "incident").write_text("111.1")
+        (self.state / "failures").write_text("3")
+        (self.home / "scripts/healthy").touch()
+        for _ in range(6):
+            (self.state / "recovery_next_try").write_text("0")
+            self.notification_round()
+        self.assertEqual((self.state / "recovery-failures").read_text().strip(), "6")
+        self.assertGreater(int((self.state / "recovery_next_try").read_text()),
+                           int(time.time()) + 900)
+        self.failed_delivery.unlink()
+        writerdead = self.home / "scripts/writerdead"
+        writerdead.touch()
+        self.notification_round()
+        actions = (self.home / "scripts/actions").read_text().splitlines()
+        self.assertEqual(actions[-3:], ["running", "healthy", "recycle"])
+        self.assertEqual((self.state / "failures").read_text().strip(), "1")
+        for name in ("recovery-pending", "recovery-failures", "recovery_next_try"):
+            self.assertFalse((self.state / name).exists(), name)
+        # The harness is healthy next round: its new recovery closes the same thread
+        # immediately, without inheriting the previous line's delivery deadline.
+        writerdead.unlink()
+        count = len(self.notification_attempts())
+        self.notification_round()
+        attempts = self.notification_attempts()
+        self.assertEqual(len(attempts), count + 1)
+        self.assertEqual(attempts[-1]["thread"], "111.1")
+        self.assertIn("recovered", attempts[-1]["text"])
+        self.assertIn("after 1 restart(s)", attempts[-1]["text"])
+        for name in ("incident", "failures", "next_try", "recovery-pending",
+                     "recovery-failures", "recovery_next_try"):
+            self.assertFalse((self.state / name).exists(), name)
+        self.notification_round()
+        self.assertEqual(len(self.notification_attempts()), count + 1)
+
+    def test_slack_that_keeps_failing_never_keeps_the_restart_count(self):
+        self.prepare_notification_retry()
+        healthy = self.home / "scripts/healthy"
+        for cycle in range(4):
+            healthy.unlink(missing_ok=True)
+            self.notification_round()
+            self.assertIn("(attempt 1;", self.notification_attempts()[-1]["text"], cycle)
+            healthy.touch()
+            self.notification_round()
+            self.assertFalse((self.state / "failures").exists(), cycle)
+            self.assertFalse((self.state / "next_try").exists(), cycle)
+            self.assertTrue((self.state / "incident").exists(), cycle)
+
+    def test_failed_dropping_delivery_backs_off_like_the_rest(self):
+        self.prepare_notification_retry()
+        (self.home / "scripts/healthy").touch()
+        dropping = self.home / "logs/.console.out.dropping"
+        dropping.parent.mkdir(parents=True, exist_ok=True)
+        dropping.write_text("disk full")
+
+        def dropping_attempts():
+            return [p for p in self.notification_attempts() if "dropping lines" in p["text"]]
+
+        self.notification_round()
+        self.notification_round()
+        self.assertEqual(len(dropping_attempts()), 1, "backoff was ignored")
+        (self.state / "dropping_next_try").write_text("0")
+        self.notification_round()
+        self.assertEqual(len(dropping_attempts()), 2)
+        self.assertEqual((self.state / "dropping-failures").read_text().strip(), "2")
+        self.assertFalse((self.state / "next_try").exists(), "it delayed the restart schedule")
+        self.failed_delivery.unlink()
+        (self.state / "dropping_next_try").write_text("0")
+        self.notification_round()
+        self.notification_round()
+        self.assertEqual(len(dropping_attempts()), 3)
+        self.assertTrue((self.state / "reported-dropping").exists())
+        dropping.unlink()
+        self.notification_round()
+        for name in ("reported-dropping", "dropping-failures", "dropping_next_try"):
+            self.assertFalse((self.state / name).exists(), name)
 
 
 @unittest.skipUnless(POSIX, "the launcher and watchdog are bash + pgrep (macOS, Linux)")
