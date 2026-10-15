@@ -290,6 +290,27 @@ class RollCostTest(unittest.TestCase):
             self.assertEqual(f.read(), b"from A\n")
         self.assertEqual(self.path.read_bytes(), b"after crash\n")
 
+    def test_old_archive_failure_does_not_block_current_file_rolls(self):
+        old = self.logs / "console.2000-01-01.out"
+        old.write_bytes(b"old\n")
+        real_compress = runlog._compress
+
+        def compress(path):
+            if path == old:
+                raise PermissionError("old archive inaccessible")
+            return real_compress(path)
+
+        with mock.patch.object(runlog, "_compress", side_effect=compress):
+            for _ in range(100):
+                runlog.append(self.path, b"x" * 10, max_bytes=100, log=self.messages.append)
+        self.assertLessEqual(self.path.stat().st_size, 100)
+        recovered = b""
+        for p in self.logs.glob("*.gz"):
+            with gzip.open(p, "rb") as f:
+                recovered += f.read()
+        self.assertEqual(len(recovered) + self.path.stat().st_size, 1000)
+        self.assertEqual(old.read_bytes(), b"old\n")
+
     def test_a_failing_roll_backs_off_and_warns_once(self):
         """Windows: someone follows the console log, so every rename fails. One warning
         and one attempt per ROLL_RETRY_S, not one of each per line."""
@@ -493,6 +514,27 @@ class OpsLogErrFileTest(unittest.TestCase):
                              stdin=io.BytesIO(b"x\n"))
         self.assertEqual(len(list(self.logs.glob("ops-log.*.err.gz"))), 1)
         self.assertEqual(len(self.err.read_text("utf-8").splitlines()), 1)
+
+    def test_old_err_archive_failure_does_not_disable_the_one_mb_cap(self):
+        old = self.logs / "ops-log.2000-01-01.err"
+        old.write_bytes(b"old\n")
+        self.err.write_bytes(b"x" * (ops_log.ERR_MAX_BYTES - 1024))
+        real_compress = runlog._compress
+
+        def compress(path):
+            if path == old:
+                raise PermissionError("old archive inaccessible")
+            return real_compress(path)
+
+        with mock.patch.object(ops_log, "_runlog", return_value=runlog), \
+                mock.patch.object(runlog, "_compress", side_effect=compress), \
+                contextlib.redirect_stderr(io.StringIO()):
+            for _ in range(20):
+                ops_log.main(["--file", str(self.console), "--err-file", str(self.err)],
+                             stdin=io.BytesIO(b"x\n"))
+        self.assertLessEqual(self.err.stat().st_size, ops_log.ERR_MAX_BYTES)
+        self.assertTrue(list(self.logs.glob("ops-log.*.err.gz")))
+        self.assertEqual(old.read_bytes(), b"old\n")
 
     def test_without_err_file_warnings_stay_on_stderr(self):
         stderr = io.StringIO()

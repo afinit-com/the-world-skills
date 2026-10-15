@@ -225,7 +225,8 @@ class _RollState:
     def __init__(self) -> None:
         self.recover_due = True  # first write in this process, or a roll left work behind
         self.scan_at = 0.0  # periodically find interrupted rolls from other processes
-        self.retry_at = 0.0  # no roll or recovery before this, after one failed
+        self.retry_at = 0.0  # no current-file roll before this, after one failed
+        self.recovery_retry_at = 0.0  # an old archive must not block a fresh roll
         self.warned: str | None = None  # the last warning, said once until a roll works
 
     def warn(self, log: Callable[[str], None], msg: str) -> None:
@@ -280,12 +281,12 @@ def _maybe_roll(path: Path, *, max_bytes: int | None, keep_days: int | None,
         st = path.stat()
     except FileNotFoundError:
         st = None
-    if state.recover_due or now >= state.scan_at:
+    if (state.recover_due or now >= state.scan_at) and now >= state.recovery_retry_at:
         try:
             for gz in recover(path):
                 log(f"run log: finished an interrupted roll, {gz.name}")
         except OSError as exc:
-            state.failed(now)
+            state.recovery_retry_at = now + ROLL_RETRY_S
             state.warn(log, f"⚠️  could not finish an earlier roll of {path.name} ({exc}); its "
                             f"lines are kept uncompressed in {path.parent}")
         else:
