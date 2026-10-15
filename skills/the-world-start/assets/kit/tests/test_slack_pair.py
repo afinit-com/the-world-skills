@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import os
 import stat
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("slack_pair", ROOT / "bin" / "slack-pair.py")
@@ -14,6 +17,18 @@ spec.loader.exec_module(pair)
 
 
 class PairingTests(unittest.TestCase):
+    def test_instructions_are_flushed_before_waiting_on_socket(self) -> None:
+        web = SimpleNamespace(auth_test=AsyncMock(return_value={'user_id': 'UBOT', 'user': 'keeper'}))
+        socket = SimpleNamespace(socket_mode_request_listeners=[], connect=AsyncMock(),
+                                 disconnect=AsyncMock(), close=AsyncMock())
+        with patch('slack_sdk.web.async_client.AsyncWebClient', return_value=web), \
+                patch('slack_sdk.socket_mode.aiohttp.SocketModeClient', return_value=socket), \
+                patch('builtins.print') as output:
+            with self.assertRaises(TimeoutError):
+                asyncio.run(pair.wait_for_mention('mock', 'mock', 0))
+        self.assertEqual(6, output.call_count)
+        self.assertTrue(all(call.kwargs.get('flush') for call in output.call_args_list))
+
     def test_a_person_mentioning_the_bot_names_the_channel_and_the_approver(self) -> None:
         event = {"type": "app_mention", "user": "U0HUMAN", "channel": "C0HOME", "ts": "1.2"}
         self.assertEqual({"channel": "C0HOME", "approver": "U0HUMAN", "ts": "1.2"},

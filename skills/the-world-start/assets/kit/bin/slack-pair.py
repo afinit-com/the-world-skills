@@ -57,12 +57,12 @@ async def wait_for_mention(bot_token: str, app_token: str, timeout: float) -> tu
 
     web = AsyncWebClient(token=bot_token)
     me = await web.auth_test()
-    print(f"workspace: {me.get('team')} ({me.get('url')})")
-    print(f"bot: @{me.get('user')}")
-    print("\nIn Slack, in the channel this harness should use:")
-    print(f"  1. /invite @{me.get('user')}   (skip if the bot is already there)")
-    print(f"  2. @{me.get('user')} 안녕")
-    print(f"Waiting up to {int(timeout)}s for that mention...")
+    print(f"workspace: {me.get('team')} ({me.get('url')})", flush=True)
+    print(f"bot: @{me.get('user')}", flush=True)
+    print("\nIn Slack, in the channel this harness should use:", flush=True)
+    print(f"  1. /invite @{me.get('user')}   (skip if the bot is already there)", flush=True)
+    print(f"  2. @{me.get('user')} 안녕", flush=True)
+    print(f"Waiting up to {int(timeout)}s for that mention...", flush=True)
 
     found: asyncio.Future = asyncio.get_running_loop().create_future()
     socket = SocketModeClient(app_token=app_token, web_client=web)
@@ -106,28 +106,28 @@ def main(argv: list[str] | None = None) -> int:
     values = {**provision.read_env(env_file), **os.environ}
     bot, app = values.get(bot_env, ""), values.get(app_env, "")
     if not provision.is_filled(bot) or not provision.is_filled(app):
-        print(f"✗ {bot_env} and {app_env} must be set first — run bin/slack-provision.py.")
+        print(f"✗ {bot_env} and {app_env} must be set first — run bin/slack-provision.py.", flush=True)
         return 1
 
     try:
         me, pairing = asyncio.run(wait_for_mention(bot, app, args.timeout))
     except asyncio.TimeoutError:
-        print("✗ no mention arrived. Is the bot in that channel, and Socket Mode on?")
+        print("✗ no mention arrived. Is the bot in that channel, and Socket Mode on?", flush=True)
         return 1
 
-    print(f"\nchannel:  {pairing['channel']}")
-    print(f"approver: {pairing['approver']}  (the person who mentioned the bot)")
+    print(f"\nchannel:  {pairing['channel']}", flush=True)
+    print(f"approver: {pairing['approver']}  (the person who mentioned the bot)", flush=True)
     if not args.yes:
         try:
             answer = input(f"Write {channel_env} and {args.approver_env} to {env_file}? [y/N] ")
         except EOFError:  # no terminal to answer from (e.g. run from an agent's shell)
-            print("\nNothing written: no terminal to ask. Re-run with --yes to write these.")
+            print("\nNothing written: no terminal to ask. Re-run with --yes to write these.", flush=True)
             return 1
         if answer.strip().lower() not in ("y", "yes"):
-            print("Nothing written.")
+            print("Nothing written.", flush=True)
             return 1
     provision.upsert_env(env_file, env_updates(pairing, channel_env, args.approver_env))
-    print(f"✓ wrote {channel_env} and {args.approver_env} to {env_file}")
+    print(f"✓ wrote {channel_env} and {args.approver_env} to {env_file}", flush=True)
 
     async def confirm() -> None:
         from slack_sdk.web.async_client import AsyncWebClient
@@ -140,7 +140,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         asyncio.run(confirm())
     except Exception as exc:  # noqa: BLE001 — the IDs are written; the reply is a courtesy
-        print(f"(could not reply in the thread: {exc!r})")
+        print(f"(could not reply in the thread: {exc!r})", flush=True)
     return 0
 
 
