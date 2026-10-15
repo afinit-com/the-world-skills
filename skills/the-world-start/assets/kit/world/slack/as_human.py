@@ -4,9 +4,15 @@ from __future__ import annotations
 import hmac
 import os
 import re
+import sys
 
-MARKER = re.compile(r"\[as-human:[^\]]*(?:\]|$)")
+OPEN = "[as-human:"
+MARKER = re.compile(r"\[as-human:[^\]\r\n]*\]")
 PREFIX = re.compile(r"^\[as-human:([^\]\r\n]*)\] ")
+# Shorter is guessable, and redacting it would blank ordinary words in every message.
+# `say-as-human.py init` writes 43 characters.
+MIN_SECRET = 16
+_warned_short: set[str] = set()
 
 
 def secret_env(slack) -> str:
@@ -16,26 +22,62 @@ def secret_env(slack) -> str:
     return prefix + "SLACK_AS_HUMAN_SECRET"
 
 
-def safe_text(text: str) -> str:
-    """Remove even an unknown or unfinished marker, and bare configured secrets."""
-    while "[as-human:" in text:
-        text = MARKER.sub("", text)
-    for key, value in os.environ.items():
-        if value and (key == "SLACK_AS_HUMAN_SECRET" or key.endswith("_SLACK_AS_HUMAN_SECRET")):
-            text = text.replace(value, "[redacted]")
+def _usable(key: str, value: str) -> bool:
+    """A short secret leaves the feature off, said once per key and never shown."""
+    if len(value) >= MIN_SECRET:
+        return True
+    if key not in _warned_short:
+        _warned_short.add(key)
+        print(f"[world] {key} is shorter than {MIN_SECRET} characters, so as-human checks are "
+              f"off; bin/say-as-human.py init writes a usable one", file=sys.stderr)
+    return False
+
+
+def configured_secret(key: str) -> str:
+    """The secret under `key`, or "" when it is missing or too short to use."""
+    value = os.environ.get(key, "")
+    return value if value and _usable(key, value) else ""
+
+
+def _secrets() -> list[str]:
+    return [value for key, value in os.environ.items()
+            if value and (key == "SLACK_AS_HUMAN_SECRET" or key.endswith("_SLACK_AS_HUMAN_SECRET"))
+            and _usable(key, value)]
+
+
+def safe_text(text: str, *, posting: bool = False) -> str:
+    """Remove even an unknown marker, and bare configured secrets.
+
+    Of an unfinished marker only the opening goes: the text after it is the person's or
+    the model's, and dropping it to the end of the message lost it without a sign.
+
+    With no secret in the environment the feature is off and input is left exactly as it
+    was before it existed. A post (posting=True) still loses complete markers: a secret
+    set later would otherwise meet them again as thread history.
+    """
+    secrets = _secrets()
+    if not secrets:
+        if posting:
+            while MARKER.search(text):
+                text = MARKER.sub("", text)
+        return text
+    while OPEN in text:
+        text = MARKER.sub("", text).replace(OPEN, "")
+    for value in secrets:
+        text = text.replace(value, "[redacted]")
     return text
 
 
-def safe_payload(value):
+def safe_payload(value, *, posting: bool = False):
     """Block Kit, tool arguments and event metadata may contain nested strings."""
     if isinstance(value, str):
-        return safe_text(value)
+        return safe_text(value, posting=posting)
     if isinstance(value, dict):
-        return {safe_text(k): safe_payload(v) for k, v in value.items()}
+        return {safe_text(k, posting=posting): safe_payload(v, posting=posting) for k, v in value.items()}
     if isinstance(value, list):
-        return [safe_payload(v) for v in value]
+        return [safe_payload(v, posting=posting) for v in value]
     if isinstance(value, tuple):
-        return tuple(safe_payload(v) for v in value)
+        return tuple(safe_payload(v, posting=posting) for v in value)
     return value
 
 
@@ -45,13 +87,15 @@ def normalize_message(listener, event: dict) -> tuple[dict, bool] | None:
     Only the socket owner's identity can impersonate the configured human. Other
     personas/apps cannot use this credential, and a real human's marker is just text.
     """
+    if not _secrets():
+        return event, False  # off: every message is handled as it was without the feature
     text = event.get("text") or ""
     user = event.get("user", "")
     is_bot = bool(event.get("bot_id")) or user in listener.user_to_identity
     simulated = False
-    if is_bot and "[as-human:" in text:
+    if is_bot and OPEN in text:
         match = PREFIX.match(text)
-        configured = os.environ.get(secret_env(listener.harness.slack), "")
+        configured = configured_secret(secret_env(listener.harness.slack))
         approver = getattr(listener.harness.slack, "approver", None)
         if (not match or not configured or not approver or user != listener.bot_user_id
                 or not hmac.compare_digest(match[1].encode(), configured.encode())):

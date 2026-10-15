@@ -130,7 +130,7 @@ class AsHumanTests(unittest.IsolatedAsyncioTestCase):
         obj = self.listener()
         obj.harness.slack.bot_token_env = 'OBS_SLACK_BOT_TOKEN'
         obj.state['threads']['1']['persona'] = 'other'
-        with patch.dict(os.environ, {'SLACK_AS_HUMAN_SECRET': 'wrong',
+        with patch.dict(os.environ, {'SLACK_AS_HUMAN_SECRET': 'wrong-but-long-enough',
                                      'OBS_SLACK_AS_HUMAN_SECRET': SECRET}):
             await self.deliver(obj, text=f'[as-human:{SECRET}] hello')
             await self.deliver(obj, text=f'[as-human:{SECRET}] hello')
@@ -184,6 +184,121 @@ class AsHumanTests(unittest.IsolatedAsyncioTestCase):
         for text in ['[as[as-human:inner]-human:outer] hello',
                      '[as-human:unfinished', '[as-human:line\nbreak] hello']:
             self.assertNotIn('[as-human:', safe_text(text))
+
+    def test_an_unfinished_marker_loses_only_itself(self):
+        """`[^\]]*(?:\]|$)` ran to the end of the message, newlines included, so a question
+        about the marker reached the model, or a reply was posted, cut off without a sign."""
+        from world.slack.as_human import safe_text
+        question = '<@UBOT> what does `[as-human:` mean?\nAlso please check deploy X and Y'
+        self.assertEqual(safe_text(question), '<@UBOT> what does `` mean?\nAlso please check deploy X and Y')
+        reply = 'Step 1: ok\nStep 2: the regex starts with `[as-human:` and\nStep 3: done'
+        self.assertEqual(safe_text(reply), 'Step 1: ok\nStep 2: the regex starts with `` and\nStep 3: done')
+        self.assertEqual(safe_text('[as-human:line\nbreak] hello'), 'line\nbreak] hello')
+        self.assertEqual(safe_text(f'[as-human:{SECRET}] hi'), ' hi')
+
+    async def test_an_unfinished_marker_keeps_the_rest_of_a_mention(self):
+        obj = self.listener()
+        await self.deliver(obj, 'UHUMAN', text='<@UBOT> what is `[as-human:`?\nAlso check deploy X')
+        self.assertEqual(obj._handle_mention.call_args.args[1], '<@UBOT> what is ``?\nAlso check deploy X')
+
+    async def test_off_bot_messages_route_exactly_as_before(self):
+        """With no secret a persona hop that quoted a marker was dropped, live and in
+        history; the feature being off must leave bot traffic as it was without it."""
+        text = '<@UBOT> quoting [as-human:x] and an open [as-human: tail'
+        obj = self.listener()
+        obj._dispatch_bot_hop = AsyncMock()
+        with patch.dict(os.environ, {'SLACK_AS_HUMAN_SECRET': ''}):
+            await self.deliver(obj, 'UOTHER', text=text)
+        obj._dispatch_bot_hop.assert_awaited_once()
+        self.assertEqual(obj._dispatch_bot_hop.call_args.args[1], text)
+        self.assertEqual(obj._dispatch_bot_hop.call_args.args[2]['user'], 'UOTHER')
+
+    async def test_off_listener_matches_the_listener_without_the_feature(self):
+        """Every route, compared with normalize_message taken out (the code before it)."""
+        texts = [f'[as-human:{SECRET}] <@UBOT> hello', '<@UBOT> see [as-human:x] here',
+                 '<@UBOT> open [as-human: tail\nmore', '<@UOTHER> plain']
+        users = ['UBOT', 'UOTHER', 'UFOREIGN', 'UHUMAN']
+
+        async def run(without_feature):
+            obj = self.listener()
+            obj._dispatch_bot_hop = AsyncMock()
+            obj._dispatch_human = AsyncMock()
+            with contextlib.ExitStack() as stack:
+                stack.enter_context(patch.dict(os.environ, {'SLACK_AS_HUMAN_SECRET': ''}))
+                if without_feature:
+                    stack.enter_context(patch('world.slack.listener.normalize_message',
+                                              lambda _listener, event: (event, False)))
+                for n, (user, text) in enumerate((u, t) for u in users for t in texts):
+                    await self.deliver(obj, user, text=text, ts=str(10 + n))
+            return [(name, m.call_args_list) for name, m in (
+                ('mention', obj._handle_mention), ('hop', obj._dispatch_bot_hop),
+                ('human', obj._dispatch_human), ('approver', obj.on_approver_message))]
+
+        self.assertEqual(await run(False), await run(True))
+
+    async def test_off_input_reaches_history_and_model_unchanged(self):
+        from world.slack.as_human import normalize_message, safe_text
+        obj = self.listener()
+        obj.harness.mention_model = None
+        obj.harness.mention_plugins = False
+        text = f'[as-human:{SECRET}] forged? and [as-human: open'
+        with patch.dict(os.environ, {'SLACK_AS_HUMAN_SECRET': ''}):
+            for event in ({'ts': '3', 'user': 'UFOREIGN', 'bot_id': 'B', 'text': text},
+                          {'ts': '4', 'user': 'UBOT', 'bot_id': 'B', 'text': text},
+                          {'ts': '5', 'user': 'UHUMAN', 'text': text}):
+                copy = dict(event)
+                self.assertEqual(normalize_message(obj, event), (copy, False))
+            self.assertEqual(safe_text(text), text)
+            obj.web.conversations_replies.return_value = {'messages': [
+                {'ts': '3', 'user': 'UFOREIGN', 'bot_id': 'FOREIGN', 'text': text}]}
+            self.assertIn(text, await obj._thread_transcript('1'))
+            with patch('world.slack.mentions.run_agent_oneshot',
+                       AsyncMock(return_value=RunResult('ok', 'hello'))) as run:
+                await obj._run_mention_turn('main', Persona('main', 'Main'), text, tools=[])
+            self.assertEqual(run.call_args.args[2], text)
+
+    async def test_off_posts_keep_unfinished_markers_and_drop_whole_ones(self):
+        """Posting still removes a complete marker with the feature off: the secret can be
+        set later, and the harness's own messages stay in Slack and come back as history.
+        Nothing else changes."""
+        from world.slack.as_human import safe_text
+        from world.slack.post import slack_call
+        with patch.dict(os.environ, {'SLACK_AS_HUMAN_SECRET': ''}):
+            self.assertEqual(safe_text('a [as-human:x] b, `[as-human:` c', posting=True),
+                             'a  b, `[as-human:` c')
+            web = SimpleNamespace(chat_postMessage=AsyncMock(return_value={'ts': '3'}))
+            await slack_call(web, 'chat_postMessage', text='see `[as-human:`\nmore')
+            self.assertEqual(web.chat_postMessage.call_args.kwargs['text'], 'see `[as-human:`\nmore')
+            obj = self.listener()
+            obj.web.chat_postMessage = AsyncMock(return_value={'ts': '3'})
+            obj._face = Mock(return_value={})
+            await obj.post('[as-human:x] see `[as-human:`\nmore')
+            self.assertEqual(obj.web.chat_postMessage.call_args.kwargs['text'], ' see `[as-human:`\nmore')
+
+    async def test_a_short_secret_turns_the_feature_off_with_one_warning(self):
+        """SLACK_AS_HUMAN_SECRET=a blanked every "a" in every message, in and out."""
+        from world.slack import as_human
+        obj = self.listener()
+        obj._dispatch_bot_hop = AsyncMock()
+        err = io.StringIO()
+        with patch.dict(os.environ, {'SLACK_AS_HUMAN_SECRET': 'a' * 15}), \
+                patch.object(as_human, '_warned_short', set()), contextlib.redirect_stderr(err):
+            text = 'deploy has a bad status ' + 'a' * 15
+            self.assertEqual(as_human.safe_text(text), text)
+            self.assertEqual(as_human.safe_text(text, posting=True), text)
+            await self.deliver(obj, secret='a' * 15)
+            await self.deliver(obj, 'UOTHER', text='<@UBOT> [as-human:x] hop', ts='3')
+        obj._handle_mention.assert_not_awaited()
+        self.assertEqual(obj._dispatch_bot_hop.await_count, 2)
+        self.assertEqual(obj._dispatch_bot_hop.call_args.args[1], '<@UBOT> [as-human:x] hop')
+        self.assertEqual(err.getvalue().count('SLACK_AS_HUMAN_SECRET'), 1, err.getvalue())
+        self.assertNotIn('a' * 15, err.getvalue())
+
+    async def test_a_secret_of_the_minimum_length_works(self):
+        obj = self.listener()
+        with patch.dict(os.environ, {'SLACK_AS_HUMAN_SECRET': 'b' * 16}):
+            await self.deliver(obj, secret='b' * 16)
+        self.assertEqual(obj._handle_mention.call_args.args[2]['user'], 'UHUMAN')
 
     def test_all_slack_message_writes_use_the_sanitizing_boundary(self):
         # Prevent a future direct SDK call in a card/handoff path from reopening it.
@@ -290,15 +405,54 @@ class SayAsHumanTests(unittest.IsolatedAsyncioTestCase):
         module = self.module()
         web = SimpleNamespace(auth_test=AsyncMock(return_value={'user_id': 'UBOT'}),
                               chat_postMessage=AsyncMock(return_value={'ts': '42'}))
-        with patch.dict(os.environ, {'OBS_SLACK_AS_HUMAN_SECRET': SECRET,
-                                     'OBS_SLACK_BOT_TOKEN': 'bot', 'OBS_SLACK_CHANNEL': 'HOME'}), \
-                patch.object(module, 'AsyncWebClient', return_value=web):
+        persona = SimpleNamespace(auth_test=AsyncMock(return_value={'user_id': 'UOTHER'}))
+        with patch.dict(os.environ, {'OBS_SLACK_AS_HUMAN_SECRET': SECRET, 'OBS_SLACK_BOT_TOKEN': 'bot',
+                                     'OBS_SLACK_CHANNEL': 'HOME', 'OTHER_SLACK_BOT_TOKEN': 'xoxb-other'},
+                        clear=True), \
+                patch.object(module, 'AsyncWebClient',
+                             side_effect=lambda token: persona if token == 'xoxb-other' else web):
             await module.send('OBS', 'hello')
             self.assertEqual(web.chat_postMessage.call_args.kwargs['text'],
                              f'[as-human:{SECRET}] <@UBOT> hello')
             await module.send('OBS', '<@UOTHER> hello')
             self.assertEqual(web.chat_postMessage.call_args.kwargs['text'],
                              f'[as-human:{SECRET}] <@UOTHER> hello')
+
+    async def test_send_mentions_main_unless_a_bot_is_already_mentioned(self):
+        """docs/verify.md: only a bot mention replaces the automatic one. A message that
+        mentioned only a colleague went out with no bot mention, and nothing answered it."""
+        module = self.module()
+        users = {'xoxb-main': 'UBOT', 'xoxb-persona': 'UPERSONA'}
+        clients = {}
+
+        def client(token):
+            clients.setdefault(token, SimpleNamespace(
+                auth_test=AsyncMock(return_value={'user_id': users[token]}),
+                chat_postMessage=AsyncMock(return_value={'ts': '42'})))
+            return clients[token]
+
+        env = {'SLACK_AS_HUMAN_SECRET': SECRET, 'SLACK_BOT_TOKEN': 'xoxb-main', 'SLACK_CHANNEL': 'HOME',
+               'REVIEWER_SLACK_BOT_TOKEN': 'xoxb-persona'}
+        with patch.dict(os.environ, env, clear=True), patch.object(module, 'AsyncWebClient', side_effect=client):
+            for text, posted in [('<@UCOLLEAGUE> can you check?', '<@UBOT> <@UCOLLEAGUE> can you check?'),
+                                 ('<@UPERSONA> review this', '<@UPERSONA> review this'),
+                                 ('hi <@UBOT>', 'hi <@UBOT>'), ('hello', '<@UBOT> hello')]:
+                await module.send('', text)
+                self.assertEqual(clients['xoxb-main'].chat_postMessage.call_args.kwargs['text'],
+                                 f'[as-human:{SECRET}] {posted}')
+            await module.send('', '<@UCOLLEAGUE> in a thread', thread='1')
+            self.assertEqual(clients['xoxb-main'].chat_postMessage.call_args.kwargs['text'],
+                             f'[as-human:{SECRET}] <@UCOLLEAGUE> in a thread')
+        clients['xoxb-persona'].chat_postMessage.assert_not_awaited()
+
+    async def test_short_secret_send_does_not_call_slack(self):
+        module = self.module()
+        with patch.dict(os.environ, {'SLACK_AS_HUMAN_SECRET': 'short', 'SLACK_BOT_TOKEN': 'bot',
+                                     'SLACK_CHANNEL': 'HOME'}), \
+                patch.object(module, 'AsyncWebClient') as client, contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(ValueError):
+                await module.send('', 'hello')
+            client.assert_not_called()
 
     async def test_disabled_send_does_not_call_slack(self):
         module = self.module()

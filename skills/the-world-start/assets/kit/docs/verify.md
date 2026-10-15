@@ -126,8 +126,10 @@ uv run python bin/say-as-human.py send --thread 1700000000.000100 'What did you 
 For a harness using `OBS_SLACK_BOT_TOKEN`, pass `--prefix OBS` before `init` or `send`.
 The matching key is `OBS_SLACK_AS_HUMAN_SECRET`; without a prefix it is
 `SLACK_AS_HUMAN_SECRET`. `init` keeps an existing value and the env file's permissions,
-prints no value, and creates a new env file with mode 600. An empty or missing secret
-turns this feature off. Clear the value in `env/harness.env` and restart to disable it.
+prints no value, and creates a new env file with mode 600. An empty or missing secret, or
+one shorter than 16 characters (the harness warns once), turns this feature off: messages, history and model input are then handled as if it did
+not exist, and harness posts only drop a complete marker. Clear the value in
+`env/harness.env` and restart to disable it.
 `send` prints the posted message ts and accepts `--channel` to override the configured
 channel; the receiver still accepts messages only in its own home channel.
 
@@ -142,8 +144,10 @@ new simulation. Other bots cannot use it. A person's marker is stripped as text 
 not change their identity.
 
 This exercises mentions and thread replies, including handoffs. A new thread automatically
-mentions the main bot unless the text already mentions a bot; a thread reply keeps its
-existing owner unless explicitly addressed elsewhere. It cannot simulate approval button
+mentions the main bot unless the text already mentions a bot: the main bot, or a persona
+app whose `xoxb-` token is in the environment. Mentioning only a person still adds the
+main bot, so the harness answers. A thread reply is sent as written and keeps its existing
+owner unless explicitly addressed elsewhere. It cannot simulate approval button
 clicks, and a simulated "approve" message never grants `mention_tools` access. Hand an
 approval card to the human approver and report its click path as unverified until they
 click. Discord is outside this feature's scope. The same authorization and outward-action

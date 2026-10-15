@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import os
 import re
 import secrets
@@ -16,6 +17,7 @@ sys.path.insert(0, str(ROOT))
 from slack_sdk.web.async_client import AsyncWebClient
 
 from world.env import env_path, load_harness_env, parse_env_file
+from world.slack.as_human import MIN_SECRET, configured_secret
 from world.slack.listener import MENTION_RE
 
 
@@ -55,19 +57,34 @@ def init_secret(key: str) -> None:
     print('as-human secret initialized; restart the harness to load it')
 
 
+async def mentions_a_bot(text: str, main_user: str, main_token: str) -> bool:
+    """The main bot, or a persona app whose xoxb token is in this environment. Telling
+    any other user apart would need users:read, which the kit's apps do not request."""
+    mentioned = set(MENTION_RE.findall(text))
+    if main_user in mentioned or not mentioned:
+        return main_user in mentioned
+    for token in {v for v in os.environ.values() if v.startswith('xoxb-') and v != main_token}:
+        with contextlib.suppress(Exception):  # a stale persona token must not stop the check
+            if (await AsyncWebClient(token=token).auth_test())['user_id'] in mentioned:
+                return True
+    return False
+
+
 async def send(prefix: str, text: str, *, thread: str | None = None,
                channel: str | None = None) -> str:
     p = f'{prefix}_' if prefix else ''
-    secret = os.environ.get(p + 'SLACK_AS_HUMAN_SECRET', '')
+    secret = configured_secret(p + 'SLACK_AS_HUMAN_SECRET')
     token = os.environ.get(p + 'SLACK_BOT_TOKEN', '')
     channel = channel or os.environ.get(p + 'SLACK_CHANNEL', '')
     if not secret or not token or not channel:
-        raise ValueError('configure SLACK_AS_HUMAN_SECRET, SLACK_BOT_TOKEN and SLACK_CHANNEL first')
+        raise ValueError(f'configure SLACK_AS_HUMAN_SECRET (at least {MIN_SECRET} characters), '
+                         'SLACK_BOT_TOKEN and SLACK_CHANNEL first')
     web = AsyncWebClient(token=token)
     me = await web.auth_test()
     # Slack does not emit app_mention for bots: the listener recognizes this mention
-    # in a message event, even when this is the first message of a new thread.
-    if not thread and not MENTION_RE.search(text):
+    # in a message event, even when this is the first message of a new thread. Mentioning
+    # only a person would reach no bot at all, so the main bot is added then too.
+    if not thread and not await mentions_a_bot(text, me['user_id'], token):
         text = f'<@{me["user_id"]}> {text}'
     response = await web.chat_postMessage(
         channel=channel, thread_ts=thread,

@@ -71,7 +71,8 @@ if hasattr(os, "register_at_fork"):  # Windows starts a fresh interpreter instea
 def append_run_log(harness: "Harness", entry: dict) -> None:
     """Queue one run-log entry and return without waiting for the write."""
     now = time.time()
-    entry = {"ts": now, "time": datetime.fromtimestamp(now).astimezone().isoformat(), **entry}
+    entry = {"ts": now, "time": datetime.fromtimestamp(now).astimezone().isoformat(timespec="seconds"),
+             **entry}
     # getattr: test stubs and harnesses built before the cap existed carry no settings.
     _run_log_writer.submit(
         _write_run_log, harness.run_log_path, (json.dumps(entry) + "\n").encode("utf-8"),
