@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 from ..env import redact
 from ..process import task as tasks
@@ -51,7 +51,8 @@ def _excerpt(text: str) -> str:
     return cut + "\n```" if cut.count("```") % 2 else cut
 
 
-def task_card_lines(home: Path, record: Any, result: Any) -> list[str]:
+def task_card_lines(home: Path, record: Any, result: Any, *,
+                    render: Callable[[str], str] = str) -> list[str]:
     """The lines under a task card's headline: a status line, then what the run said.
 
     What the agent wrote leads. The default completion check records the same evidence
@@ -59,6 +60,9 @@ def task_card_lines(home: Path, record: Any, result: Any) -> list[str]:
     the body, a scheduled briefing reached the channel as "it finished" with the briefing
     itself one button away. So when the run left a result_text, the evidence shrinks onto
     the status line, still visible; only a run with nothing to say gets it as the body.
+
+    `render` turns that result_text into the channel's own markup before it is quoted:
+    Slack's is not the GitHub markdown a model writes, and Discord's is.
     """
     status = f"`{record.id}` · {record.status} · {record.agent}"
     verdict = next(
@@ -72,7 +76,7 @@ def task_card_lines(home: Path, record: Any, result: Any) -> list[str]:
         return _fit([status, *quoted], CARD_BODY_CHARS)
     if evidence:
         status += " · " + _one_line(" · ".join(evidence), CARD_EVIDENCE_CHARS)
-    excerpt = _excerpt(text)
+    excerpt = render(_excerpt(text))
     return _fit([status, *(f"> {line}" for line in excerpt.splitlines())], CARD_BODY_CHARS)
 
 

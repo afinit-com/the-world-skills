@@ -380,11 +380,13 @@ class AnnounceCardBodyTests(unittest.IsolatedAsyncioTestCase):
     the card showed that evidence INSTEAD of what the agent wrote — a scheduled report
     arrived as "<agent> 실행 완료 · work/ 산출물 <file>" with the report itself hidden."""
 
-    async def _card(self, result_text: str, evidence: str = EVIDENCE) -> str:
+    async def _card(self, result_text: str, evidence: str = EVIDENCE, *,
+                    title: str = "📋 아침 보고", origin=None) -> str:
         from world.process import task as tasks
 
         home = Path(tempfile.mkdtemp())
-        record = tasks.create(home, type="agent-run", title="📋 아침 보고", agent="watch")
+        record = tasks.create(home, type="agent-run", title=title, agent="watch",
+                              origin=origin)
         tasks.append_event(home, record.id, "verify", verdict="done",
                            evidence=[evidence])
         posted: list[str] = []
@@ -425,6 +427,27 @@ class AnnounceCardBodyTests(unittest.IsolatedAsyncioTestCase):
         head, status, *rest = body.splitlines()
         self.assertTrue(status.endswith("…"), status)
         self.assertEqual(["> " + "가" * 300], rest)
+
+    async def test_the_result_is_slack_mrkdwn_not_github_markdown(self) -> None:
+        body = await self._card("## 요약\n**완료** 4건\n`**그대로**`")
+        self.assertEqual(["> *요약*", "> *완료* 4건", "> `**그대로**`"], body.splitlines()[2:])
+
+    async def test_broadcast_mentions_in_the_card_do_not_notify_the_channel(self) -> None:
+        # A poll run that summarised outside text (a PR body) could carry these through,
+        # and Slack notifies the whole channel for them even inside a bot's quote.
+        body = await self._card("PR 본문: <!channel> 확인 <!here|here> <!everyone>",
+                                evidence="실행 완료 <!here>", title="배포 <!channel>")
+        self.assertNotIn("<!", body)
+        self.assertIn("&lt;!channel>", body.splitlines()[0])
+        self.assertIn("&lt;!here|here>", body)
+
+    async def test_an_operator_replay_card_with_long_evidence_stays_inside_one_section(self) -> None:
+        from world.process import task as tasks
+
+        body = await self._card("", evidence=("x" * 99 + "\n") * 40, title="t" * 120,
+                                origin=tasks.Origin(kind="operator", by="U01", replay=True))
+        self.assertTrue(body.startswith("♻️ *운영자 재처리 요청*\n"), body[:40])
+        self.assertLessEqual(len(body), 3000)
 
     async def test_a_result_cut_to_fit_says_so(self) -> None:
         # A briefing cut mid-number ("실패 5" of "실패 57") read as the whole of it.
