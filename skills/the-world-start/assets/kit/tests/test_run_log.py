@@ -399,6 +399,15 @@ class RunLogOffTheLoopTest(unittest.TestCase):
                                  log=lambda _m: None)
         self.h.logs_dir.mkdir()
 
+    def test_entries_keep_epoch_time_and_include_iso_time_with_offset(self):
+        append_run_log(self.h, {"n": 1})
+        flush_run_log()
+        entry = json.loads(self.h.run_log_path.read_text())
+        self.assertIsInstance(entry["ts"], float)
+        stamp = datetime.fromisoformat(entry["time"])
+        self.assertIsNotNone(stamp.tzinfo)
+        self.assertAlmostEqual(stamp.timestamp(), entry["ts"], places=5)
+
     def test_a_slow_write_does_not_hold_the_event_loop_and_keeps_order(self):
         real_append = runlog.append
         written: list[int] = []
