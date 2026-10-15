@@ -291,6 +291,15 @@ class AnnounceTests(GatewayCase):
                                         self.harness.main_persona)
             self.assertNotIn(token, self.transport.sent[-1]["text"])
 
+    async def test_a_code_block_in_evidence_cut_short_is_closed_on_discord(self) -> None:
+        record = tasks.create(self.home, type="watch", title="nightly diff", agent="watch")
+        tasks.append_event(self.home, record.id, "verify", verdict="done",
+                           evidence=["```diff\n" + "+ line\n" * 400 + "```"])
+        await self.gw.announce_task(record, RunResult(status="ok"), self.harness.main_persona)
+        text = self.transport.sent[0]["text"]
+        self.assertLessEqual(len(text), 2000)
+        self.assertEqual(0, text.count("```") % 2, text[-60:])
+
     async def test_a_long_result_is_marked_as_cut_on_discord_too(self) -> None:
         record = tasks.create(self.home, type="watch", title="nightly diff", agent="watch")
         run = RunResult(status="ok", result_text="```diff\n" + "+ line\n" * 100 + "```")

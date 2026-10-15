@@ -44,8 +44,20 @@ def _one_line(text: str, limit: int) -> str:
     return flat if len(flat) <= limit else flat[: limit - 1] + "…"
 
 
+# Card lines under the status line are quoted, so a fence that closes one is too.
+_QUOTED_FENCE = "> ```"
+
+
+def _closed(cut: str, fence: str = "```") -> str:
+    """A cut that ends inside a code block, closed again with `fence`: Slack shows an
+    unclosed ``` as literal backticks, and on Discord it would run on into the footer
+    under the card."""
+    return cut + "\n" + fence if cut.count("```") % 2 else cut
+
+
 def _fit(lines: list[str], limit: int) -> list[str]:
-    """Keep lines while they fit; cut the first that does not, marked, and stop."""
+    """Keep lines while they fit; cut the first that does not, marked, and stop. The cut
+    keeps room to close a code block it leaves open, as a quoted line."""
     out: list[str] = []
     used = 0
     for line in lines:
@@ -54,22 +66,25 @@ def _fit(lines: list[str], limit: int) -> list[str]:
             out.append(line)
             used += len(line) + (1 if len(out) > 1 else 0)
             continue
+        room -= len("\n" + _QUOTED_FENCE)
         if room > 1:
             out.append(line[: room - 1] + "…")
-        break
+        closed = _closed("\n".join(out), _QUOTED_FENCE)
+        while len(closed) > limit:  # cut at a line edge with no room left to close
+            out.pop()
+            closed = _closed("\n".join(out), _QUOTED_FENCE)
+        return closed.split("\n")
     return out
 
 
 def _excerpt(text: str) -> str:
-    """The head of what a run said, marked when it is not all of it. A cut inside a code
-    block closes that block again: Slack shows an unclosed ``` as literal backticks, and
-    on Discord it would run on into the footer under the card. Redacted before the cut,
-    so a secret is never cut short of what redact() recognises."""
+    """The head of what a run said, marked when it is not all of it, a cut code block
+    closed again. Redacted before the cut, so a secret is never cut short of what
+    redact() recognises."""
     text = redact(text)
     if len(text) <= CARD_EXCERPT_CHARS:
         return text
-    cut = text[: CARD_EXCERPT_CHARS - 1] + "…"
-    return cut + "\n```" if cut.count("```") % 2 else cut
+    return _closed(text[: CARD_EXCERPT_CHARS - 1] + "…")
 
 
 def task_card_lines(home: Path, record: Any, result: Any, *,

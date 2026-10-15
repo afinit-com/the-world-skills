@@ -479,6 +479,14 @@ class AnnounceCardBodyTests(unittest.IsolatedAsyncioTestCase):
         body = await self._card("완료", evidence="e" * 180 + " ghp_" + "a" * 36)
         self.assertNotIn("ghp_aaaa", body)
 
+    async def test_a_code_block_in_evidence_cut_in_the_middle_is_closed(self) -> None:
+        body = await self._card("", evidence="```\n" + ("x" * 99 + "\n") * 40 + "```")
+        self.assertLessEqual(len(body), 3000)
+        self.assertEqual(0, body.count("```") % 2, body[-40:])
+        self.assertEqual("> ```", body.splitlines()[-1])
+        self.assertTrue(body.splitlines()[-2].endswith("…"), body[-40:])
+
+
 class TeammateMentionTests(unittest.IsolatedAsyncioTestCase):
     async def test_main_hands_off_by_name_and_only_to_the_roster(self) -> None:
         from world.toolkit import make_teammate_mention_tool
