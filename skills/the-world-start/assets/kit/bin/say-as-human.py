@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT))
 from slack_sdk.web.async_client import AsyncWebClient
 
 from world.env import env_path, load_harness_env, parse_env_file
+from world.slack.as_human import MIN_SECRET, configured_secret
 from world.slack.listener import MENTION_RE
 
 
@@ -58,11 +59,12 @@ def init_secret(key: str) -> None:
 async def send(prefix: str, text: str, *, thread: str | None = None,
                channel: str | None = None) -> str:
     p = f'{prefix}_' if prefix else ''
-    secret = os.environ.get(p + 'SLACK_AS_HUMAN_SECRET', '')
+    secret = configured_secret(p + 'SLACK_AS_HUMAN_SECRET')
     token = os.environ.get(p + 'SLACK_BOT_TOKEN', '')
     channel = channel or os.environ.get(p + 'SLACK_CHANNEL', '')
     if not secret or not token or not channel:
-        raise ValueError('configure SLACK_AS_HUMAN_SECRET, SLACK_BOT_TOKEN and SLACK_CHANNEL first')
+        raise ValueError(f'configure SLACK_AS_HUMAN_SECRET (at least {MIN_SECRET} characters), '
+                         'SLACK_BOT_TOKEN and SLACK_CHANNEL first')
     web = AsyncWebClient(token=token)
     me = await web.auth_test()
     # Slack does not emit app_mention for bots: the listener recognizes this mention

@@ -130,7 +130,7 @@ class AsHumanTests(unittest.IsolatedAsyncioTestCase):
         obj = self.listener()
         obj.harness.slack.bot_token_env = 'OBS_SLACK_BOT_TOKEN'
         obj.state['threads']['1']['persona'] = 'other'
-        with patch.dict(os.environ, {'SLACK_AS_HUMAN_SECRET': 'wrong',
+        with patch.dict(os.environ, {'SLACK_AS_HUMAN_SECRET': 'wrong-but-long-enough',
                                      'OBS_SLACK_AS_HUMAN_SECRET': SECRET}):
             await self.deliver(obj, text=f'[as-human:{SECRET}] hello')
             await self.deliver(obj, text=f'[as-human:{SECRET}] hello')
@@ -275,6 +275,31 @@ class AsHumanTests(unittest.IsolatedAsyncioTestCase):
             await obj.post('[as-human:x] see `[as-human:`\nmore')
             self.assertEqual(obj.web.chat_postMessage.call_args.kwargs['text'], ' see `[as-human:`\nmore')
 
+    async def test_a_short_secret_turns_the_feature_off_with_one_warning(self):
+        """SLACK_AS_HUMAN_SECRET=a blanked every "a" in every message, in and out."""
+        from world.slack import as_human
+        obj = self.listener()
+        obj._dispatch_bot_hop = AsyncMock()
+        err = io.StringIO()
+        with patch.dict(os.environ, {'SLACK_AS_HUMAN_SECRET': 'a' * 15}), \
+                patch.object(as_human, '_warned_short', set()), contextlib.redirect_stderr(err):
+            text = 'deploy has a bad status ' + 'a' * 15
+            self.assertEqual(as_human.safe_text(text), text)
+            self.assertEqual(as_human.safe_text(text, posting=True), text)
+            await self.deliver(obj, secret='a' * 15)
+            await self.deliver(obj, 'UOTHER', text='<@UBOT> [as-human:x] hop', ts='3')
+        obj._handle_mention.assert_not_awaited()
+        self.assertEqual(obj._dispatch_bot_hop.await_count, 2)
+        self.assertEqual(obj._dispatch_bot_hop.call_args.args[1], '<@UBOT> [as-human:x] hop')
+        self.assertEqual(err.getvalue().count('SLACK_AS_HUMAN_SECRET'), 1, err.getvalue())
+        self.assertNotIn('a' * 15, err.getvalue())
+
+    async def test_a_secret_of_the_minimum_length_works(self):
+        obj = self.listener()
+        with patch.dict(os.environ, {'SLACK_AS_HUMAN_SECRET': 'b' * 16}):
+            await self.deliver(obj, secret='b' * 16)
+        self.assertEqual(obj._handle_mention.call_args.args[2]['user'], 'UHUMAN')
+
     def test_all_slack_message_writes_use_the_sanitizing_boundary(self):
         # Prevent a future direct SDK call in a card/handoff path from reopening it.
         for path in (KIT / 'world/slack').glob('*.py'):
@@ -389,6 +414,15 @@ class SayAsHumanTests(unittest.IsolatedAsyncioTestCase):
             await module.send('OBS', '<@UOTHER> hello')
             self.assertEqual(web.chat_postMessage.call_args.kwargs['text'],
                              f'[as-human:{SECRET}] <@UOTHER> hello')
+
+    async def test_short_secret_send_does_not_call_slack(self):
+        module = self.module()
+        with patch.dict(os.environ, {'SLACK_AS_HUMAN_SECRET': 'short', 'SLACK_BOT_TOKEN': 'bot',
+                                     'SLACK_CHANNEL': 'HOME'}), \
+                patch.object(module, 'AsyncWebClient') as client, contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(ValueError):
+                await module.send('', 'hello')
+            client.assert_not_called()
 
     async def test_disabled_send_does_not_call_slack(self):
         module = self.module()

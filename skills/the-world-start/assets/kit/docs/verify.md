@@ -126,8 +126,8 @@ uv run python bin/say-as-human.py send --thread 1700000000.000100 'What did you 
 For a harness using `OBS_SLACK_BOT_TOKEN`, pass `--prefix OBS` before `init` or `send`.
 The matching key is `OBS_SLACK_AS_HUMAN_SECRET`; without a prefix it is
 `SLACK_AS_HUMAN_SECRET`. `init` keeps an existing value and the env file's permissions,
-prints no value, and creates a new env file with mode 600. An empty or missing secret
-turns this feature off: messages, history and model input are then handled as if it did
+prints no value, and creates a new env file with mode 600. An empty or missing secret, or
+one shorter than 16 characters (the harness warns once), turns this feature off: messages, history and model input are then handled as if it did
 not exist, and harness posts only drop a complete marker. Clear the value in
 `env/harness.env` and restart to disable it.
 `send` prints the posted message ts and accepts `--channel` to override the configured
