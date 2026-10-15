@@ -108,6 +108,11 @@ Nothing rolled is deleted by default, so `logs/` grows by about one compressed d
 day. To bound it, set `h.run_log_keep_days = 30` in `harness.py` for `harness.jsonl`, and
 render with `--keep-days 30` for the console logs.
 
+Writer warnings use `ops-log.py --err-file logs/ops-log.err`: each warning opens and
+closes the file under the log lock and rolls it at its size limit. The watchdog does
+not rename a file held open as stderr. Unexpected writer tracebacks go to
+`logs/ops-log.crash` on POSIX; the detached Windows writer captures its own stderr.
+
 ## The console writer
 
 The harness's stdout and stderr go through a pipe to `bin/ops-log.py`, which is the only

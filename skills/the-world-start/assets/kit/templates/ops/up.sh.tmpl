@@ -133,7 +133,8 @@ start() {
   keys=$(env_keys) || return 4
   for key in $keys; do run+=(-u "$key"); done
   run+=(PATH="$RUN_PATH" "$PY" "$ENTRY")
-  local -a writer=("$PY" "$HOME_DIR/bin/ops-log.py" --file "$OUT")
+  local -a writer=("$PY" "$HOME_DIR/bin/ops-log.py" --file "$OUT"
+    --err-file "$HOME_DIR/logs/ops-log.err")
   [ -n "$KEEP_DAYS" ] && writer+=(--keep-days "$KEEP_DAYS")
   cd "$HOME_DIR"
   # The harness's output goes through one writer that stamps and rolls the console log
@@ -142,7 +143,7 @@ start() {
   # launchd runs) forks `>(...)` while fd 9 is still open and hands the writer a copy of
   # it under another number, which `9>&-` inside cannot close. The writer then held the
   # ops lock for its whole life and every later up, down and watchdog round timed out.
-  nohup "${run[@]}" 9>&- > >(exec "${writer[@]}" >/dev/null 2>>"$HOME_DIR/logs/ops-log.err") \
+  nohup "${run[@]}" 9>&- > >(exec "${writer[@]}" >/dev/null 2>>"$HOME_DIR/logs/ops-log.crash") \
     2>&1 </dev/null &
   local started=$!
   if [ "$CAFFEINATE" = 1 ] && command -v caffeinate >/dev/null; then

@@ -171,7 +171,7 @@ function Start-Harness {
     # The harness's output goes through one writer that stamps and rolls the console log
     # itself (bin/ops-log.py); nothing else writes or truncates that file. The writer
     # starts the harness as its own child, detached from this console.
-    $argv = @($OpsLog, '--file', $Out, '--detach')
+    $argv = @($OpsLog, '--file', $Out, '--err-file', (Join-Path $HomeDir 'logs\ops-log.err'), '--detach')
     if ($KeepDays) { $argv += @('--keep-days', $KeepDays) }
     $argv += @('--', $Py, $Entry)
     Push-Location -LiteralPath $HomeDir

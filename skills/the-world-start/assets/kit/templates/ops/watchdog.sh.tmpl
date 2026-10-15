@@ -46,8 +46,8 @@ notify() {
 
 # Only watchdog rounds write this log, one at a time under the lock, so rolling it by
 # rename between rounds loses nothing.
-"$PY" "$HOME_DIR/bin/ops-log.py" --file "$LOG" --roll-only ${KEEP_DAYS:+--keep-days "$KEEP_DAYS"} \
-  2>>"$LOGS/ops-log.err"
+"$PY" "$HOME_DIR/bin/ops-log.py" --file "$LOG" --roll-only --err-file "$LOGS/ops-log.err" \
+  ${KEEP_DAYS:+--keep-days "$KEEP_DAYS"} >>"$LOG" 2>&1
 
 # Lines the console writer could not write (a full disk, a read-only file): restarting
 # would not help, so say it once each time it starts happening.

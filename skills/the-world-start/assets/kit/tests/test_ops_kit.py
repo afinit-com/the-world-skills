@@ -56,6 +56,17 @@ class RenderTest(unittest.TestCase):
         self.home = Path(self.tmp.name) / "a & b"  # XML- and shell-hostile on purpose
         self.home.mkdir()
 
+    def test_launchers_route_writer_diagnostics_to_bounded_log(self):
+        for os_name in ("macos", "linux", "windows"):
+            files = _render(self.home, os_name)
+            suffix = ".ps1" if os_name == "windows" else ""
+            up = files["scripts/my-harness-up" + suffix][0]
+            self.assertIn("--err-file", up)
+            self.assertIn("ops-log.err", up)
+            watchdog = files["scripts/my-harness-watchdog" + suffix][0]
+            self.assertIn("--err-file", watchdog)
+            self.assertNotIn("--max-bytes", watchdog)
+
     def test_macos_renders_scripts_and_a_launchd_plist(self):
         files = _render(self.home, "macos")
         self.assertEqual(sorted(files), [

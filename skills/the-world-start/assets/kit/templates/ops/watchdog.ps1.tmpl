@@ -104,11 +104,12 @@ function Test-Stopped([string]$What) {
 function Invoke-Round {
   # Only watchdog rounds write this log, one at a time under the lock, so rolling it by
   # rename between rounds loses nothing.
-  $roll = @((Join-Path $HomeDir 'bin\ops-log.py'), '--file', $Log, '--roll-only')
+  $roll = @((Join-Path $HomeDir 'bin\ops-log.py'), '--file', $Log, '--roll-only',
+    '--err-file', (Join-Path $Logs 'ops-log.err'))
   if ($KeepDays) { $roll += @('--keep-days', $KeepDays) }
   $err = @(& $Py @roll 2>&1 | ForEach-Object { "$_" })
   foreach ($line in $err) {
-    [System.IO.File]::AppendAllText((Join-Path $Logs 'ops-log.err'), "$line`n", $Utf8)
+    Write-Log $line
   }
 
   # Lines the console writer could not write (a full disk, a read-only file): restarting
