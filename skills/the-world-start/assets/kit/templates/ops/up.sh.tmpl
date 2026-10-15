@@ -163,7 +163,8 @@ start() {
       if [ -n "$running" ]; then
         if [ -z "$(writer)" ]; then
           echo "{{NAME}}: started (pid $(echo $running)) but its console writer is not" >&2
-          echo "  running, so its output is lost; see $HOME_DIR/logs/ops-log.err" >&2
+          echo "  running, so its output is lost. Why it died: $HOME_DIR/logs/ops-log.crash;" >&2
+          echo "  its earlier warnings: $HOME_DIR/logs/ops-log.err" >&2
           return 1
         fi
         echo "{{NAME}}: started (pid $(echo $running)); console: $OUT"

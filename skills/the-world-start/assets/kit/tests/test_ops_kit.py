@@ -63,6 +63,9 @@ class RenderTest(unittest.TestCase):
             up = files["scripts/my-harness-up" + suffix][0]
             self.assertIn("--err-file", up)
             self.assertIn("ops-log.err", up)
+            # A writer that died points at its traceback, which is not in ops-log.err.
+            crash = "$HomeDir\\logs\\ops-log.crash" if suffix else "$HOME_DIR/logs/ops-log.crash"
+            self.assertIn("Why it died: " + crash, up)
             watchdog = files["scripts/my-harness-watchdog" + suffix][0]
             self.assertIn("--err-file", watchdog)
             self.assertNotIn("--max-bytes", watchdog)
@@ -786,6 +789,15 @@ class LauncherAndWatchdogTest(unittest.TestCase):
         self.assertNotEqual(self.pids(), before)
         self.assertEqual(len(self.writers()), 1)
         self.assertIn("console writer had died", (self.home / "logs" / "watchdog.log").read_text())
+
+    def test_a_writer_that_dies_at_start_points_at_its_traceback(self):
+        (self.home / "world" / "process" / "runlog.py").write_text(
+            "raise RuntimeError('writer broke')\n", encoding="utf-8")
+        result = self.run_up("up")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        crash = self.home / "logs" / "ops-log.crash"
+        self.assertIn(str(crash), result.stderr)
+        self.assertIn("writer broke", crash.read_text(encoding="utf-8"))
 
     @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root ignores file modes")
     def test_a_write_failure_drops_lines_but_keeps_the_harness_alive(self):

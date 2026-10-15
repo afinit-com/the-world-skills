@@ -189,7 +189,8 @@ function Start-Harness {
       if (@(Get-HarnessProcesses).Count) {
         if (-not (Get-Writer)) {
           Say "{{NAME}}: started (pid $(Join-Ids $running)) but its console writer is not" -Err
-          Say "  running, so its output is lost; see $HomeDir\logs\ops-log.err" -Err
+          Say "  running, so its output is lost. Why it died: $HomeDir\logs\ops-log.crash;" -Err
+          Say "  its earlier warnings: $HomeDir\logs\ops-log.err" -Err
           return $false
         }
         Say "{{NAME}}: started (pid $(Join-Ids $running)); console: $Out"
