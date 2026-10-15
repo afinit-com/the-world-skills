@@ -59,15 +59,20 @@ case "${1:-up}" in
     ;;
 esac
 
-pids() { pgrep -f "$MATCH" || true; }
+pids() {
+  local rc=0
+  pgrep -f "$MATCH" || rc=$?
+  if [ "$rc" -gt 1 ]; then
+    echo "{{NAME}}: cannot list harness processes (pgrep exit $rc)" >&2
+    return 4
+  fi
+}
 
 # Every key env/harness.env declares. The loader lets an exported shell variable win over
 # the file; under this launcher the file wins, because a stale export in the shell that
 # ran `up` (a token, an OAuth client) is not something the harness was configured with.
 env_keys() {
-  [ -r "$HOME_DIR/env/harness.env" ] || return 0
-  sed -n -E 's/^[[:space:]]*(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)=.*/\2/p' \
-    "$HOME_DIR/env/harness.env"
+  "$PY" "$HOME_DIR/world/env.py" --keys "$HOME_DIR/env/harness.env"
 }
 
 # The pid of the live console writer (bin/ops-log.py holds an flock while it runs), or
@@ -99,7 +104,7 @@ start() {
   relative=$(pgrep -f "$RELATIVE_MATCH") || rc=$?
   if [ "$rc" -gt 1 ]; then
     echo "{{NAME}}: cannot check for a relative harness.py launch; not starting" >&2
-    return 1
+    return 4
   fi
   local pid cwd
   for pid in $relative; do
@@ -124,9 +129,12 @@ start() {
   # (world/runners/claude.py refuses to run while it is set).
   local -a run=(env -u ANTHROPIC_API_KEY -u WORLD_OPS_LOCK_HELD)
   local key
-  for key in $(env_keys); do run+=(-u "$key"); done
+  local keys
+  keys=$(env_keys) || return 4
+  for key in $keys; do run+=(-u "$key"); done
   run+=(PATH="$RUN_PATH" "$PY" "$ENTRY")
-  local -a writer=("$PY" "$HOME_DIR/bin/ops-log.py" --file "$OUT")
+  local -a writer=("$PY" "$HOME_DIR/bin/ops-log.py" --file "$OUT"
+    --err-file "$HOME_DIR/logs/ops-log.err")
   [ -n "$KEEP_DAYS" ] && writer+=(--keep-days "$KEEP_DAYS")
   cd "$HOME_DIR"
   # The harness's output goes through one writer that stamps and rolls the console log
@@ -135,7 +143,7 @@ start() {
   # launchd runs) forks `>(...)` while fd 9 is still open and hands the writer a copy of
   # it under another number, which `9>&-` inside cannot close. The writer then held the
   # ops lock for its whole life and every later up, down and watchdog round timed out.
-  nohup "${run[@]}" 9>&- > >(exec "${writer[@]}" >/dev/null 2>>"$HOME_DIR/logs/ops-log.err") \
+  nohup "${run[@]}" 9>&- > >(exec "${writer[@]}" >/dev/null 2>>"$HOME_DIR/logs/ops-log.crash") \
     2>&1 </dev/null &
   local started=$!
   if [ "$CAFFEINATE" = 1 ] && command -v caffeinate >/dev/null; then
@@ -146,10 +154,11 @@ start() {
   local i running
   for i in 1 2 3 4 5 6 7 8 9 10; do
     sleep 0.5
-    running=$(pids)
+    running=$(pids) || return 4
     if [ -n "$running" ]; then
       sleep 1
-      if [ -n "$(pids)" ]; then
+      running=$(pids) || return 4
+      if [ -n "$running" ]; then
         if [ -z "$(writer)" ]; then
           echo "{{NAME}}: started (pid $(echo $running)) but its console writer is not" >&2
           echo "  running, so its output is lost; see $HOME_DIR/logs/ops-log.err" >&2
@@ -168,14 +177,16 @@ start() {
 # SIGTERM the harness and wait for it, then for its console writer.
 stop() {
   local running
-  running=$(pids)
+  running=$(pids) || return 4
   if [ -n "$running" ]; then
     kill -TERM $running 2>/dev/null || true  # one may have exited since pids()
     # SIGTERM lets started runs finish (Scheduler.drain_inflight), which can take minutes.
     local waited=0
-    while [ -n "$(pids)" ]; do
+    while true; do
+      running=$(pids) || return 4
+      [ -n "$running" ] || break
       if [ "$waited" -ge "$DOWN_WAIT_S" ]; then
-        echo "{{NAME}}: still finishing a run after ${DOWN_WAIT_S}s (pid $(echo $(pids)))." >&2
+        echo "{{NAME}}: still finishing a run after ${DOWN_WAIT_S}s (pid $(echo $running))." >&2
         echo "  Wait, or kill -9 it and lose that run's record." >&2
         return 1
       fi
@@ -192,7 +203,7 @@ stop() {
 cmd_up() {
   rm -f "$STATE/down"
   local running
-  running=$(pids)
+  running=$(pids) || return 4
   if [ -n "$running" ]; then
     echo "{{NAME}}: already running (pid $(echo $running))"
     return 0
@@ -206,7 +217,9 @@ cmd_resume() {
     echo "{{NAME}}: marked down since $(cat "$STATE/down"); not starting"
     return 3
   fi
-  [ -n "$(pids)" ] && return 0
+  local running
+  running=$(pids) || return 4
+  [ -n "$running" ] && return 0
   start
 }
 
@@ -223,20 +236,24 @@ cmd_recycle() {
 cmd_down() {
   mkdir -p "$STATE"
   date +%Y-%m-%dT%H:%M:%S%z >"$STATE/down"
-  if [ -z "$(pids)" ] && [ -z "$(writer)" ]; then
+  local running
+  running=$(pids) || return 4
+  if [ -z "$running" ] && [ -z "$(writer)" ]; then
     echo "{{NAME}}: not running (marked down; the watchdog leaves it down until up)"
     return 0
   fi
-  if ! stop; then
+  local rc=0
+  stop || rc=$?
+  if [ "$rc" -ne 0 ]; then
     echo "  It stays marked down." >&2
-    return 1
+    return "$rc"
   fi
   echo "{{NAME}}: stopped (marked down; the watchdog leaves it down until up)"
 }
 
 cmd_status() {
   local running
-  running=$(pids)
+  running=$(pids) || return 4
   if [ -n "$running" ]; then
     echo "{{NAME}}: running"
     ps -o pid=,etime= -p "$(echo $running | tr ' ' ',')" | sed 's/^/  pid, uptime: /'
@@ -268,8 +285,8 @@ case "${1:-up}" in
   down) cmd_down ;;
   restart) cmd_down && cmd_up ;;
   status) cmd_status ;;
-  running) [ -n "$(pids)" ] ;;
-  healthy) [ -n "$(pids)" ] && [ -n "$(writer)" ] ;;
+  running) running=$(pids) || exit 4; [ -n "$running" ] ;;
+  healthy) running=$(pids) || exit 4; [ -n "$running" ] && [ -n "$(writer)" ] ;;
   recycle) cmd_recycle ;;
   attach) exec tail -n 50 -F "$OUT" ;;
   *) echo "usage: $0 [up|down|restart|status|running|healthy|attach|resume|recycle]" >&2; exit 2 ;;

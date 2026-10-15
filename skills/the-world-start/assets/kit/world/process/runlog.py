@@ -9,14 +9,18 @@ the kit bounds it:
     looking for "that day's log" finds it by name; a numbered scheme shifts every roll.
   - An append that finds the file over `run_log_max_bytes` rolls it to
     `harness.<YYYY-MM-DD>-<HHMMSS>.jsonl.gz` first.
-  - `run_log_keep_days` deletes dated gzips older than that many days. It is None by
-    default: a harness keeps every rolled day until someone decides otherwise, and the
-    disk grows by roughly one compressed day per day.
+  - `run_log_keep_days` deletes dated gzips older than that many days, each time the
+    file rolls. It is None by default: a harness keeps every rolled day until someone
+    decides otherwise, and the disk grows by roughly one compressed day per day.
 
 Rolling is a rename, not copy-truncate. The only writer opens the file per entry
 (append_run_log), so a rename loses no line, while copy-then-truncate could drop one
 written between the copy and the truncate. A failed roll is logged and the append goes
 ahead on the current file: losing the run record would be worse than an oversized file.
+
+An append that has nothing to roll only stats the file. Scanning the directory for an
+interrupted roll (recover()) happens on a process's first write to the file and after
+a roll of its own left work behind; pruning happens when the file rolls.
 
 The .gz is written under a temp name and renamed into place, and the plain file is
 removed only after that. A roll cut short (a crash, a full disk) therefore leaves the
@@ -32,8 +36,10 @@ OS likewise drops when its holder closes the file or dies.
 
 Windows cannot rename a file another process holds open without FILE_SHARE_DELETE, which
 neither Python nor PowerShell's Get-Content asks for. A roll that meets one (someone
-following the console log) fails, is logged, and is retried on the next write; the
-lines keep going to the current file meanwhile.
+following the console log) fails, is logged once, and is not tried again for
+ROLL_RETRY_S; the lines keep going to the current file meanwhile. The same warning is
+not repeated until a roll has worked, so a log followed for a day gets one line about
+it, not one per line written.
 """
 
 from __future__ import annotations
@@ -55,6 +61,8 @@ except ImportError:  # Windows
     import msvcrt
 
 RUN_LOG_MAX_BYTES = 10 * 1024 * 1024
+# How long a failed roll or recovery waits before this process tries it again.
+ROLL_RETRY_S = 300
 # Windows locks are mandatory: a locked byte cannot be read by anyone else. Lock one far
 # past the end, so a lock file can still carry its holder's pid at the start.
 _WIN_LOCK_OFFSET = 0x7FFFFFF0
@@ -208,6 +216,31 @@ def prune(path: Path, keep_days: int, today: date) -> list[Path]:
     return removed
 
 
+class _RollState:
+    """What this process knows about rolling one file. Read and changed only under the
+    file's roll lock, which also keeps two threads of one process apart."""
+
+    def __init__(self) -> None:
+        self.recover_due = True  # first write in this process, or a roll left work behind
+        self.retry_at = 0.0  # no roll or recovery before this, after one failed
+        self.warned: str | None = None  # the last warning, said once until a roll works
+
+    def warn(self, log: Callable[[str], None], msg: str) -> None:
+        if msg != self.warned:
+            log(msg)
+            self.warned = msg
+
+    def failed(self, now: float) -> None:
+        self.retry_at = now + ROLL_RETRY_S
+
+
+_states: dict[str, _RollState] = {}
+
+
+def _state(path: Path) -> _RollState:
+    return _states.setdefault(os.path.abspath(path), _RollState())
+
+
 def maybe_roll(path: Path, *, max_bytes: int | None = RUN_LOG_MAX_BYTES,
                keep_days: int | None = None, now: float | None = None,
                log: Callable[[str], None] = print) -> Path | None:
@@ -235,18 +268,25 @@ def append(path: Path, data: bytes, *, max_bytes: int | None = RUN_LOG_MAX_BYTES
 def _maybe_roll(path: Path, *, max_bytes: int | None, keep_days: int | None,
                 now: float | None, log: Callable[[str], None]) -> Path | None:
     now = time.time() if now is None else now
+    state = _state(path)
+    if now < state.retry_at:
+        return None  # backing off after a failure; the line goes to the current file
     today = datetime.fromtimestamp(now).date()
     rolled = None
     try:
         st = path.stat()
     except FileNotFoundError:
         st = None
-    try:
-        for gz in recover(path):
-            log(f"run log: finished an interrupted roll, {gz.name}")
-    except OSError as exc:
-        log(f"⚠️  could not finish an earlier roll of {path.name} ({exc}); its lines are "
-            f"kept uncompressed in {path.parent}")
+    if state.recover_due:
+        try:
+            for gz in recover(path):
+                log(f"run log: finished an interrupted roll, {gz.name}")
+        except OSError as exc:
+            state.failed(now)
+            state.warn(log, f"⚠️  could not finish an earlier roll of {path.name} ({exc}); its "
+                            f"lines are kept uncompressed in {path.parent}")
+        else:
+            state.recover_due = False
     if st is not None and st.st_size > 0:
         last_day = datetime.fromtimestamp(st.st_mtime).date()
         stamp = None
@@ -258,14 +298,23 @@ def _maybe_roll(path: Path, *, max_bytes: int | None, keep_days: int | None,
             try:
                 rolled = roll(path, stamp)
             except CompressError as exc:
-                log(f"⚠️  rolled {path.name} but {exc}; retried on the next write")
+                # The current file is fresh already; only the compression is left over.
+                state.recover_due = True
+                state.warn(log, f"⚠️  rolled {path.name} but {exc}; retried on the next write")
             except OSError as exc:
-                log(f"⚠️  could not roll {path.name} ({exc}); still appending to it, "
-                    f"which keeps growing until this is fixed")
-    if keep_days is not None:
-        try:
-            for old in prune(path, keep_days, today):
-                log(f"run log: deleted {old.name} (older than {keep_days} days)")
-        except OSError as exc:
-            log(f"⚠️  could not prune old {path.name} rolls ({exc})")
+                state.failed(now)
+                state.warn(log, f"⚠️  could not roll {path.name} ({exc}); still appending to "
+                                f"it, which keeps growing until this is fixed")
+            else:
+                state.warned = None
+                if keep_days is not None:
+                    _prune(path, keep_days, today, log)
     return rolled
+
+
+def _prune(path: Path, keep_days: int, today: date, log: Callable[[str], None]) -> None:
+    try:
+        for old in prune(path, keep_days, today):
+            log(f"run log: deleted {old.name} (older than {keep_days} days)")
+    except OSError as exc:
+        log(f"⚠️  could not prune old {path.name} rolls ({exc})")

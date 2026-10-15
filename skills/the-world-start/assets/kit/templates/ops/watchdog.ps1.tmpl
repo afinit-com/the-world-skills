@@ -36,7 +36,11 @@ if (-not (Get-Command -Name $UpScript -CommandType ExternalScript -ErrorAction S
   $UpCall = [System.Management.Automation.WildcardPattern]::Escape($UpScript)
 }
 
-function Stamp { (Get-Date).ToString('yyyy-MM-ddTHH:mm:sszzz') }
+$CommonScript = {{COMMON}}
+if (-not (Get-Command -Name $CommonScript -CommandType ExternalScript -ErrorAction SilentlyContinue)) {
+  $CommonScript = [System.Management.Automation.WildcardPattern]::Escape($CommonScript)
+}
+. $CommonScript
 
 function Write-Log([string]$Text) {
   [System.IO.File]::AppendAllText($Log, "$(Stamp) $Text`n", $Utf8)
@@ -57,41 +61,42 @@ function Send-Note([string]$Text) {
   }
 }
 
-function Inner([System.Exception]$e) {
-  while ($e.InnerException) { $e = $e.InnerException }
-  return $e
+# Persist the last failure state: retries still run, but identical failures notify once.
+function Send-State([string]$Key, [string]$Text) {
+  $path = Join-Path $State 'reported-failure'
+  $previous = ''
+  if (Test-Path -LiteralPath $path) { $previous = [System.IO.File]::ReadAllText($path) }
+  if ($previous -ne $Key) {
+    Send-Note $Text
+    [System.IO.File]::WriteAllText($path, $Key, $Utf8)
+  }
 }
 
-# The lock, or $null once it stayed busy for $WaitS seconds; any other error is thrown,
-# with the lock released first (see {{NAME}}-up.ps1).
-function Enter-OpsLock([double]$WaitS) {
-  $deadline = (Get-Date).AddSeconds($WaitS)
-  while ($true) {
-    try {
-      $stream = [System.IO.File]::Open($Lock, [System.IO.FileMode]::OpenOrCreate,
-        [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
-      break
-    } catch {
-      $e = Inner $_.Exception
-      if ($e -isnot [System.IO.IOException]) { throw "cannot open the lock ${Lock}: $($e.Message)" }
-      if ((Get-Date) -ge $deadline) { return $null }
-      Start-Sleep -Milliseconds 100
-    }
+function Set-Retry {
+  if ($script:RetryScheduled) { return }
+  $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+  $failuresFile = Join-Path $State 'failures'
+  $failures = (Read-Number $failuresFile) + 1
+  $delay = $BackoffMinS
+  $i = 1
+  while ($i -lt $failures -and $delay -lt $BackoffMaxS) {
+    $delay *= 2
+    $i++
   }
-  try {
-    [System.IO.File]::WriteAllText("$Lock.pid", "$PID`n", $Utf8)
-  } catch {
-    $stream.Dispose()
-    throw "took the lock but could not record its holder in $Lock.pid: $((Inner $_.Exception).Message)"
-  }
-  return $stream
+  if ($delay -gt $BackoffMaxS) { $delay = $BackoffMaxS }
+  [System.IO.File]::WriteAllText($failuresFile, "$failures`n", $Utf8)
+  [System.IO.File]::WriteAllText((Join-Path $State 'next_try'), "$($now + $delay)`n", $Utf8)
+  $script:RetryScheduled = $true
 }
 
 # {{NAME}}-up.ps1 exits 4 when it could not complete or check a step (the process list,
 # the down marker). The round stops there: it acts on nothing it could not see.
 function Test-Stopped([string]$What) {
   if ($LASTEXITCODE -ne 4) { return $false }
-  Send-Note "stopped this round: '$What' could not tell or could not finish (exit 4); see $Log"
+  if (-not $script:RetryScheduled -and
+      [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() -lt (Read-Number (Join-Path $State 'next_try'))) { return $true }
+  Set-Retry
+  Send-State "unknown-$What" "stopped this round: '$What' could not tell or could not finish (exit 4); see $Log"
   $script:RoundCode = 4
   return $true
 }
@@ -99,11 +104,12 @@ function Test-Stopped([string]$What) {
 function Invoke-Round {
   # Only watchdog rounds write this log, one at a time under the lock, so rolling it by
   # rename between rounds loses nothing.
-  $roll = @((Join-Path $HomeDir 'bin\ops-log.py'), '--file', $Log, '--roll-only')
+  $roll = @((Join-Path $HomeDir 'bin\ops-log.py'), '--file', $Log, '--roll-only',
+    '--err-file', (Join-Path $Logs 'ops-log.err'))
   if ($KeepDays) { $roll += @('--keep-days', $KeepDays) }
   $err = @(& $Py @roll 2>&1 | ForEach-Object { "$_" })
   foreach ($line in $err) {
-    [System.IO.File]::AppendAllText((Join-Path $Logs 'ops-log.err'), "$line`n", $Utf8)
+    Write-Log $line
   }
 
   # Lines the console writer could not write (a full disk, a read-only file): restarting
@@ -130,15 +136,18 @@ function Invoke-Round {
     & $UpCall healthy
     if (Test-Stopped 'healthy') { return }
     if ($LASTEXITCODE -ne 0 -and -not (Test-Path -LiteralPath $down)) {
+      if ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() -lt (Read-Number $nextTryFile)) { return }
+      Set-Retry
       & $UpCall recycle
       if (Test-Stopped 'recycle') { return }
       if ($LASTEXITCODE -eq 0) {
-        Send-Note "its console writer had died; restarted the harness before its output could kill it"
+        Send-State 'recycled' "its console writer had died; restarted the harness before its output could kill it"
       } else {
-        Send-Note "its console writer had died and restarting the harness failed; see $Log"
+        Send-State 'recycle-failed' "its console writer had died and restarting the harness failed; see $Log"
       }
       return
     }
+    Remove-Item -LiteralPath (Join-Path $State 'reported-failure') -Force -ErrorAction SilentlyContinue
     if (Test-Path -LiteralPath $failuresFile) {
       Write-Log "running again after $(Read-Number $failuresFile) restart(s)"
       Remove-Item -LiteralPath $failuresFile, $nextTryFile -Force -ErrorAction SilentlyContinue
@@ -150,26 +159,17 @@ function Invoke-Round {
   # round (marker present) or starts after it.
   if (Test-Path -LiteralPath $down) { return }
 
-  $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
-  if ($now -lt (Read-Number $nextTryFile)) { return }
-  $failures = (Read-Number $failuresFile) + 1
-  $delay = $BackoffMinS
-  $i = 1
-  while ($i -lt $failures -and $delay -lt $BackoffMaxS) {
-    $delay *= 2
-    $i++
-  }
-  if ($delay -gt $BackoffMaxS) { $delay = $BackoffMaxS }
-  [System.IO.File]::WriteAllText($failuresFile, "$failures`n", $Utf8)
-  [System.IO.File]::WriteAllText($nextTryFile, "$($now + $delay)`n", $Utf8)
+  if ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() -lt (Read-Number $nextTryFile)) { return }
+  Set-Retry
+  $failures = Read-Number $failuresFile
 
   # `resume`, never `up`: only a person's explicit `up` clears the down marker.
   & $UpCall resume
   if (Test-Stopped 'resume') { return }
   if ($LASTEXITCODE -eq 0) {
-    Send-Note "found it not running; restarted (attempt $failures; next retry no sooner than ${delay}s)"
+    Send-State 'restarted' "found it not running; restarted (attempt $failures)"
   } else {
-    Send-Note "found it not running and could not start it (attempt $failures; retrying in ${delay}s). See $Logs\console.out"
+    Send-State 'start-failed' "found it not running and could not start it (attempt $failures). See $Logs\console.out"
   }
 }
 
@@ -191,10 +191,12 @@ if (-not $lockStream) {
 $global:WorldOpsLockHeld = $HomeDir
 $global:WorldOpsLogFile = $Log
 $script:RoundCode = 0
+$script:RetryScheduled = $false
 try {
   Invoke-Round
 } catch {
-  Send-Note "stopped this round: $($_.Exception.Message)"
+  Set-Retry
+  Send-State "exception-$($_.Exception.Message)" "stopped this round: $($_.Exception.Message)"
   $script:RoundCode = 4
 } finally {
   $global:WorldOpsLockHeld = $null

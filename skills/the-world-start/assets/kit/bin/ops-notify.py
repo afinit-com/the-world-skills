@@ -17,7 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
+import runpy
 import sys
 import urllib.error
 import urllib.request
@@ -44,18 +44,9 @@ def main(argv: list[str] | None = None, opener=urllib.request.urlopen) -> int:
     ap.add_argument("text")
     args = ap.parse_args(argv)
 
-    sys.path.insert(0, str(ROOT))
-    from world.env import env_path, parse_value
-
-    # The launcher gives the file precedence too. Read into a local mapping so even
-    # repeated calls cannot inherit a stale export or change the caller's environment.
-    values = dict(os.environ)
-    path = env_path()
-    if path.is_file():
-        for line in path.read_text(encoding="utf-8").splitlines():
-            m = re.match(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$", line)
-            if m:
-                values[m.group(1)] = parse_value(m.group(2))
+    env = runpy.run_path(str(ROOT / "world" / "env.py"))
+    # The launcher gives the file precedence too; keep the caller's environment intact.
+    values = {**os.environ, **env["parse_env_file"](env["env_path"]())}
     token, channel = values.get(args.token_env), values.get(args.channel_env)
     missing = [n for n, v in ((args.token_env, token), (args.channel_env, channel)) if not v]
     if missing:

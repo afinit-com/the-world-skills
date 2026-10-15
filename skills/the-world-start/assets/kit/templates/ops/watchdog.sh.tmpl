@@ -46,8 +46,8 @@ notify() {
 
 # Only watchdog rounds write this log, one at a time under the lock, so rolling it by
 # rename between rounds loses nothing.
-"$PY" "$HOME_DIR/bin/ops-log.py" --file "$LOG" --roll-only ${KEEP_DAYS:+--keep-days "$KEEP_DAYS"} \
-  2>>"$LOGS/ops-log.err"
+"$PY" "$HOME_DIR/bin/ops-log.py" --file "$LOG" --roll-only --err-file "$LOGS/ops-log.err" \
+  ${KEEP_DAYS:+--keep-days "$KEEP_DAYS"} >>"$LOG" 2>&1
 
 # Lines the console writer could not write (a full disk, a read-only file): restarting
 # would not help, so say it once each time it starts happening.
@@ -60,17 +60,67 @@ else
   rm -f "$STATE/reported-dropping"
 fi
 
-if "$UP" running; then
+# Failures, including an unreadable process list, share the same retry schedule.
+set_retry() {
+  [ "${retry_scheduled:-0}" = 1 ] && return 0
+  failures=$(cat "$STATE/failures" 2>/dev/null || echo 0)
+  failures=$((failures + 1))
+  delay=$BACKOFF_MIN_S
+  i=1
+  while [ "$i" -lt "$failures" ] && [ "$delay" -lt "$BACKOFF_MAX_S" ]; do
+    delay=$((delay * 2))
+    i=$((i + 1))
+  done
+  [ "$delay" -gt "$BACKOFF_MAX_S" ] && delay=$BACKOFF_MAX_S
+  echo "$failures" >"$STATE/failures"
+  echo $((now + delay)) >"$STATE/next_try"
+
+  retry_scheduled=1
+}
+
+notify_state() {
+  local key=$1
+  shift
+  if [ "$(cat "$STATE/reported-failure" 2>/dev/null)" != "$key" ]; then
+    notify "$*"
+    echo "$key" >"$STATE/reported-failure"
+  fi
+}
+
+check_unknown() {
+  [ "$1" = 4 ] || return 0
+  if [ "${retry_scheduled:-0}" != 1 ] && [ "$now" -lt "$next_try" ]; then exit 0; fi
+  set_retry
+  notify_state "unknown-$2" "stopped this round: '$2' could not tell or could not finish (exit 4); see $LOG"
+  exit 4
+}
+
+now=$(date +%s)
+next_try=$(cat "$STATE/next_try" 2>/dev/null || echo 0)
+
+"$UP" running
+running_rc=$?
+check_unknown "$running_rc" running
+if [ "$running_rc" = 0 ]; then
   # Running without its console writer: the harness's next line of output fails with
   # EPIPE and kills it at a moment nobody chose, so restart it now instead.
-  if ! "$UP" healthy && [ ! -f "$STATE/down" ]; then
-    if "$UP" recycle >>"$LOG" 2>&1; then
-      notify "its console writer had died; restarted the harness before its output could kill it"
+  "$UP" healthy
+  healthy_rc=$?
+  check_unknown "$healthy_rc" healthy
+  if [ "$healthy_rc" != 0 ] && [ ! -f "$STATE/down" ]; then
+    [ "$now" -lt "$next_try" ] && exit 0
+    set_retry
+    "$UP" recycle >>"$LOG" 2>&1
+    recycle_rc=$?
+    check_unknown "$recycle_rc" recycle
+    if [ "$recycle_rc" = 0 ]; then
+      notify_state recycled "its console writer had died; restarted the harness before its output could kill it"
     else
-      notify "its console writer had died and restarting the harness failed; see $LOG"
+      notify_state recycle-failed "its console writer had died and restarting the harness failed; see $LOG"
     fi
     exit 0
   fi
+  rm -f "$STATE/reported-failure"
   if [ -f "$STATE/failures" ]; then
     log "running again after $(cat "$STATE/failures") restart(s)"
     rm -f "$STATE/failures" "$STATE/next_try"
@@ -82,25 +132,15 @@ fi
 # round (marker present) or starts after it.
 [ -f "$STATE/down" ] && exit 0
 
-now=$(date +%s)
-next_try=$(cat "$STATE/next_try" 2>/dev/null || echo 0)
 [ "$now" -lt "$next_try" ] && exit 0
-
-failures=$(cat "$STATE/failures" 2>/dev/null || echo 0)
-failures=$((failures + 1))
-delay=$BACKOFF_MIN_S
-i=1
-while [ "$i" -lt "$failures" ] && [ "$delay" -lt "$BACKOFF_MAX_S" ]; do
-  delay=$((delay * 2))
-  i=$((i + 1))
-done
-[ "$delay" -gt "$BACKOFF_MAX_S" ] && delay=$BACKOFF_MAX_S
-echo "$failures" >"$STATE/failures"
-echo $((now + delay)) >"$STATE/next_try"
+set_retry
 
 # `resume`, never `up`: only a person's explicit `up` clears the down marker.
-if "$UP" resume >>"$LOG" 2>&1; then
-  notify "found it not running; restarted (attempt $failures; next retry no sooner than ${delay}s)"
+"$UP" resume >>"$LOG" 2>&1
+resume_rc=$?
+check_unknown "$resume_rc" resume
+if [ "$resume_rc" = 0 ]; then
+  notify_state restarted "found it not running; restarted (attempt $failures; next retry no sooner than ${delay}s)"
 else
-  notify "found it not running and could not start it (attempt $failures; retrying in ${delay}s). See $LOGS/console.out"
+  notify_state start-failed "found it not running and could not start it (attempt $failures; retrying in ${delay}s). See $LOGS/console.out"
 fi

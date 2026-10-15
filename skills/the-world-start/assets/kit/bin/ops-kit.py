@@ -231,6 +231,7 @@ def _render_windows(home: Path, name: str, python: Path, run_path: str, *,
         "HOME_DIR": ps_quote(str(home)),
         "PYTHON": ps_quote(str(python)),
         "UP": ps_quote(str(up)),
+        "COMMON": ps_quote(str(home / "scripts" / f"{name}-ops-common.ps1")),
         "MATCH": ps_quote(windows_process_match(home)),
         "RELATIVE_MATCH": ps_quote(relative_process_match(windows=True)),
         "RUN_PATH": ps_quote(run_path),
@@ -268,6 +269,7 @@ def _render_windows(home: Path, name: str, python: Path, run_path: str, *,
     # garbles a non-ASCII path (a Korean user name); schtasks /XML wants UTF-16.
     bom = "\ufeff"
     return {
+        f"scripts/{name}-ops-common.ps1": (bom + fill(read("ops-common.ps1.tmpl"), values), 0o644),
         f"scripts/{name}-up.ps1": (bom + fill(read("up.ps1.tmpl"), values), 0o755),
         f"scripts/{name}-watchdog.ps1": (bom + fill(read("watchdog.ps1.tmpl"), values), 0o755),
         f"scripts/windows/{name}-watchdog.xml": ((bom + task).encode("utf-16-le"), 0o644),
@@ -388,15 +390,9 @@ def resolve_windows_run_path(provider: str, path: str | None = None) -> str:
 
 def check_notify_env(env_file: Path, keys: tuple[str, str]) -> None:
     """Refuse --notify unless both values are filled in. Never prints a value."""
-    sys.path.insert(0, str(ROOT))
-    from world.env import parse_value
-
-    values: dict[str, str] = {}
-    if env_file.is_file():
-        for line in env_file.read_text(encoding="utf-8").splitlines():
-            m = re.match(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$", line)
-            if m:
-                values[m.group(1)] = parse_value(m.group(2))
+    import runpy
+    parse_env_file = runpy.run_path(str(ROOT / "world" / "env.py"))["parse_env_file"]
+    values = parse_env_file(env_file)
     # The example file's placeholders (xoxb-..., C0XXXXXXX) count as missing.
     missing = [k for k in keys
                if not values.get(k) or values[k].endswith("...") or values[k] == "C0XXXXXXX"]

@@ -26,8 +26,11 @@ does not reveal its home in the process list. Ops refuses to start a second copy
 relative launch belongs to this home or its home cannot be identified. Linux uses
 `/proc/<pid>/cwd` and macOS uses `lsof` to ignore confirmed other homes; without access
 to that information it refuses safely. It never stops an unidentified process. Windows
-cannot query cwd through `Win32_Process`, so all ops commands refuse while any relative
-launch exists, including one in another home.
+cannot query cwd through `Win32_Process`, so starting refuses while any relative
+launch exists, including one in another home. `running` and `healthy` still inspect only
+this home's absolute launch. Process-query errors return exit 4 on both platforms; the
+watchdog skips actions it cannot check, backs off retries, and notifies once per failure
+state until it changes or a healthy round clears it.
 
 ## What it writes
 
@@ -38,6 +41,7 @@ launch exists, including one in another home.
 | `scripts/launchd/<label>.plist` | macOS: run the watchdog every 120s and at login |
 | `scripts/systemd/<name>-watchdog.{service,timer}` | Linux: the same as a user timer |
 | `scripts/<name>-up.ps1`, `scripts/<name>-watchdog.ps1` | Windows: the same two scripts |
+| `scripts/<name>-ops-common.ps1` | Windows: shared timestamp, exception and lock helpers, dot-sourced by both scripts |
 | `scripts/windows/<name>-watchdog.xml` | Windows: a scheduled task running the watchdog every 2 minutes from logon |
 
 The paths inside are resolved once, on the machine that rendered them. After moving the
@@ -105,6 +109,11 @@ Nothing rolled is deleted by default, so `logs/` grows by about one compressed d
 day. To bound it, set `h.run_log_keep_days = 30` in `harness.py` for `harness.jsonl`, and
 render with `--keep-days 30` for the console logs.
 
+Writer warnings use `ops-log.py --err-file logs/ops-log.err`: each warning opens and
+closes the file under the log lock and rolls it at 1 MiB. The watchdog does
+not rename a file held open as stderr. Unexpected writer tracebacks go to
+`logs/ops-log.crash` on both platforms.
+
 ## The console writer
 
 The harness's stdout and stderr go through a pipe to `bin/ops-log.py`, which is the only
@@ -113,12 +122,12 @@ while it runs, so a second writer exits at once. What happens when it fails:
 
 | Failure | What happens | Who notices |
 |---|---|---|
-| A line cannot be written (disk full, file made read-only) | The writer drops it and keeps reading, so the harness never gets EPIPE. The count goes to `logs/.console.out.dropping` and stderr (`logs/ops-log.err`). When writing works again, the log gets one line saying how many were lost. | `status` shows `DROPPING`. The watchdog notes it once per episode, with `--notify` in Slack too. It does not restart: that would not free the disk. |
+| A line cannot be written (disk full, file made read-only) | The writer drops it and keeps reading, so the harness never gets EPIPE. The count goes to `logs/.console.out.dropping`; bounded warnings go to `logs/ops-log.err`. When writing works again, the log gets one line saying how many were lost. | `status` shows `DROPPING`. The watchdog notes it once per episode, with `--notify` in Slack too. It does not restart: that would not free the disk. |
 | The writer dies | The harness keeps running until its next line of output, which fails with EPIPE and kills it at a moment nobody chose. | `status` shows `UNHEALTHY` and `healthy` exits 1. The next watchdog round restarts the harness with a fresh writer and says so (`--notify`: in Slack). |
 | The writer does not exit after the harness stops | Something the harness started still holds its output open. | `down`, `restart` and `up` wait `WRITER_WAIT_S` (30s) for it, then fail loudly and name it. Nothing is started beside it. |
 
-When a full disk cannot take `logs/.console.out.dropping` either, only stderr has the
-count, and that file may be on the same disk.
+When a full disk cannot take the dropping marker or the warning log either, the writer
+falls back to stderr (`logs/ops-log.crash`), which may be on the same disk.
 
 ## Stopping it
 
@@ -173,8 +182,8 @@ are the ones above. What differs, and why:
   PowerShell without a window, so no console flashes up every round.
 - **Following the log holds up its roll.** Windows cannot rename a file another process
   has open. While `<name>-up.ps1 attach` (or any `Get-Content -Wait`) follows
-  `logs\console.out`, a roll that falls due fails and is retried on each later line,
-  with a line in `logs\ops-log.err` each time. Nothing is lost; the file grows past
-  10MB until the follower stops.
+  `logs\console.out`, a roll that falls due fails, warns once in the bounded
+  `logs\ops-log.err`, and retries after backoff. Nothing is lost; the console file can
+  grow past 10MB until the follower stops and a later retry succeeds.
 - **No sleep prevention.** There is no `caffeinate`; set the power plan so the machine
   does not sleep while it should be running.

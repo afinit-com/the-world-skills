@@ -71,6 +71,20 @@ def parse_value(raw: str) -> str:
     return _INLINE_COMMENT.sub("", value).strip()
 
 
+def parse_env_file(path: pathlib.Path) -> dict[str, str]:
+    """Read one env file without imports or environment changes; missing means empty."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}
+    values: dict[str, str] = {}
+    for line in text.splitlines():
+        match = re.match(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$", line)
+        if match:
+            values[match.group(1)] = parse_value(match.group(2))
+    return values
+
+
 def load_harness_env() -> pathlib.Path | None:
     """Populate os.environ from the harness env file. Returns the path it read, or
     None if there was nothing to read. Idempotent — a second call is a no-op.
@@ -97,13 +111,7 @@ def load_harness_env() -> pathlib.Path | None:
     if not path.exists():
         return None
     _warn_if_readable(path)
-    for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        key = key.strip()
-        value = parse_value(value)
+    for key, value in parse_env_file(path).items():
         _FILE_KEYS.add(key)
         if key not in os.environ:
             os.environ[key] = value
@@ -272,3 +280,11 @@ def redact(text: str) -> str:
     output posted to Slack/Discord). Keeps the first few characters so the kind of token
     stays recognizable; the secret part never ships."""
     return _TOKEN_SHAPES.sub(lambda m: m.group(0)[:5] + "…[redacted]", text)
+
+
+if __name__ == "__main__":
+    # Launchers need names only, never secret values or the world package's imports.
+    import argparse
+    parser = argparse.ArgumentParser(description="List keys declared by a harness env file.")
+    parser.add_argument("--keys", type=pathlib.Path, required=True)
+    print("\n".join(parse_env_file(parser.parse_args().keys)))

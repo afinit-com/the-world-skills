@@ -56,6 +56,17 @@ class RenderTest(unittest.TestCase):
         self.home = Path(self.tmp.name) / "a & b"  # XML- and shell-hostile on purpose
         self.home.mkdir()
 
+    def test_launchers_route_writer_diagnostics_to_bounded_log(self):
+        for os_name in ("macos", "linux", "windows"):
+            files = _render(self.home, os_name)
+            suffix = ".ps1" if os_name == "windows" else ""
+            up = files["scripts/my-harness-up" + suffix][0]
+            self.assertIn("--err-file", up)
+            self.assertIn("ops-log.err", up)
+            watchdog = files["scripts/my-harness-watchdog" + suffix][0]
+            self.assertIn("--err-file", watchdog)
+            self.assertNotIn("--max-bytes", watchdog)
+
     def test_macos_renders_scripts_and_a_launchd_plist(self):
         files = _render(self.home, "macos")
         self.assertEqual(sorted(files), [
@@ -118,10 +129,15 @@ class RenderTest(unittest.TestCase):
         files = _render(self.home, "windows", user="WORKGROUP\\someone",
                         now=datetime(2026, 10, 14, 9, 30, 5))
         self.assertEqual(sorted(files), [
+            "scripts/my-harness-ops-common.ps1",
             "scripts/my-harness-up.ps1", "scripts/my-harness-watchdog.ps1",
             "scripts/windows/my-harness-watchdog.xml"])
         up, watchdog = files["scripts/my-harness-up.ps1"][0], files["scripts/my-harness-watchdog.ps1"][0]
-        for script in (up, watchdog):
+        common = files["scripts/my-harness-ops-common.ps1"][0]
+        for function in ("Stamp", "Inner", "Enter-OpsLock"):
+            self.assertEqual(common.count("function " + function), 1)
+            self.assertNotIn("function " + function, up + watchdog)
+        for script in (up, watchdog, common):
             self.assertTrue(script.startswith("\ufeff"), "PowerShell 5.1 would read it as ANSI")
             self.assertNotRegex(script, r"\{\{[A-Z_]+\}\}")
         self.assertIn("'ANTHROPIC_API_KEY'", up)
@@ -257,7 +273,7 @@ class RenderTest(unittest.TestCase):
         keys = ("OBS_SLACK_BOT_TOKEN", "OBS_SLACK_CHANNEL")
         with self.assertRaisesRegex(ops_kit.OpsKitError, "OBS_SLACK_BOT_TOKEN and OBS_SLACK_CHANNEL"):
             ops_kit.check_notify_env(env, keys)
-        env.write_text("OBS_SLACK_BOT_TOKEN=xoxb-real\nOBS_SLACK_CHANNEL=C123  # chan\n",
+        env.write_text("OBS_SLACK_BOT_TOKEN = xoxb-real\n export OBS_SLACK_CHANNEL = C123  # chan\n",
                        encoding="utf-8")
         ops_kit.check_notify_env(env, keys)
 
@@ -299,7 +315,7 @@ class NotifyTest(unittest.TestCase):
 
     def test_harness_env_overrides_stale_shell_for_notifications(self):
         Path(self.empty_env).write_text(
-            'export T_TOKEN="file-token"\nT_CHAN=file-channel # channel\n', encoding="utf-8")
+            'export T_TOKEN = "file-token"\n T_CHAN = file-channel # channel\n', encoding="utf-8")
         requests = []
 
         def opener(req, timeout):
@@ -435,12 +451,13 @@ class LauncherAndWatchdogTest(unittest.TestCase):
         for script in ("ops-lock.py", "ops-log.py"):
             shutil.copy2(KIT / "bin" / script, self.home / "bin" / script)
         (self.home / "world" / "process").mkdir(parents=True)
+        shutil.copy2(KIT / "world" / "env.py", self.home / "world" / "env.py")
         shutil.copy2(KIT / "world" / "process" / "runlog.py", self.home / "world" / "process")
         subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(self.home / ".venv")],
                        check=True)
         (self.home / "harness.py").write_text(STUB_HARNESS, encoding="utf-8")
         (self.home / "env").mkdir()
-        (self.home / "env" / "harness.env").write_text("STUB_FROM_FILE=from-file\n# NOT_A_KEY=x\n",
+        (self.home / "env" / "harness.env").write_text(" export STUB_FROM_FILE = from-file\n# NOT_A_KEY=x\n",
                                                        encoding="utf-8")
         files = ops_kit.render(self.home, "stub", "linux", self.home / ".venv" / "bin" / "python",
                                "/usr/bin:/bin")
@@ -497,6 +514,51 @@ class LauncherAndWatchdogTest(unittest.TestCase):
             if not self.pids():
                 return
             time.sleep(0.1)
+
+    def test_unknown_process_state_backs_off_and_reports_only_transitions(self):
+        self.up.write_text("#!/bin/sh\nexit 4\n")
+        for round_number in (1, 2):
+            result = subprocess.run([str(self.watchdog)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 4, result.stdout + result.stderr)
+            self.assertEqual((self.state / "failures").read_text().strip(), str(round_number))
+            next_try = (self.state / "next_try").read_text()
+            subprocess.run([str(self.watchdog)], check=True, capture_output=True)
+            self.assertEqual((self.state / "next_try").read_text(), next_try)
+            (self.state / "next_try").write_text("0")
+        log = (self.home / "logs" / "watchdog.log").read_text()
+        self.assertEqual(log.count("stopped this round"), 1)
+        self.up.write_text("#!/bin/sh\nexit 0\n")
+        subprocess.run([str(self.watchdog)], check=True, capture_output=True)
+        self.assertFalse((self.state / "failures").exists())
+        self.up.write_text("#!/bin/sh\nexit 4\n")
+        subprocess.run([str(self.watchdog)], capture_output=True)
+        log = (self.home / "logs" / "watchdog.log").read_text()
+        self.assertEqual(log.count("stopped this round"), 2)
+
+    def test_pgrep_errors_refuse_every_process_decision(self):
+        shim = self.home / "shim"
+        shim.mkdir()
+        pgrep = shim / "pgrep"
+        pgrep.write_text("#!/bin/sh\nexit 2\n")
+        pgrep.chmod(0o755)
+        env = {"PATH": str(shim) + os.pathsep + os.environ["PATH"]}
+        for action in ("running", "healthy", "status", "up", "resume", "down", "recycle"):
+            with self.subTest(action=action):
+                (self.state / "down").unlink(missing_ok=True)
+                result = self.run_up(action, env=env)
+                self.assertEqual(result.returncode, 4, result.stdout + result.stderr)
+                self.assertEqual(self.pids(), [])
+
+    def test_relative_pgrep_error_refuses_start(self):
+        shim = self.home / "shim"
+        shim.mkdir()
+        pgrep = shim / "pgrep"
+        # The first query is absolute; the second query is the relative-launch guard.
+        pgrep.write_text("#!/bin/sh\nif [ -f '" + str(shim / "queried") + "' ]; then exit 3; fi\ntouch '" + str(shim / "queried") + "'\nexit 1\n")
+        pgrep.chmod(0o755)
+        result = self.run_up("up", env={"PATH": str(shim) + os.pathsep + os.environ["PATH"]})
+        self.assertEqual(result.returncode, 4, result.stdout + result.stderr)
+        self.assertEqual(self.pids(), [])
 
     def test_relative_launch_in_a_confirmed_other_home_is_left_alone(self):
         other = self.home.parent / "other"
@@ -828,13 +890,14 @@ class WindowsLauncherTest(unittest.TestCase):
         for script in ("ops-log.py", "ops-notify.py"):
             shutil.copy2(KIT / "bin" / script, self.home / "bin" / script)
         (self.home / "world" / "process").mkdir(parents=True)
+        shutil.copy2(KIT / "world" / "env.py", self.home / "world" / "env.py")
         shutil.copy2(KIT / "world" / "process" / "runlog.py", self.home / "world" / "process")
         subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(self.home / ".venv")],
                        check=True)
         self.python = self.home / ".venv" / "Scripts" / "python.exe"
         (self.home / "harness.py").write_text(STUB_HARNESS_WINDOWS, encoding="utf-8")
         (self.home / "env").mkdir()
-        (self.home / "env" / "harness.env").write_text("STUB_FROM_FILE=from-file\n# NOT_A_KEY=x\n",
+        (self.home / "env" / "harness.env").write_text(" export STUB_FROM_FILE = from-file\n# NOT_A_KEY=x\n",
                                                        encoding="utf-8")
         system32 = str(Path(os.environ.get("SYSTEMROOT", r"C:\Windows")) / "System32")
         self.run_path = os.pathsep.join([str(self.home / "cli"), system32])
@@ -897,6 +960,28 @@ class WindowsLauncherTest(unittest.TestCase):
                 return
             time.sleep(0.5)
 
+    def test_relative_other_home_does_not_break_this_homes_running_status(self):
+        self.assertEqual(self.run_up("up").returncode, 0)
+        other = self.home.parent / "other"
+        other.mkdir()
+        (other / "harness.py").write_text(STUB_HARNESS_WINDOWS, encoding="utf-8")
+        child = subprocess.Popen([str(self.python), "harness.py"], cwd=other,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            for _ in range(100):
+                if (other / "env-seen.json").exists():
+                    break
+                time.sleep(0.05)
+            self.assertTrue((other / "env-seen.json").exists())
+            self.assertEqual(self.run_up("running").returncode, 0)
+            self.assertEqual(self.run_up("healthy").returncode, 0)
+            self.assertEqual(self.run_ps(self.watchdog).returncode, 0)
+            self.assertEqual(self.run_up("down").returncode, 0)
+            self.assertIsNone(child.poll(), "ops stopped an unidentified other home")
+        finally:
+            subprocess.run(["taskkill", "/PID", str(child.pid), "/T", "/F"], capture_output=True)
+            child.wait(timeout=10)
+
     def test_relative_readme_launch_blocks_a_second_start(self):
         child = subprocess.Popen([str(self.python), "harness.py"], cwd=self.home,
                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -906,6 +991,18 @@ class WindowsLauncherTest(unittest.TestCase):
                     break
                 time.sleep(0.05)
             self.assertTrue((self.home / "env-seen.json").exists())
+            self.assertEqual(self.run_up("running").returncode, 1)
+            self.assertEqual(self.run_up("healthy").returncode, 1)
+            for number in (1, 2):
+                result = self.run_ps(self.watchdog)
+                self.assertEqual(result.returncode, 4, result.stdout + result.stderr)
+                self.assertEqual((self.state / "failures").read_text().strip(), str(number))
+                next_try = (self.state / "next_try").read_text()
+                self.assertEqual(self.run_ps(self.watchdog).returncode, 0)
+                self.assertEqual((self.state / "next_try").read_text(), next_try)
+                (self.state / "next_try").write_text("0")
+            log = (self.home / "logs" / "watchdog.log").read_text(encoding="utf-8")
+            self.assertEqual(log.count("stopped this round"), 1)
             for action in ("up", "resume"):
                 result = self.run_up(action)
                 self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -920,7 +1017,7 @@ class WindowsLauncherTest(unittest.TestCase):
         check = ("$errors = $null; [System.Management.Automation.Language.Parser]::ParseFile("
                  "$env:PS_FILE, [ref]$null, [ref]$errors) | Out-Null; "
                  "if ($errors) { $errors | ForEach-Object { $_.ToString() }; exit 1 }")
-        for script in (self.up, self.watchdog):
+        for script in (self.up, self.watchdog, self.home / "scripts" / "stub-ops-common.ps1"):
             result = subprocess.run([*PS, "-Command", check], capture_output=True, text=True,
                                     env={**os.environ, "PS_FILE": str(script)}, timeout=60)
             self.assertEqual(result.returncode, 0, f"{script.name}: {result.stdout}{result.stderr}")
