@@ -388,15 +388,9 @@ def resolve_windows_run_path(provider: str, path: str | None = None) -> str:
 
 def check_notify_env(env_file: Path, keys: tuple[str, str]) -> None:
     """Refuse --notify unless both values are filled in. Never prints a value."""
-    sys.path.insert(0, str(ROOT))
-    from world.env import parse_value
-
-    values: dict[str, str] = {}
-    if env_file.is_file():
-        for line in env_file.read_text(encoding="utf-8").splitlines():
-            m = re.match(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$", line)
-            if m:
-                values[m.group(1)] = parse_value(m.group(2))
+    import runpy
+    parse_env_file = runpy.run_path(str(ROOT / "world" / "env.py"))["parse_env_file"]
+    values = parse_env_file(env_file)
     # The example file's placeholders (xoxb-..., C0XXXXXXX) count as missing.
     missing = [k for k in keys
                if not values.get(k) or values[k].endswith("...") or values[k] == "C0XXXXXXX"]

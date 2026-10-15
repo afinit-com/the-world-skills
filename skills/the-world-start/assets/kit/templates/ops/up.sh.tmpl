@@ -72,9 +72,7 @@ pids() {
 # the file; under this launcher the file wins, because a stale export in the shell that
 # ran `up` (a token, an OAuth client) is not something the harness was configured with.
 env_keys() {
-  [ -r "$HOME_DIR/env/harness.env" ] || return 0
-  sed -n -E 's/^[[:space:]]*(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)=.*/\2/p' \
-    "$HOME_DIR/env/harness.env"
+  "$PY" "$HOME_DIR/world/env.py" --keys "$HOME_DIR/env/harness.env"
 }
 
 # The pid of the live console writer (bin/ops-log.py holds an flock while it runs), or
@@ -131,7 +129,9 @@ start() {
   # (world/runners/claude.py refuses to run while it is set).
   local -a run=(env -u ANTHROPIC_API_KEY -u WORLD_OPS_LOCK_HELD)
   local key
-  for key in $(env_keys); do run+=(-u "$key"); done
+  local keys
+  keys=$(env_keys) || return 4
+  for key in $keys; do run+=(-u "$key"); done
   run+=(PATH="$RUN_PATH" "$PY" "$ENTRY")
   local -a writer=("$PY" "$HOME_DIR/bin/ops-log.py" --file "$OUT")
   [ -n "$KEEP_DAYS" ] && writer+=(--keep-days "$KEEP_DAYS")

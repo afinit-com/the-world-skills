@@ -141,11 +141,9 @@ function Join-Ids($Processes) { ($Processes | ForEach-Object { $_.ProcessId }) -
 # the file; under this launcher the file wins, because a stale value in the session that
 # ran `up` (a token, an OAuth client) is not something the harness was configured with.
 function Get-EnvKeys {
-  $file = Join-Path $HomeDir 'env\harness.env'
-  if (-not (Test-Path -LiteralPath $file)) { return }
-  foreach ($line in [System.IO.File]::ReadAllLines($file)) {
-    if ($line -match '^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=') { $Matches[1] }
-  }
+  $keys = @(& $Py (Join-Path $HomeDir 'world\env.py') --keys (Join-Path $HomeDir 'env\harness.env'))
+  if ($LASTEXITCODE -ne 0) { throw 'cannot read harness env keys; not starting' }
+  $keys | Where-Object { $_ }
 }
 
 # The pid of the live console writer (bin/ops-log.py holds a lock while it runs), or ''.

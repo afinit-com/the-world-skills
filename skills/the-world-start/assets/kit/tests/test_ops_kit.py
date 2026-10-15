@@ -257,7 +257,7 @@ class RenderTest(unittest.TestCase):
         keys = ("OBS_SLACK_BOT_TOKEN", "OBS_SLACK_CHANNEL")
         with self.assertRaisesRegex(ops_kit.OpsKitError, "OBS_SLACK_BOT_TOKEN and OBS_SLACK_CHANNEL"):
             ops_kit.check_notify_env(env, keys)
-        env.write_text("OBS_SLACK_BOT_TOKEN=xoxb-real\nOBS_SLACK_CHANNEL=C123  # chan\n",
+        env.write_text("OBS_SLACK_BOT_TOKEN = xoxb-real\n export OBS_SLACK_CHANNEL = C123  # chan\n",
                        encoding="utf-8")
         ops_kit.check_notify_env(env, keys)
 
@@ -299,7 +299,7 @@ class NotifyTest(unittest.TestCase):
 
     def test_harness_env_overrides_stale_shell_for_notifications(self):
         Path(self.empty_env).write_text(
-            'export T_TOKEN="file-token"\nT_CHAN=file-channel # channel\n', encoding="utf-8")
+            'export T_TOKEN = "file-token"\n T_CHAN = file-channel # channel\n', encoding="utf-8")
         requests = []
 
         def opener(req, timeout):
@@ -435,12 +435,13 @@ class LauncherAndWatchdogTest(unittest.TestCase):
         for script in ("ops-lock.py", "ops-log.py"):
             shutil.copy2(KIT / "bin" / script, self.home / "bin" / script)
         (self.home / "world" / "process").mkdir(parents=True)
+        shutil.copy2(KIT / "world" / "env.py", self.home / "world" / "env.py")
         shutil.copy2(KIT / "world" / "process" / "runlog.py", self.home / "world" / "process")
         subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(self.home / ".venv")],
                        check=True)
         (self.home / "harness.py").write_text(STUB_HARNESS, encoding="utf-8")
         (self.home / "env").mkdir()
-        (self.home / "env" / "harness.env").write_text("STUB_FROM_FILE=from-file\n# NOT_A_KEY=x\n",
+        (self.home / "env" / "harness.env").write_text(" export STUB_FROM_FILE = from-file\n# NOT_A_KEY=x\n",
                                                        encoding="utf-8")
         files = ops_kit.render(self.home, "stub", "linux", self.home / ".venv" / "bin" / "python",
                                "/usr/bin:/bin")
@@ -853,13 +854,14 @@ class WindowsLauncherTest(unittest.TestCase):
         for script in ("ops-log.py", "ops-notify.py"):
             shutil.copy2(KIT / "bin" / script, self.home / "bin" / script)
         (self.home / "world" / "process").mkdir(parents=True)
+        shutil.copy2(KIT / "world" / "env.py", self.home / "world" / "env.py")
         shutil.copy2(KIT / "world" / "process" / "runlog.py", self.home / "world" / "process")
         subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(self.home / ".venv")],
                        check=True)
         self.python = self.home / ".venv" / "Scripts" / "python.exe"
         (self.home / "harness.py").write_text(STUB_HARNESS_WINDOWS, encoding="utf-8")
         (self.home / "env").mkdir()
-        (self.home / "env" / "harness.env").write_text("STUB_FROM_FILE=from-file\n# NOT_A_KEY=x\n",
+        (self.home / "env" / "harness.env").write_text(" export STUB_FROM_FILE = from-file\n# NOT_A_KEY=x\n",
                                                        encoding="utf-8")
         system32 = str(Path(os.environ.get("SYSTEMROOT", r"C:\Windows")) / "System32")
         self.run_path = os.pathsep.join([str(self.home / "cli"), system32])
