@@ -159,6 +159,46 @@ def gemini_session(home: Path, cwd: str, prompt: str, days_ago: float) -> None:
     write_jsonl(home / "tmp" / "gproj" / "chats" / "session-g1.jsonl", rows, days_ago)
 
 
+def pb(*fields: tuple[int, bytes | str]) -> bytes:
+    """A protobuf message of length-delimited fields, the only wire type agy's text uses."""
+    out = b""
+    for num, value in fields:
+        raw = value.encode() if isinstance(value, str) else value
+        out += bytes([num << 3 | 2]) + bytes([len(raw)]) + raw  # every value here < 128 bytes
+    return out
+
+
+def agy_cli(root: Path, cwd: str, days_ago: float) -> None:
+    (root / "conversations").mkdir(parents=True)
+    con = sqlite3.connect(root / "conversation_summaries.db")
+    con.execute("create table conversation_summaries (conversation_id text, title text,"
+                " workspace_uris text, nesting_depth integer, last_user_input_time datetime,"
+                " last_modified_time datetime)")
+    for cid, depth, ago in (("a1", 0, days_ago), ("a2", 0, days_ago - 0.5), ("sub", 1, days_ago)):
+        when = (NOW - timedelta(days=ago)).isoformat(sep=" ")
+        con.execute("insert into conversation_summaries values (?,?,?,?,?,?)",
+                    (cid, "release notes", json.dumps([f"file://{cwd}"]), depth, when, when))
+    con.commit()
+    con.close()
+    steps = sqlite3.connect(root / "conversations" / "a1.db")
+    steps.execute("create table steps (idx integer primary key, step_payload blob)")
+    steps.execute("insert into steps values (0, ?)", (pb((1, "a1"), (2, pb((1, "릴리즈 노트 써줘")))),))
+    steps.execute("insert into steps values (1, ?)", (pb(
+        (1, "call_42"), (2, "run_command"), (3, pb((1, '{"CommandLine":"git tag v9.9.9-rc"}')))),))
+    steps.commit()
+    steps.close()
+    t = int((NOW - timedelta(days=days_ago)).timestamp() * 1000)
+    t2 = int((NOW - timedelta(days=days_ago - 0.5)).timestamp() * 1000) - 5000
+    write_jsonl(root / "history.jsonl", [
+        {"display": "/model", "timestamp": t, "workspace": cwd, "type": "slash_command"},
+        {"display": "지난 릴리즈 이후 변경 모아서 릴리즈 노트 초안 써줘", "timestamp": t,
+         "workspace": cwd, "conversationId": "a1"},
+        # an older entry: no conversation id, matched by workspace and time
+        {"display": "이 레포 CI가 왜 윈도우에서만 깨지는지 봐줘 로그 포함", "timestamp": t2,
+         "workspace": cwd},
+    ], days_ago)
+
+
 DEPLOY = "스테이징 배포 상태 확인하고 슬랙에 결과 요약해서 올려줘 deploy check"
 
 
@@ -182,6 +222,7 @@ def build_machine(base: Path) -> dict[str, str]:
     data = base / "data"
     opencode_db(data, [("o1", proj, "빌드 큐에 작업이 몇 개 남았는지 확인해줘 새로 돌리지는 말고", 7)])
     cursor_db(base / "cursor", "k1", proj, "환경변수 API_BASE 어디서 설정해놨는지 찾아줘 .env인가", 8)
+    agy_cli(base / "gemini" / "antigravity-cli", proj, 6)
     gemini_session(base / "gemini", proj, "이 레포 구조 설명해줘 처음 보는 사람 기준으로", 9)
     env = dict(os.environ)
     env.update({"HOME": str(home), "CLAUDE_CONFIG_DIR": str(claude), "CODEX_HOME": str(codex),
@@ -217,14 +258,18 @@ class ChoresTests(unittest.TestCase):
     def test_reads_every_agent_and_only_what_a_person_typed(self) -> None:
         result = chores(self.env)
         self.assertEqual(result["scanned"]["by_agent"],
-                         {"claude": 5, "codex": 3, "opencode": 1, "cursor": 1, "gemini": 1})
+                         {"claude": 5, "codex": 3, "opencode": 1, "cursor": 1, "agy": 2,
+                          "gemini": 1})
         openers = {r["agent"]: r for r in result["sessions"]}
-        self.assertEqual(set(openers), {"claude", "codex", "opencode", "cursor", "gemini"})
+        self.assertEqual(set(openers), {"claude", "codex", "opencode", "cursor", "agy", "gemini"})
         dumped = json.dumps(result, ensure_ascii=False)
         for injected in ("zebrafinch", "environment_context", "expanded skill body",
                          "injected reminder", "session_context"):
             self.assertNotIn(injected, dumped)
         self.assertEqual(openers["cursor"]["tools"], ["read_file_v2"])
+        agy = sorted(r["opener"][:6] for r in result["sessions"] if r["agent"] == "agy")
+        self.assertEqual(agy, ["이 레포 C", "지난 릴리즈"])
+        self.assertNotIn("/model", dumped)
         self.assertEqual(openers["codex"]["project"], "~/code/shop")
 
     def test_sessions_a_program_started_never_reach_the_chore_list(self) -> None:
@@ -262,6 +307,10 @@ class ChoresTests(unittest.TestCase):
         self.assertNotIn("claude", r.stdout)
         r = dig(self.env, "find", "API_BASE")
         self.assertIn("cursor", r.stdout)
+        # agy: the tool call inside a protobuf step blob, with its resume command
+        r = dig(self.env, "find", "v9.9.9-rc")
+        self.assertIn("agy --conversation a1", r.stdout)
+        self.assertNotIn("--conversation sub", dig(self.env, "find", "release notes").stdout)
         r = dig(self.env, "find", "빌드 큐")
         self.assertIn("opencode --session o1", r.stdout)
 
