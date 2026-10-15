@@ -598,13 +598,16 @@ class NotificationRetryTests:
         if WINDOWS:
             self.up.write_text(
                 "Add-Content -LiteralPath (Join-Path $PSScriptRoot 'actions') -Value $args[0]\n"
+                "if ($args[0] -eq 'healthy' -and "
+                "(Test-Path -LiteralPath (Join-Path $PSScriptRoot 'writerdead'))) { exit 1 }\n"
                 "if ((Test-Path -LiteralPath (Join-Path $PSScriptRoot 'healthy')) -and "
-                "($args[0] -in @('running', 'healthy'))) { exit 0 }\nexit 1\n")
+                "($args[0] -in @('running', 'healthy', 'recycle'))) { exit 0 }\nexit 1\n")
         else:
             self.up.write_text(
                 '#!/bin/sh\ndir=$(dirname "$0")\necho "$1" >>"$dir/actions"\n'
+                'if [ "$1" = healthy ] && [ -f "$dir/writerdead" ]; then exit 1; fi\n'
                 'if [ -f "$dir/healthy" ]; then\n'
-                '  case "$1" in running|healthy) exit 0;; esac\nfi\nexit 1\n')
+                '  case "$1" in running|healthy|recycle) exit 0;; esac\nfi\nexit 1\n')
         self.failed_delivery = self.home / "bin" / "notify-fail"
         self.failed_delivery.touch()
 
@@ -691,6 +694,43 @@ class NotificationRetryTests:
         self.assertIn("(attempt 1;", last["text"])
         self.assertEqual((self.state / "incident").read_text().strip(), "111.1")
         self.assertFalse((self.state / "recovery_next_try").exists())
+
+    def test_a_dead_writer_discards_the_previous_pending_recovery(self):
+        self.prepare_notification_retry()
+        self.state.mkdir(parents=True, exist_ok=True)
+        (self.state / "incident").write_text("111.1")
+        (self.state / "failures").write_text("3")
+        (self.home / "scripts/healthy").touch()
+        for _ in range(6):
+            (self.state / "recovery_next_try").write_text("0")
+            self.notification_round()
+        self.assertEqual((self.state / "recovery-failures").read_text().strip(), "6")
+        self.assertGreater(int((self.state / "recovery_next_try").read_text()),
+                           int(time.time()) + 900)
+        self.failed_delivery.unlink()
+        writerdead = self.home / "scripts/writerdead"
+        writerdead.touch()
+        self.notification_round()
+        actions = (self.home / "scripts/actions").read_text().splitlines()
+        self.assertEqual(actions[-3:], ["running", "healthy", "recycle"])
+        self.assertEqual((self.state / "failures").read_text().strip(), "1")
+        for name in ("recovery-pending", "recovery-failures", "recovery_next_try"):
+            self.assertFalse((self.state / name).exists(), name)
+        # The harness is healthy next round: its new recovery closes the same thread
+        # immediately, without inheriting the previous line's delivery deadline.
+        writerdead.unlink()
+        count = len(self.notification_attempts())
+        self.notification_round()
+        attempts = self.notification_attempts()
+        self.assertEqual(len(attempts), count + 1)
+        self.assertEqual(attempts[-1]["thread"], "111.1")
+        self.assertIn("recovered", attempts[-1]["text"])
+        self.assertIn("after 1 restart(s)", attempts[-1]["text"])
+        for name in ("incident", "failures", "next_try", "recovery-pending",
+                     "recovery-failures", "recovery_next_try"):
+            self.assertFalse((self.state / name).exists(), name)
+        self.notification_round()
+        self.assertEqual(len(self.notification_attempts()), count + 1)
 
     def test_slack_that_keeps_failing_never_keeps_the_restart_count(self):
         self.prepare_notification_retry()

@@ -205,6 +205,8 @@ function Invoke-Round {
     & $UpCall healthy
     if (Test-Stopped 'healthy') { return }
     if ($LASTEXITCODE -ne 0 -and -not (Test-Path -LiteralPath $down)) {
+      # A new writer failure supersedes the recovery line still waiting for Slack.
+      Remove-Item -LiteralPath (@($pending) + $recoveryRetry) -Force -ErrorAction SilentlyContinue
       if (Test-Waiting 'next_try') { return }
       Set-Retry
       & $UpCall recycle

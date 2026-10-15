@@ -183,6 +183,8 @@ if [ "$running_rc" = 0 ]; then
   healthy_rc=$?
   check_unknown "$healthy_rc" healthy
   if [ "$healthy_rc" != 0 ] && [ ! -f "$STATE/down" ]; then
+    # A new writer failure supersedes the recovery line still waiting for Slack.
+    rm -f "$STATE/recovery-pending" "$STATE/recovery-failures" "$STATE/recovery_next_try"
     [ "$now" -lt "$next_try" ] && exit 0
     set_retry
     up_step recycle

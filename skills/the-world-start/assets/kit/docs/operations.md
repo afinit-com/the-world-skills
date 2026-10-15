@@ -95,6 +95,8 @@ Each of these was a bug in a hand-built launcher first.
   schedule (`recovery-failures`, `recovery_next_try`), so it never restarts a healthy
   harness or delays restarting one that died again. A harness that dies before the line
   is delivered goes on in the same incident, and the next recovery replaces the line.
+  A console writer that dies also discards the pending line and its delivery backoff,
+  so the next healthy round can post the new recovery immediately in the same thread.
   Delivered, it closes the incident. If Slack says the thread is gone (its
   message was deleted), the line is posted as a new message, which becomes the thread.
   Any other failure, a timeout included, is retried in the same thread, so delivery is
