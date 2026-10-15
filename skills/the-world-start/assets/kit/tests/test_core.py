@@ -592,6 +592,18 @@ class PersonaChatIconTests(unittest.TestCase):
                          Persona("a", "A", portrait="https://x.test/p.png", icon_url=None).chat_icon)
         self.assertEqual("", Persona("a", "A", icon_url=None).icon_url)
 
+    def test_a_url_with_surrounding_space_or_a_capital_scheme_is_still_a_url(self) -> None:
+        # Pasted from a settings file or a browser bar: " HTTPS://…\n" is the same URL.
+        from world.types import Persona
+
+        self.assertEqual("HTTPS://x.test/i.png",
+                         Persona("a", "A", icon_url=" HTTPS://x.test/i.png\n").chat_icon)
+        self.assertEqual("Https://x.test/p.png",
+                         Persona("a", "A", portrait=" Https://x.test/p.png").chat_icon)
+        persona = Persona("a", "A")
+        persona.icon_url = "https://x.test/late.png \n"
+        self.assertEqual("https://x.test/late.png", persona.chat_icon)
+
     def test_an_icon_url_that_is_not_a_url_is_refused_whatever_the_portrait(self) -> None:
         from world.types import Persona
 

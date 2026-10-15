@@ -254,6 +254,13 @@ def voice_clause(persona: "Persona | None") -> str:
     return f"Your speaking style: {persona.voice.strip()}\n{VOICE_GUARD}"
 
 
+def is_http_url(value: str) -> bool:
+    """Whether a picture field holds a web URL rather than a file in the harness. Spaces
+    around it and the scheme's case do not count: " HTTPS://…" pasted from a settings
+    file is still a URL, and read as a path it is a file that does not exist."""
+    return value.strip().lower().startswith(("https://", "http://"))
+
+
 @dataclass
 class Persona:
     """A Slack posting identity — one themed bot from the harness's WORLD.md.
@@ -315,13 +322,13 @@ class Persona:
         return os.environ.get(self.bot_token_env) if self.bot_token_env else None
 
     def __post_init__(self) -> None:
-        self.icon_url = self.icon_url or ""
+        self.icon_url = (self.icon_url or "").strip()
         self._check_icon_url()
 
     def _check_icon_url(self) -> None:
         # A new field, so no harness relies on a non-URL here: refuse it rather than
         # post under some other picture without a word.
-        if self.icon_url and not self.icon_url.startswith(("https://", "http://")):
+        if self.icon_url.strip() and not is_http_url(self.icon_url):
             raise ValueError(
                 f"persona {self.key!r}: icon_url must be a public http(s) image URL, "
                 f"got {self.icon_url!r}; a local image file for the world map goes in portrait")
@@ -332,9 +339,9 @@ class Persona:
         icon_url when set; a harness written before icon_url existed put that URL in
         portrait, so an http(s) portrait still counts, but only when icon_url is empty."""
         self._check_icon_url()  # also catches an icon_url assigned after construction
-        if self.icon_url:
-            return self.icon_url
-        return self.portrait if self.portrait.startswith(("https://", "http://")) else ""
+        if self.icon_url.strip():
+            return self.icon_url.strip()
+        return self.portrait.strip() if is_http_url(self.portrait) else ""
 
 
 @dataclass(frozen=True)
