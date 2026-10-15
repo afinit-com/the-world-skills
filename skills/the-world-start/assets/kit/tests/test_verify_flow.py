@@ -343,6 +343,32 @@ class VerifyPlanTests(unittest.TestCase):
         self.harness.channel = SlackGateway()
         self.assertIn("`SLACK_CHANNEL` is not set", verify_plan(self.harness))
 
+    def test_a_non_slack_channel_gets_no_slack_scope_or_app_lines(self) -> None:
+        # Review of PR #6: a Discord or home-grown gateway was told to check
+        # chat:write.customize and a Slack app token for each sub-persona.
+        class DiscordGateway:  # matched by name, like the Slack one
+            pass
+
+        class HomeGrownGateway:
+            pass
+
+        self.reviewer.bot_token_env = "REVIEWER_BOT_TOKEN"
+        for gateway in (DiscordGateway(), HomeGrownGateway()):
+            self.harness.channel = gateway
+            plan = verify_plan(self.harness)
+            self.assertIn("Reviewer (`reviewer`) posts under its own name, no picture of its "
+                          "own (no `icon_url` set) and voice", plan)
+            for slack_only in ("chat:write.customize", "REVIEWER_BOT_TOKEN", "main app"):
+                self.assertNotIn(slack_only, plan)
+
+    def test_a_co_approver_is_named_beside_the_approver(self) -> None:
+        self.assertNotIn("co-approver", verify_plan(self.harness))
+        self.harness.slack.co_approver_env = "CO_APPROVER_SLACK_ID"
+        with mock.patch.dict(os.environ, {"CO_APPROVER_SLACK_ID": "U7"}):
+            plan = verify_plan(self.harness)
+        self.assertIn("co-approver", plan)
+        self.assertIn("`U7` (`CO_APPROVER_SLACK_ID`)", plan)
+
     def test_a_channel_less_harness_says_the_thread_step_does_not_apply(self) -> None:
         with mock.patch("world.verify_plan.CHANNEL", "none"):
             plan = verify_plan(self.harness)
