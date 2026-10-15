@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import re
 import secrets
 import sys
 from pathlib import Path
@@ -19,16 +20,38 @@ from world.slack.listener import MENTION_RE
 
 
 def init_secret(key: str) -> None:
-    """Keep an existing value and file mode; never print the credential."""
+    """Keep an existing value and file mode; never print the credential.
+
+    The parser keeps a key's first value, so an empty first declaration is filled in
+    place: appending another line would leave the empty one in charge.
+    """
     path = env_path()
-    if parse_env_file(path).get(key) or os.environ.get(key):
+    values = parse_env_file(path)
+    if values.get(key) or os.environ.get(key):
         print('as-human secret already configured')
         return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    # Append a final assignment: an earlier empty declaration must not win.
-    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
-    with os.fdopen(fd, 'a', encoding='utf-8') as stream:
-        stream.write(f'\n{key}={secrets.token_urlsafe(32)}\n')
+    secret = secrets.token_urlsafe(32)
+    if key in values:
+        with open(path, encoding='utf-8', newline='') as stream:
+            lines = stream.read().splitlines(keepends=True)
+        declaration = re.compile(rf'^(\s*(?:export\s+)?{key}\s*=)(.*?)(\r?\n)?$')
+        for index, line in enumerate(lines):
+            match = declaration.match(line)
+            if match:
+                # An empty value is only blanks or empty quotes: nothing else to keep.
+                lines[index] = match.group(1) + secret + (match.group(3) or '')
+                break
+        # Rewriting the open file keeps its mode and owner.
+        with open(path, 'r+', encoding='utf-8', newline='') as stream:
+            stream.write(''.join(lines))
+            stream.truncate()
+    else:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(path, os.O_RDWR | os.O_APPEND | os.O_CREAT, 0o600)
+        with os.fdopen(fd, 'a+', encoding='utf-8') as stream:
+            stream.seek(0)
+            text = stream.read()
+            stream.write(('' if not text or text.endswith('\n') else '\n') + f'{key}={secret}\n')
     print('as-human secret initialized; restart the harness to load it')
 
 

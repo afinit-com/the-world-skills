@@ -222,6 +222,44 @@ class SayAsHumanTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(secret)
             self.assertNotIn(secret, output.getvalue())
 
+    def init_file(self, module, text, key='SLACK_AS_HUMAN_SECRET', mode=0o640):
+        """Run init twice on a file holding `text`; return (file after the first run, its secret)."""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'harness.env'
+            path.write_bytes(text.encode())
+            path.chmod(mode)
+            output = io.StringIO()
+            with patch.object(module, 'env_path', return_value=path), \
+                    patch.dict(os.environ, {}, clear=True), contextlib.redirect_stdout(output):
+                module.init_secret(key)
+                first = path.read_bytes().decode()
+                module.init_secret(key)
+            self.assertEqual(first, path.read_bytes().decode())
+            self.assertEqual(mode, path.stat().st_mode & 0o777)
+            secret = module.parse_env_file(path)[key]
+            self.assertTrue(secret)
+            self.assertNotIn(secret, output.getvalue())
+            return first, secret
+
+    async def test_init_fills_first_empty_declaration_in_place(self):
+        module = self.module()
+        first, secret = self.init_file(
+            module, '# top\nexport SLACK_AS_HUMAN_SECRET=""\r\nKEEP=yes\n'
+                    'SLACK_AS_HUMAN_SECRET=\nLAST=1')
+        self.assertEqual(first, f'# top\nexport SLACK_AS_HUMAN_SECRET={secret}\r\n'
+                                'KEEP=yes\nSLACK_AS_HUMAN_SECRET=\nLAST=1')
+
+    async def test_init_appends_missing_key_after_last_line(self):
+        module = self.module()
+        first, secret = self.init_file(module, 'KEEP=yes', key='OBS_SLACK_AS_HUMAN_SECRET')
+        self.assertEqual(first, f'KEEP=yes\nOBS_SLACK_AS_HUMAN_SECRET={secret}\n')
+
+    async def test_init_keeps_nonempty_first_value_over_later_empty_one(self):
+        module = self.module()
+        text = 'SLACK_AS_HUMAN_SECRET=keep-me\nSLACK_AS_HUMAN_SECRET=\n'
+        first, secret = self.init_file(module, text)
+        self.assertEqual((text, 'keep-me'), (first, secret))
+
     async def test_send_uses_bot_token_and_thread_without_printing_secret(self):
         module = self.module()
         web = SimpleNamespace(auth_test=AsyncMock(return_value={'user_id': 'UBOT'}),
