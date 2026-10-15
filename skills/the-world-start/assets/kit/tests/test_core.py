@@ -432,6 +432,11 @@ class AnnounceCardBodyTests(unittest.IsolatedAsyncioTestCase):
         body = await self._card("## 요약\n**완료** 4건\n`**그대로**`")
         self.assertEqual(["> *요약*", "> *완료* 4건", "> `**그대로**`"], body.splitlines()[2:])
 
+    async def test_card_links_keep_query_parameters(self) -> None:
+        body = await self._card("[알림](https://example.com/a?x=1&notify=true&amp;region=kr)")
+        self.assertEqual("> <https://example.com/a?x=1&amp;notify=true&amp;region=kr|알림>",
+                         body.splitlines()[-1])
+
     async def test_broadcast_mentions_in_the_card_do_not_notify_the_channel(self) -> None:
         # A poll run that summarised outside text (a PR body) could carry these through,
         # and Slack notifies the whole channel for them even inside a bot's quote.
