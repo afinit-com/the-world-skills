@@ -281,6 +281,16 @@ class AnnounceTests(GatewayCase):
         self.assertLessEqual(len(post["text"]), 2000)
         self.assertIn("-# ", post["text"])
 
+    async def test_a_token_in_the_evidence_never_reaches_discord(self) -> None:
+        token = "ghp_" + "a" * 36
+        for result_text in ("", "3 changes"):
+            record = tasks.create(self.home, type="watch", title="nightly diff", agent="watch")
+            tasks.append_event(self.home, record.id, "verify", verdict="done",
+                               evidence=[f"git push https://{token}@github.com"])
+            await self.gw.announce_task(record, RunResult(status="ok", result_text=result_text),
+                                        self.harness.main_persona)
+            self.assertNotIn(token, self.transport.sent[-1]["text"])
+
     async def test_a_long_result_is_marked_as_cut_on_discord_too(self) -> None:
         record = tasks.create(self.home, type="watch", title="nightly diff", agent="watch")
         run = RunResult(status="ok", result_text="```diff\n" + "+ line\n" * 100 + "```")

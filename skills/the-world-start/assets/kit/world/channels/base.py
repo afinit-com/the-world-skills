@@ -90,7 +90,9 @@ def task_card_lines(home: Path, record: Any, result: Any, *,
         (e for e in reversed(tasks.read_events(home, record.id)) if e.get("kind") == "verify"),
         None,
     )
-    evidence = [str(item) for item in (verdict or {}).get("evidence") or []][:4]
+    # Redacted like the excerpt, and before either cut below: a check that quotes a failed
+    # command can carry its token, and a token cut short may no longer match redact().
+    evidence = [redact(str(item)) for item in (verdict or {}).get("evidence") or []][:4]
     text = (result.result_text or "").strip() if result is not None else ""
     if not text:
         quoted = [f"> {line}" for item in evidence for line in item.splitlines()]

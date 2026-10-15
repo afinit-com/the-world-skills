@@ -465,6 +465,19 @@ class AnnounceCardBodyTests(unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(len(body), 3000)
         self.assertTrue(body.endswith("…"), body[-20:])
 
+    async def test_a_token_in_the_evidence_is_redacted_on_either_line(self) -> None:
+        # The result went through redact() and the evidence did not: a check that quoted
+        # a failing command posted its token, as the body and on the status line.
+        token = "xoxb-" + "1" * 40
+        for result_text in ("", "완료"):
+            body = await self._card(result_text, evidence=f"curl -H {token}")
+            self.assertNotIn(token, body)
+            self.assertIn("[redacted]", body)
+
+    async def test_a_token_cut_by_the_status_line_is_still_redacted(self) -> None:
+        # Redacted before the cut: a token cut short may no longer match redact().
+        body = await self._card("완료", evidence="e" * 180 + " ghp_" + "a" * 36)
+        self.assertNotIn("ghp_aaaa", body)
 
 class TeammateMentionTests(unittest.IsolatedAsyncioTestCase):
     async def test_main_hands_off_by_name_and_only_to_the_roster(self) -> None:
