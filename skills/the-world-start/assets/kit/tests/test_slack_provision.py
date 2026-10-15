@@ -34,6 +34,22 @@ FAKE_SLACK = textwrap.dedent("""\
         sys.exit(0)
     if sys.argv[1:2] != ["deploy"]:
         sys.exit(64)
+    old_cli = bool(os.environ.get("FAKE_SLACK_OLD_CLI"))  # before --manifest-source existed
+    if "--help" in sys.argv:
+        print("FLAGS")
+        print("      --hide-triggers")
+        if not old_cli:
+            print("      --manifest-source string   resolve manifest differences")
+        sys.exit(0)
+    if old_cli and "--manifest-source" in sys.argv:
+        print("unknown flag: --manifest-source", file=sys.stderr)
+        sys.exit(1)
+    # Slack adds settings of its own to a live app, so a redeploy finds the remote
+    # manifest drifted, and with no terminal the CLI cannot ask which one wins.
+    if (os.environ.get("FAKE_SLACK_REMOTE_DRIFT") and Path(".slack/apps.json").exists()
+            and "--manifest-source" not in sys.argv):
+        print("The app manifest was not updated (app_manifest_update_error)", file=sys.stderr)
+        sys.exit(1)
     if os.environ.get("FAKE_SLACK_PENDING"):
         print("Your request to install the app is pending")
         sys.exit(0)
@@ -98,7 +114,7 @@ class SlackProvisionTests(unittest.TestCase):
         if not self.log.exists():
             return []
         calls = [json.loads(line) for line in self.log.read_text().splitlines()]
-        return [c for c in calls if c["argv"][:2] != ["auth", "list"]]
+        return [c for c in calls if c["argv"][:2] != ["auth", "list"] and "--help" not in c["argv"]]
 
     def env_values(self) -> dict[str, str]:
         out = {}
@@ -209,6 +225,24 @@ class SlackProvisionTests(unittest.TestCase):
         # the app recorded on the first run is reused, not created again
         apps = json.loads((self.spec.parent / "watcher" / ".slack" / "apps.json").read_text())
         self.assertEqual(apps["apps"]["T1"]["app_id"], "AWATCHER")
+
+    def test_a_redeploy_takes_the_project_manifest_over_drifted_app_settings(self) -> None:
+        self.assertEqual(self.run_script().returncode, 0)
+        # A first deploy has no remote app to differ from: no flag.
+        self.assertTrue(all("--manifest-source" not in c["argv"] for c in self.calls()))
+
+        forced = self.run_script("--force", FAKE_SLACK_REMOTE_DRIFT="1")
+        self.assertEqual(forced.returncode, 0, forced.stdout + forced.stderr)
+        for call in self.calls()[2:]:
+            argv = call["argv"]
+            self.assertEqual(argv[argv.index("--manifest-source") + 1], "local")
+
+    def test_an_older_cli_without_the_flag_still_redeploys(self) -> None:
+        self.assertEqual(self.run_script().returncode, 0)
+        forced = self.run_script("--force", "--only", "watcher", FAKE_SLACK_OLD_CLI="1")
+        self.assertEqual(forced.returncode, 0, forced.stdout + forced.stderr)
+        self.assertNotIn("--manifest-source", self.calls()[-1]["argv"])
+        self.assertIn("slack upgrade", forced.stderr)
 
     def test_pending_admin_approval_is_reported_not_faked(self) -> None:
         before = self.env_file.read_text()
