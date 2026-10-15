@@ -15,3 +15,14 @@
 - Outward side effects require the existing one-shot approval gate.
 - A successful process is not completion when an agent promises a report; verify the
   expected file exists.
+- Scheduled workers finish with a summary a person can read, rather than "done" or
+  "saved report.md". `Agent(announce="result")` shows that final message in the card;
+  `announce="evidence"` shows the completion check, and `announce="file"` shows the
+  report's opening before the first `## ` (the next one if the report starts with it).
+  Put the summary first in the report for `file`, and keep a readable final message for
+  its fallback. Other values are rejected when the Agent is constructed.
+- `file` uses the first current-run artifact inside that task's `work/`, in the order
+  completion supplies (lexical for `writes_report=True`), never a scan of old reports.
+  It reads at most 64 KiB of regular UTF-8 text; missing, unreadable, empty, or binary
+  files fall back to `result`. Paths and symlinks outside that task's `work/` are excluded.
+  All modes keep the channel's normal card limits and credential/mention handling.

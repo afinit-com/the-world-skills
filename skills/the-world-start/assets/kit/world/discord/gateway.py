@@ -313,7 +313,9 @@ class DiscordGateway:
         )
 
     async def announce_task(self, record, result, persona: "Persona") -> str:
-        lines = [f"**{record.title}**", *task_card_lines(self.harness.home, record, result)]
+        agent = self.harness.agent_by_name(record.agent)
+        lines = [f"**{record.title}**", *task_card_lines(
+            self.harness.home, record, result, announce=agent.announce if agent else "result")]
         body = "\n".join(lines) + self._footer(result)
 
         threads = self.state["threads"]

@@ -502,8 +502,13 @@ class Agent:
                                     # explicit, defensible opt-in.
     buttons: tuple[Button, ...] = ()  # under this agent's result announcement. Empty →
                                     # no buttons at all; the kit adds none of its own.
+    announce: str = "result"        # card body: final message, completion evidence, or
+                                    # the first artifact under this task's work/.
 
     def __post_init__(self) -> None:
+        if self.announce not in ("result", "evidence", "file"):
+            raise ValueError(f"{self.name}: announce must be 'result', 'evidence', or 'file'; "
+                             f"got {self.announce!r}")
         self.writes_report = self.writes_report or self.writes_finding
         self.buttons = tuple(self.buttons)
         if len(self.buttons) > MAX_BUTTONS:

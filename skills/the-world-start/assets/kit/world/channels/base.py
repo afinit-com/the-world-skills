@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import codecs
+import os
+import stat
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
@@ -16,6 +19,7 @@ CARD_EVIDENCE_CHARS = 200
 # chunking in post() cannot shorten a block, and Discord splits a message at 2000; a
 # 120-char headline plus this plus a run footer stays inside both.
 CARD_BODY_CHARS = 1600
+FILE_PREVIEW_BYTES = 64 * 1024
 
 
 # (persona key, icon_url) pairs already warned about: a broken icon is a standing
@@ -101,8 +105,53 @@ def _quote(text: str, quote_code: bool) -> list[str]:
     return lines
 
 
+def _file_preview(home: Path, record: Any, result: Any) -> str:
+    """First current-run artifact inside this task's work/, never a directory scan.
+
+    Completion supplies artifacts in sorted order. Skip legacy logs/findings and other
+    tasks, then use one primary path; an unusable primary falls back to the final message.
+    Read a bounded UTF-8 prefix, refusing binary/control bytes and non-regular files.
+    """
+    work = tasks.task_work_dir(home, record.id)
+    if work is None or result is None:
+        return ""
+    work = home.resolve() / work.relative_to(home)
+    for name in result.artifacts:
+        try:
+            path = (home / name).resolve()
+            if not path.is_relative_to(work):
+                continue
+            if not path.is_file():
+                return ""
+            # Nonblocking prevents a FIFO from hanging the announcer before fstat.
+            # Windows has neither flag; resolution and the regular-file checks still apply.
+            fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
+                         | getattr(os, "O_NOFOLLOW", 0))
+            with os.fdopen(fd, "rb") as source:
+                if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+                    return ""
+                data = source.read(FILE_PREVIEW_BYTES)
+            # A multibyte character split by the read limit is not a binary file.
+            text = codecs.getincrementaldecoder("utf-8-sig")().decode(
+                data, final=len(data) < FILE_PREVIEW_BYTES)
+            if any(ord(char) < 32 and char not in "\n\r\t" for char in text):
+                return ""
+            lines = text.strip().splitlines()
+            in_code = False
+            for i, line in enumerate(lines):
+                if not in_code and i > 0 and line.startswith("## "):
+                    return "\n".join(lines[:i]).strip()
+                if line.lstrip().startswith("```"):
+                    in_code = not in_code
+            return "\n".join(lines).strip()
+        except (OSError, ValueError, RuntimeError):  # Path.resolve symlink loops on Python 3.11/3.12
+            return ""
+    return ""
+
+
 def task_card_lines(home: Path, record: Any, result: Any, *,
-                    render: Callable[[str], str] = str, quote_code: bool = True) -> list[str]:
+                    render: Callable[[str], str] = str, quote_code: bool = True,
+                    announce: str = "result") -> list[str]:
     """The lines under a task card's headline: a status line, then what the run said.
 
     What the agent wrote leads. The default completion check records the same evidence
@@ -111,8 +160,10 @@ def task_card_lines(home: Path, record: Any, result: Any, *,
     itself one button away. So when the run left a result_text, the evidence shrinks onto
     the status line, still visible; only a run with nothing to say gets it as the body.
 
-    `render` turns that result_text into the channel's own markup before it is quoted:
-    Slack's is not the GitHub markdown a model writes, and Discord's is.
+    `announce` selects the default result, the completion evidence, or the primary
+    artifact's opening (falling back to result). `render` turns result/file text into
+    the channel's own markup before it is quoted: Slack's is not the GitHub markdown a
+    model writes, and Discord's is. Evidence keeps the existing evidence-only path.
     """
     status = f"`{record.id}` · {record.status} · {record.agent}"
     verdict = next(
@@ -123,6 +174,10 @@ def task_card_lines(home: Path, record: Any, result: Any, *,
     # command can carry its token, and a token cut short may no longer match redact().
     evidence = [redact(str(item)) for item in (verdict or {}).get("evidence") or []][:4]
     text = (result.result_text or "").strip() if result is not None else ""
+    if announce == "evidence" and evidence:
+        text = ""
+    elif announce == "file":
+        text = _file_preview(home, record, result) or text
     if not text:
         quoted = _quote("\n".join(evidence), quote_code)
         return _fit([status, *quoted], CARD_BODY_CHARS,

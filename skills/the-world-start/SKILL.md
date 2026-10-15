@@ -292,9 +292,26 @@ next one, so a dry run is not a first real run and the report should say when th
 A scheduled or polled run is announced as a card whose headline is the task title: the
 `title=` given to `Signal` or `ScheduleTrigger`, else the prompt's first line. Give a
 worker whose prompt opens with an instruction to the model a `title=` a person can read.
-The card body is the start of the run's final message, with the completion evidence
-shrunk onto the status line, so a worker whose announcement is the result (a briefing,
-a digest) should end with that summary rather than "done".
+`Agent(announce="result")` is the default: the card body is the start of the run's final
+message, with the completion evidence shrunk onto the status line. A scheduled worker
+should end with a summary a person can read, especially when the announcement is the
+result (a briefing, a digest), rather than "done" or "saved report.md".
+`announce="evidence"` puts the completion evidence in the body instead, falling back to
+the final message when no evidence was recorded.
+`announce="file"` shows the primary report's opening, before the first `## ` heading;
+when the file starts with `## `, it keeps that first section and stops before the next.
+Headings inside fenced code do not end the opening. The same 300-character excerpt,
+markup conversion, token masking, mention handling, and fence closing apply as for
+`result`. An invalid mode fails when the Agent is constructed.
+
+The primary report is the first path in this run's `RunResult.artifacts` that resolves
+inside this task's `work/`. Completion supplies newly produced paths in lexical order
+for `writes_report=True`; old files are not scanned, and legacy `logs/` or `findings/`
+and other tasks' paths are excluded. A symlink outside this task's `work/` is excluded
+too. Only the first 64 KiB of a regular UTF-8 text file are read. If there is no eligible
+path, or the selected file is missing, unreadable, empty, or binary, the card uses
+`result`; it does not try a second report. Put the person-facing summary first in the
+report when choosing `file`, and still finish with a readable summary for that fallback.
 `Harness(provider=...)` takes `claude` or `codex`.
 
 `mutates=True` makes each task run in its own git worktree (the kit cuts it at spawn

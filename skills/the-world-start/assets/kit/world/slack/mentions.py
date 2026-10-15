@@ -319,8 +319,10 @@ class MentionMixin:
             # human pushed a past notice back through the pipeline on purpose.
             head = f"♻️ *운영자 재처리 요청*\n{head}"
 
+        agent = next((a for a in self.harness.agents if a.name == record.agent), None)
         body = _defuse_broadcasts("\n".join(
-            [head, *task_card_lines(self.harness.home, record, result, render=slack_mrkdwn, quote_code=False)]
+            [head, *task_card_lines(self.harness.home, record, result, render=slack_mrkdwn,
+                                   quote_code=False, announce=agent.announce if agent else "result")]
         ))
 
         primary = result.artifacts[0] if (result and result.artifacts) else ""
@@ -328,7 +330,6 @@ class MentionMixin:
         if primary and self._is_knowledge_proposal(primary):
             elements = _report_actions(primary, knowledge_proposal=True)
         else:
-            agent = next((a for a in self.harness.agents if a.name == record.agent), None)
             elements = task_buttons(agent, record.id, primary)
         if elements:
             blocks.append({"type": "actions", "elements": elements})
