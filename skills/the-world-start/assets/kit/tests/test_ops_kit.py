@@ -111,7 +111,8 @@ class RenderTest(unittest.TestCase):
     def test_systemd_quote_keeps_dollar_paths_literal(self):
         home = self.home / 'harness-${NOT_SET}-$HOME'
         service = _render(home, "linux")["scripts/systemd/my-harness-watchdog.service"][0]
-        self.assertIn('harness-$${NOT_SET}-$$HOME/scripts/', service)
+        self.assertIn('harness-$${NOT_SET}-$$HOME', service)
+        self.assertNotIn('-${NOT_SET}', service)
 
     def test_windows_renders_powershell_scripts_and_a_scheduled_task(self):
         files = _render(self.home, "windows", user="WORKGROUP\\someone",
