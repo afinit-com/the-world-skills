@@ -89,7 +89,9 @@ def split_approval_request(reply: str) -> tuple[str, str | None]:
 # or HMAC-signed posts.
 _MD_FENCE = re.compile(r"```(?:.*?```|.*\Z)", re.DOTALL)
 _MD_INLINE = re.compile(r"`[^`\n]+`")
-_MD_LINK = re.compile(r"\[([^\]\n]+)\]\(<?(https?://[^\s<>]+?)>?\)")
+# One level of balanced parentheses stays in the URL (a wiki link), so it is not cut at
+# its first `)`.
+_MD_LINK = re.compile(r"\[([^\]\n]+)\]\(<?(https?://(?:[^\s<>()]|\([^\s<>()]*\))+)>?\)")
 # Slack escapes only these three. An `&` already starting one of them stays as it is.
 _SLACK_AMP = re.compile(r"&(?!(?:amp|lt|gt);)")
 _MD_HEADER = re.compile(r"^[ \t]{0,3}#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$", re.MULTILINE)

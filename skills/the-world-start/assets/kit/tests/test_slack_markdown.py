@@ -41,6 +41,12 @@ class MarkdownLinkTests(unittest.TestCase):
         self.assertEqual('<https://example.com?a=1&amp;b=2|a &amp; b &lt;c&gt;>',
                          slack_mrkdwn('[a &amp; b &lt;c&gt;](https://example.com?a=1&amp;b=2)'))
 
+    def test_balanced_parentheses_stay_inside_the_url(self):
+        self.assertEqual('<https://en.wikipedia.org/wiki/Foo_(bar)|wiki> 참고',
+                         slack_mrkdwn('[wiki](https://en.wikipedia.org/wiki/Foo_(bar)) 참고'))
+        self.assertEqual('(<https://example.com/a|a>)',
+                         slack_mrkdwn('([a](https://example.com/a))'))
+
 
 class RelayReplyMarkdownTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_relay_answer_links_to_the_address_the_model_wrote(self):
