@@ -154,7 +154,7 @@ while it runs, so a second writer exits at once. What happens when it fails:
 
 | Failure | What happens | Who notices |
 |---|---|---|
-| A line cannot be written (disk full, file made read-only) | The writer drops it and keeps reading, so the harness never gets EPIPE. The count goes to `logs/.console.out.dropping`; bounded warnings go to `logs/ops-log.err`. When writing works again, the log gets one line saying how many were lost. | `status` shows `DROPPING`. The watchdog notes it once per episode, with `--notify` in Slack too. It does not restart: that would not free the disk. |
+| A line cannot be written (disk full, file made read-only) | The writer drops it and keeps reading, so the harness never gets EPIPE. The count goes to `logs/.console.out.dropping`; bounded warnings go to `logs/ops-log.err`. When writing works again, the log gets one line saying how many were lost. | `status` shows `DROPPING`. The watchdog notes it once per episode, with `--notify` in Slack too, retrying a post Slack did not take with the same backoff. It does not restart: that would not free the disk. |
 | The writer dies | The harness keeps running until its next line of output, which fails with EPIPE and kills it at a moment nobody chose. | `status` shows `UNHEALTHY` and `healthy` exits 1. The next watchdog round restarts the harness with a fresh writer and says so (`--notify`: in Slack). |
 | The writer does not exit after the harness stops | Something the harness started still holds its output open. | `down`, `restart` and `up` wait `WRITER_WAIT_S` (30s) for it, then fail loudly and name it. Nothing is started beside it. |
 

@@ -705,6 +705,36 @@ class NotificationRetryTests:
             self.assertFalse((self.state / "next_try").exists(), cycle)
             self.assertTrue((self.state / "incident").exists(), cycle)
 
+    def test_failed_dropping_delivery_backs_off_like_the_rest(self):
+        self.prepare_notification_retry()
+        (self.home / "scripts/healthy").touch()
+        dropping = self.home / "logs/.console.out.dropping"
+        dropping.parent.mkdir(parents=True, exist_ok=True)
+        dropping.write_text("disk full")
+
+        def dropping_attempts():
+            return [p for p in self.notification_attempts() if "dropping lines" in p["text"]]
+
+        self.notification_round()
+        self.notification_round()
+        self.assertEqual(len(dropping_attempts()), 1, "backoff was ignored")
+        (self.state / "dropping_next_try").write_text("0")
+        self.notification_round()
+        self.assertEqual(len(dropping_attempts()), 2)
+        self.assertEqual((self.state / "dropping-failures").read_text().strip(), "2")
+        self.assertFalse((self.state / "next_try").exists(), "it delayed the restart schedule")
+        self.failed_delivery.unlink()
+        (self.state / "dropping_next_try").write_text("0")
+        self.notification_round()
+        self.notification_round()
+        self.assertEqual(len(dropping_attempts()), 3)
+        self.assertTrue((self.state / "reported-dropping").exists())
+        dropping.unlink()
+        self.notification_round()
+        for name in ("reported-dropping", "dropping-failures", "dropping_next_try"):
+            self.assertFalse((self.state / name).exists(), name)
+
+
 @unittest.skipUnless(POSIX, "the launcher and watchdog are bash + pgrep (macOS, Linux)")
 class LauncherAndWatchdogTest(NotificationRetryTests, unittest.TestCase):
     """Runs the rendered scripts against a stub harness in a real venv."""

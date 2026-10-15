@@ -174,17 +174,22 @@ function Invoke-Round {
   }
 
   # Lines the console writer could not write (a full disk, a read-only file): restarting
-  # would not help, so say it once each time it starts happening.
+  # would not help, so say it once each time it starts happening, retrying a post Slack
+  # did not take on its own schedule.
   $dropping = Join-Path $Logs '.console.out.dropping'
   $reported = Join-Path $State 'reported-dropping'
+  $droppingRetry = @((Join-Path $State 'dropping-failures'), (Join-Path $State 'dropping_next_try'))
   if (Test-Path -LiteralPath $dropping) {
-    if (-not (Test-Path -LiteralPath $reported)) {
+    if (-not (Test-Path -LiteralPath $reported) -and -not (Test-Waiting 'dropping_next_try')) {
       if (Send-Note "the console writer is dropping lines: $([System.IO.File]::ReadAllText($dropping).Trim())") {
         [System.IO.File]::WriteAllText($reported, '', $Utf8)
+        Remove-Item -LiteralPath $droppingRetry -Force -ErrorAction SilentlyContinue
+      } else {
+        Set-Backoff 'dropping-failures' 'dropping_next_try'
       }
     }
   } else {
-    Remove-Item -LiteralPath $reported -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath (@($reported) + $droppingRetry) -Force -ErrorAction SilentlyContinue
   }
 
   $down = Join-Path $State 'down'

@@ -114,15 +114,19 @@ set_retry() {
 }
 
 # Lines the console writer could not write (a full disk, a read-only file): restarting
-# would not help, so say it once each time it starts happening.
+# would not help, so say it once each time it starts happening, retrying a post Slack
+# did not take on its own schedule.
 if [ -f "$LOGS/.console.out.dropping" ]; then
-  if [ ! -f "$STATE/reported-dropping" ]; then
+  if [ ! -f "$STATE/reported-dropping" ] && ! waiting dropping_next_try; then
     if notify "the console writer is dropping lines: $(cat "$LOGS/.console.out.dropping")"; then
       touch "$STATE/reported-dropping"
+      rm -f "$STATE/dropping-failures" "$STATE/dropping_next_try"
+    else
+      backoff dropping-failures dropping_next_try
     fi
   fi
 else
-  rm -f "$STATE/reported-dropping"
+  rm -f "$STATE/reported-dropping" "$STATE/dropping-failures" "$STATE/dropping_next_try"
 fi
 
 open_incident() { [ -f "$INCIDENT" ] || : >"$INCIDENT"; }
