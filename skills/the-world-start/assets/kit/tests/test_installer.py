@@ -291,6 +291,29 @@ class InstallerProfileTests(unittest.TestCase):
         return subprocess.run(["python3", str(INSTALLER), str(target), *flags],
                               check=True, capture_output=True, text=True).stdout
 
+    def test_installed_ops_kit_renders_for_each_os(self) -> None:
+        for os_name in ("macos", "linux", "windows"):
+            with self.subTest(os=os_name), tempfile.TemporaryDirectory() as tmp:
+                target = Path(tmp) / "harness"
+                self.install(target, "--os", os_name, "--provider", "codex")
+                # Render using only the installed files, without a CLI, venv or service
+                # manager. The pure renderer allows checking every OS on this host.
+                code = """
+import runpy
+from pathlib import Path
+ops = runpy.run_path('bin/ops-kit.py')
+home = Path.cwd()
+files = ops['render'](home, 'installed', OS_NAME, home / '.venv/python', '/bin',
+                      user='tester')
+ops['write'](home, files, force=False)
+assert len(files) == (4 if OS_NAME == 'linux' else 3)
+for rel in files:
+    assert (home / rel).is_file(), rel
+""".replace("OS_NAME", repr(os_name))
+                result = subprocess.run([sys.executable, "-I", "-c", code], cwd=target,
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_windows_codex_slack_profile_installs_only_what_it_needs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "harness"

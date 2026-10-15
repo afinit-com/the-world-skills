@@ -86,6 +86,9 @@ KIT_FILES = [
     # time (docs/operations.md).
     "templates/ops/up.sh.tmpl",
     "templates/ops/watchdog.sh.tmpl",
+    "templates/ops/up.ps1.tmpl",
+    "templates/ops/watchdog.ps1.tmpl",
+    "templates/ops/task.xml.tmpl",
     "templates/ops/launchd.plist.tmpl",
     "templates/ops/systemd.service.tmpl",
     "templates/ops/systemd.timer.tmpl",
