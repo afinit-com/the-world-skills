@@ -56,6 +56,21 @@ class RenderTest(unittest.TestCase):
         self.home = Path(self.tmp.name) / "a & b"  # XML- and shell-hostile on purpose
         self.home.mkdir()
 
+    @unittest.skipUnless(POSIX, "POSIX symlink process-list limitation")
+    def test_arbitrary_symlink_launch_limitation_is_documented(self):
+        import re
+        alias = self.home.parent / "alias home"
+        alias.symlink_to(self.home, target_is_directory=True)
+        # A launcher rendered from the canonical home cannot enumerate arbitrary
+        # aliases later used by an operator. Preserve strict matching (shells must
+        # never become kill targets) and document the required launch spelling.
+        pattern = ops_kit.process_match(self.home)
+        self.assertIsNone(re.search(pattern, f"python {alias}/harness.py"))
+        self.assertIsNotNone(re.search(pattern, f"python {alias.resolve()}/harness.py"))
+        docs = (KIT / "docs/operations.md").read_text(encoding="utf-8")
+        self.assertIn("arbitrary symbolic-link aliases", docs)
+        self.assertIn("canonical absolute path", docs)
+
     def test_launchers_route_writer_diagnostics_to_bounded_log(self):
         for os_name in ("macos", "linux", "windows"):
             files = _render(self.home, os_name)

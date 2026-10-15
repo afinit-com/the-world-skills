@@ -32,6 +32,17 @@ this home's absolute launch. Process-query errors return exit 4 on both platform
 watchdog skips actions it cannot check, backs off retries, and notifies once per failure
 state until it changes or a healthy round clears it.
 
+Use the canonical absolute path to `harness.py` for manual absolute launches. The
+process matcher does not recognize arbitrary symbolic-link aliases to the same home;
+such a launch can be missed and `up` or the watchdog can start a second copy. Stop an
+alias-launched process in its original terminal before using ops. The POSIX matcher
+recognizes macOS's `/private` and `/var` or `/tmp` spellings, but cannot enumerate other
+aliases created after rendering. Resolving each process's script argument would require
+reliably separating its interpreter and first argument; POSIX `pgrep` exposes flattened
+command text, which is ambiguous when paths contain spaces. The current strict matcher
+avoids treating a shell command mentioning `harness.py` as a process to stop. General
+alias recognition is therefore deferred; use the resolved home path on every platform.
+
 ## What it writes
 
 | File | What it does |
