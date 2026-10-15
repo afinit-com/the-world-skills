@@ -193,7 +193,10 @@ process and connection, a real thread, what was left behind, and a report. Run i
 after Slack is first connected, with the first real thread, and say which steps were not
 reached. In a browser, read before writing: send a new message only when the user allowed
 it in this conversation and only a request that leaves nothing outside the chat, and never
-press an approve or deny button. That click is the approver's.
+press an approve or deny button. That click is the approver's. For Slack only, an authorized
+verifier without Slack MCP or a user token can use `bin/say-as-human.py init` and `send`
+(`--thread <ts>` for replies); see `docs/verify.md` for `--prefix`, the secret, and restart.
+These messages exercise conversation only; approval still needs the human's button click.
 
 **Report only what happened.** A dry run is not a Slack connection and not a real agent
 result. Name what is still unverified, including any check blocked on missing credentials.

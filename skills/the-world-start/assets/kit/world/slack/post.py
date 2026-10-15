@@ -11,11 +11,12 @@ from __future__ import annotations
 import contextlib
 from typing import TYPE_CHECKING
 
-from slack_sdk.web.async_client import AsyncWebClient
-
+from .as_human import safe_payload, safe_text
 from ..channels.base import posting_icon
 
 if TYPE_CHECKING:
+    from slack_sdk.web.async_client import AsyncWebClient
+
     from ..harness import Harness
 
 SLACK_CHUNK = 3900  # Slack rejects messages over ~4k
@@ -23,6 +24,11 @@ SLACK_CHUNK = 3900  # Slack rejects messages over ~4k
 # Slack telling us the world is already the way we asked it to be. Not a failure, and
 # `_react` provokes both constantly: the ladder removes 👀 that a retry already removed.
 BENIGN_SLACK_ERRORS = frozenset({"already_reacted", "no_reaction"})
+
+
+async def slack_call(web, method: str, **kwargs):
+    """One outbound boundary for messages, cards, edits and progress indicators."""
+    return await getattr(web, method)(**safe_payload(kwargs))
 
 
 class PostingMixin:
@@ -82,6 +88,7 @@ class PostingMixin:
         web = self._web_for(identity)
         if not web:
             return None
+        text = safe_text(text)
         channel = channel or self.harness.slack.channel
         first_ts = None
         offsets = list(range(0, max(len(text), 1), SLACK_CHUNK))
@@ -96,7 +103,7 @@ class PostingMixin:
                     "blocks", [{"type": "section", "text": {"type": "mrkdwn", "text": body}}]
                 )
                 kwargs["blocks"] = [*kwargs["blocks"], context]
-            resp = await web.chat_postMessage(
+            resp = await slack_call(web, "chat_postMessage",
                 channel=channel, text=body, thread_ts=thread_ts, **kwargs, **self._face(identity),
             )
             first_ts = first_ts or resp["ts"]
@@ -174,7 +181,7 @@ class PostingMixin:
             return
         await self._best_effort(
             "assistant.threads.setStatus",
-            web.assistant_threads_setStatus(
+            slack_call(web, "assistant_threads_setStatus",
                 channel_id=self.harness.slack.channel, thread_ts=thread_ts, status=status,
             ),
         )

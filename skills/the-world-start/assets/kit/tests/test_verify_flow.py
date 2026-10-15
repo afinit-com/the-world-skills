@@ -387,6 +387,16 @@ class VerifyPlanTests(unittest.TestCase):
 
 
 class VerifyDocTests(unittest.TestCase):
+    def test_slack_bot_token_checks_document_scope_and_human_approval(self):
+        for rel in ("docs/verify.md", "templates/verify-wrapper.md.tmpl"):
+            doc = (KIT / rel).read_text(encoding="utf-8")
+            for required in ("Slack only", "bin/say-as-human.py", "SLACK_AS_HUMAN_SECRET",
+                             "--prefix", "init", "send", "--thread"):
+                self.assertIn(required, doc, rel)
+            self.assertIn("approval", doc)
+        skill = (KIT.parents[1] / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("bin/say-as-human.py", skill)
+
     def test_doc_and_legacy_wrapper_carry_the_browser_rules(self) -> None:
         doc = " ".join((KIT / "docs/verify.md").read_text().split())
         for line in ("Never press an approve or deny button",

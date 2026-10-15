@@ -63,6 +63,7 @@ from slack_sdk.socket_mode.response import SocketModeResponse
 from slack_sdk.web.async_client import AsyncWebClient
 
 from .approvals import ApprovalMixin
+from .as_human import normalize_message
 from .mentions import MentionMixin
 from .post import PostingMixin
 from .rules import (  # noqa: F401 — APPROVAL_MARKER re-exported
@@ -339,6 +340,10 @@ class SlackListener(PostingMixin, ApprovalMixin, MentionMixin):
             return  # dedicated-channel guard — neither ours nor a configured relay channel
         if etype not in ("app_mention", "message") or event.get("subtype"):
             return
+        normalized = normalize_message(self, event)
+        if normalized is None:
+            return
+        event, simulated = normalized
         msg_ts = event.get("ts", "")
         if self._already_handled(msg_ts):
             return
@@ -350,7 +355,7 @@ class SlackListener(PostingMixin, ApprovalMixin, MentionMixin):
             # the dedicated channel; see _handle_relay_mention's docstring for why
             # it never replies here. Our own messages there (the relayed approve/deny
             # text) can never re-enter: they're `message`, not `app_mention`.
-            if etype != "app_mention" or event.get("user") == self.bot_user_id:
+            if simulated or etype != "app_mention" or event.get("user") == self.bot_user_id:
                 return
             self._mark_handled(msg_ts)
             await self._handle_relay_mention(
@@ -365,7 +370,7 @@ class SlackListener(PostingMixin, ApprovalMixin, MentionMixin):
         text = (event.get("text") or "").strip()
         author = event.get("user", "")
         author_identity = self.user_to_identity.get(author)
-        is_bot = bool(event.get("bot_id")) or author_identity is not None
+        is_bot = not simulated and (bool(event.get("bot_id")) or author_identity is not None)
 
         # Which bot identities does this message @-mention? (order preserved)
         mentioned = [
@@ -380,7 +385,7 @@ class SlackListener(PostingMixin, ApprovalMixin, MentionMixin):
         # down would discard its answer unread. Approval was unreachable end-to-end
         # until this hook existed. Ordinary prose from the approver
         # returns False and falls through to normal routing.
-        if self.harness.slack.is_approver(author):
+        if not simulated and self.harness.slack.is_approver(author):
             # Mark BEFORE the await: on_approver_message resumes the thread's persona,
             # which takes seconds, and the sibling delivery of this same message lands
             # meanwhile. Marking after would let it be handled twice.
@@ -401,7 +406,9 @@ class SlackListener(PostingMixin, ApprovalMixin, MentionMixin):
             self._unmark_handled(msg_ts)
 
         if not is_bot:
-            await self._dispatch_human(thread_ts, text, event, etype, msg_ts, author, mentioned)
+            # Bot-authored mentions arrive as message events, never app_mention.
+            human_type = "app_mention" if simulated and mentioned else etype
+            await self._dispatch_human(thread_ts, text, event, human_type, msg_ts, author, mentioned)
             return
 
         if author_identity is None:

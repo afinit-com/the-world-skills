@@ -113,6 +113,42 @@ take screenshots; a claim about a thread cites what was on the screen.
 - An approval card says what the proposal in the thread says, and after a person approved,
   the tool ran once.
 
+**Bot-token conversation checks (Slack only).** When Slack MCP and a user token are
+unavailable, an authorized verifier can use the harness's own bot token. Initialize the
+credential once, then restart the harness so the listener loads it:
+
+```bash
+uv run python bin/say-as-human.py init
+uv run python bin/say-as-human.py send 'What can you check without writing anything?'
+uv run python bin/say-as-human.py send --thread 1700000000.000100 'What did you find?'
+```
+
+For a harness using `OBS_SLACK_BOT_TOKEN`, pass `--prefix OBS` before `init` or `send`.
+The matching key is `OBS_SLACK_AS_HUMAN_SECRET`; without a prefix it is
+`SLACK_AS_HUMAN_SECRET`. `init` keeps an existing value and the env file's permissions,
+prints no value, and creates a new env file with mode 600. An empty or missing secret
+turns this feature off. Clear the value in `env/harness.env` and restart to disable it.
+`send` prints the posted message ts and accepts `--channel` to override the configured
+channel; the receiver still accepts messages only in its own home channel.
+
+The CLI prefixes the message with `[as-human:<secret>] `. The listener accepts this only
+from the main bot itself, treats the body as a message from the configured primary
+approver (the person `slack-pair` paired), and removes the prefix before passing input or
+history to the model. The secret is a credential: keep `env/harness.env` out of prompts
+and screenshots. The original Slack message still contains it and is visible to channel
+members and apps that can read history; use only a trusted channel. Harness replies,
+cards and progress messages strip the reserved pattern, so the model cannot generate a
+new simulation. Other bots cannot use it. A person's marker is stripped as text and does
+not change their identity.
+
+This exercises mentions and thread replies, including handoffs. A new thread automatically
+mentions the main bot unless the text already mentions a bot; a thread reply keeps its
+existing owner unless explicitly addressed elsewhere. It cannot simulate approval button
+clicks, and a simulated "approve" message never grants `mention_tools` access. Hand an
+approval card to the human approver and report its click path as unverified until they
+click. Discord is outside this feature's scope. The same authorization and outward-action
+limits below apply to CLI messages.
+
 **Browser rules.** These hold for every browser check, by any tool:
 
 - Read before you write. Send a new message only when the person you are working with
