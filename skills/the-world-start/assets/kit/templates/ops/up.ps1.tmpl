@@ -88,7 +88,7 @@ function Read-Text([string]$Path) {
 
 # Every harness process, or a thrown error: an empty list must mean "none running",
 # never "could not look".
-function Get-HarnessProcesses {
+function Get-PythonProcesses {
   if ($env:WORLD_OPS_TEST_HOOK -eq 'process-query-fails') {
     throw 'cannot list processes (Get-CimInstance Win32_Process): test hook'
   }
@@ -97,11 +97,11 @@ function Get-HarnessProcesses {
   } catch {
     throw "cannot list processes (Get-CimInstance Win32_Process): $((Inner $_.Exception).Message)"
   }
-  # Win32_Process does not expose cwd. Never adopt or stop an unidentified home.
-  $relative = @($all | Where-Object { $_.CommandLine -and $_.CommandLine -match $RelativeMatch })
-  if ($relative.Count -gt 0) {
-    throw "relative harness.py launch found (pid $(Join-Ids $relative)); stop it in its original terminal before using ops"
-  }
+  $all
+}
+
+function Get-HarnessProcesses {
+  $all = @(Get-PythonProcesses)
   $found = @($all | Where-Object { $_.CommandLine -and $_.CommandLine -match $Match })
   $ids = @($found | ForEach-Object { [int]$_.ProcessId })
   $found | Where-Object { $ids -notcontains [int]$_.ParentProcessId }
@@ -147,6 +147,13 @@ function Wait-Writer {
 
 # Start the harness; the caller holds the lock and has checked it is not running.
 function Start-Harness {
+  # Win32_Process cannot expose cwd. This blocks a new start, never a running query.
+  $relative = @(Get-PythonProcesses | Where-Object {
+    $_.CommandLine -and $_.CommandLine -match $RelativeMatch
+  })
+  if ($relative.Count) {
+    throw "relative harness.py launch found (pid $(Join-Ids $relative)); stop it in its original terminal before using ops"
+  }
   [void][System.IO.Directory]::CreateDirectory($State)
   # A second writer would exit at once and leave the new harness without a reader, so an
   # old one still draining is waited for, not raced.

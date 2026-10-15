@@ -504,6 +504,26 @@ class LauncherAndWatchdogTest(unittest.TestCase):
                 return
             time.sleep(0.1)
 
+    def test_unknown_process_state_backs_off_and_reports_only_transitions(self):
+        self.up.write_text("#!/bin/sh\nexit 4\n")
+        for round_number in (1, 2):
+            result = subprocess.run([str(self.watchdog)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 4, result.stdout + result.stderr)
+            self.assertEqual((self.state / "failures").read_text().strip(), str(round_number))
+            next_try = (self.state / "next_try").read_text()
+            subprocess.run([str(self.watchdog)], check=True, capture_output=True)
+            self.assertEqual((self.state / "next_try").read_text(), next_try)
+            (self.state / "next_try").write_text("0")
+        log = (self.home / "logs" / "watchdog.log").read_text()
+        self.assertEqual(log.count("stopped this round"), 1)
+        self.up.write_text("#!/bin/sh\nexit 0\n")
+        subprocess.run([str(self.watchdog)], check=True, capture_output=True)
+        self.assertFalse((self.state / "failures").exists())
+        self.up.write_text("#!/bin/sh\nexit 4\n")
+        subprocess.run([str(self.watchdog)], capture_output=True)
+        log = (self.home / "logs" / "watchdog.log").read_text()
+        self.assertEqual(log.count("stopped this round"), 2)
+
     def test_pgrep_errors_refuse_every_process_decision(self):
         shim = self.home / "shim"
         shim.mkdir()
@@ -938,6 +958,18 @@ class WindowsLauncherTest(unittest.TestCase):
                     break
                 time.sleep(0.05)
             self.assertTrue((self.home / "env-seen.json").exists())
+            self.assertEqual(self.run_up("running").returncode, 1)
+            self.assertEqual(self.run_up("healthy").returncode, 1)
+            for number in (1, 2):
+                result = self.run_ps(self.watchdog)
+                self.assertEqual(result.returncode, 4, result.stdout + result.stderr)
+                self.assertEqual((self.state / "failures").read_text().strip(), str(number))
+                next_try = (self.state / "next_try").read_text()
+                self.assertEqual(self.run_ps(self.watchdog).returncode, 0)
+                self.assertEqual((self.state / "next_try").read_text(), next_try)
+                (self.state / "next_try").write_text("0")
+            log = (self.home / "logs" / "watchdog.log").read_text(encoding="utf-8")
+            self.assertEqual(log.count("stopped this round"), 1)
             for action in ("up", "resume"):
                 result = self.run_up(action)
                 self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)

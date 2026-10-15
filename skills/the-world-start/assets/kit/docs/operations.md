@@ -26,8 +26,11 @@ does not reveal its home in the process list. Ops refuses to start a second copy
 relative launch belongs to this home or its home cannot be identified. Linux uses
 `/proc/<pid>/cwd` and macOS uses `lsof` to ignore confirmed other homes; without access
 to that information it refuses safely. It never stops an unidentified process. Windows
-cannot query cwd through `Win32_Process`, so all ops commands refuse while any relative
-launch exists, including one in another home.
+cannot query cwd through `Win32_Process`, so starting refuses while any relative
+launch exists, including one in another home. `running` and `healthy` still inspect only
+this home's absolute launch. Process-query errors return exit 4 on both platforms; the
+watchdog skips actions it cannot check, backs off retries, and notifies once per failure
+state until it changes or a healthy round clears it.
 
 ## What it writes
 
