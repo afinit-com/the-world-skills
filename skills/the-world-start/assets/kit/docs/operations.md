@@ -102,7 +102,9 @@ Each log line from `Harness.log` starts with an ISO time and its UTC offset
 (`2026-10-14T09:00:00+09:00`). `ops-log.py` stamps the lines that lack one (a traceback,
 a library's own print) and leaves the rest alone, so no line carries two. Every line of
 `logs/watchdog.log` starts the same way, including what `<name>-up` printed during the
-round, and so does the `down` marker.
+round, and so does the `down` marker. Each `logs/harness.jsonl` entry keeps its
+epoch-seconds `ts` for compatibility and also carries `time`, the same moment in ISO 8601
+with the local UTC offset.
 
 Rolling is by date. The first write of a day moves what came before to
 `<stem>.<YYYY-MM-DD><ext>.gz`, so "the log from the 13th" is found by name. Past 10MB
