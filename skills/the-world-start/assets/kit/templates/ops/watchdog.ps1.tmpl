@@ -8,6 +8,10 @@
 # without its console writer is restarted. Everything it does goes to logs\watchdog.log{{NOTIFY_NOTE}}.
 # The console log is not touched here; its writer rolls it (bin/ops-log.py).
 #
+# One outage is one incident: it opens the first round that finds the harness down (or
+# cannot tell) and closes the first round that finds it running again. With Slack on, an
+# incident is one message, and every later line about it is a reply in that thread.
+#
 # Windows PowerShell 5.1 or later. Rendered by bin/ops-kit.py from the kit's
 # templates/ops/. Re-render rather than edit.
 
@@ -19,6 +23,8 @@ $Logs = Join-Path $HomeDir 'logs'
 $State = Join-Path $Logs '.watchdog'
 $Lock = Join-Path $State 'lock'
 $Log = Join-Path $Logs 'watchdog.log'
+# Present while an incident is open; holds the ts of its Slack thread, if it has one yet.
+$Incident = Join-Path $State 'incident'
 $BackoffMinS = {{BACKOFF_MIN_S}}
 $BackoffMaxS = {{BACKOFF_MAX_S}}
 $KeepDays = {{KEEP_DAYS}}  # empty: rolled logs are never deleted
@@ -50,26 +56,60 @@ function Read-Number([string]$Path) {
   try { return [int64]([System.IO.File]::ReadAllText($Path).Trim()) } catch { return 0 }
 }
 
+# Log a line and, with Slack on, post it: into the open incident's thread, or as a new
+# message that becomes the thread. ops-notify prints the thread it landed in (stdout), a
+# new one when the old thread no longer takes replies; its complaints (stderr) are logged.
 function Send-Note([string]$Text) {
   Write-Log $Text
   if (-not $Notify.Count) { return }
-  $out = & $Py (Join-Path $HomeDir 'bin\ops-notify.py') @Notify "{{NAME}} watchdog: $Text" 2>&1 |
-    ForEach-Object { "$_" }
-  if ($LASTEXITCODE -ne 0) {
-    foreach ($line in $out) { [System.IO.File]::AppendAllText($Log, "$line`n", $Utf8) }
-    Write-Log "WARNING: Slack notification failed (see the line above); the event is only in this log"
+  $thread = @()
+  if (Test-Path -LiteralPath $Incident) {
+    $ts = [System.IO.File]::ReadAllText($Incident).Trim()
+    if ($ts) { $thread = @('--thread-ts', $ts) }
   }
+  $out = @(& $Py (Join-Path $HomeDir 'bin\ops-notify.py') @Notify @thread "{{NAME}} watchdog: $Text" 2>&1)
+  $code = $LASTEXITCODE
+  $printed = @()
+  foreach ($line in $out) {
+    if ($line -is [System.Management.Automation.ErrorRecord]) {
+      Write-Log "$line"
+    } else {
+      $printed += "$line"
+    }
+  }
+  if ($code -ne 0) {
+    Write-Log "WARNING: Slack notification failed (see the line above); the event is only in this log"
+    return
+  }
+  $ts = ($printed -join '').Trim()
+  if ($ts -and (Test-Path -LiteralPath $Incident)) { [System.IO.File]::WriteAllText($Incident, $ts, $Utf8) }
 }
 
-# Persist the last failure state: retries still run, but identical failures notify once.
+function Open-Incident {
+  if (-not (Test-Path -LiteralPath $Incident)) { [System.IO.File]::WriteAllText($Incident, '', $Utf8) }
+}
+
+# A failure is posted when the state changes, not again every round it stays the same;
+# the log still gets every round.
 function Send-State([string]$Key, [string]$Text) {
+  Open-Incident
   $path = Join-Path $State 'reported-failure'
   $previous = ''
   if (Test-Path -LiteralPath $path) { $previous = [System.IO.File]::ReadAllText($path) }
   if ($previous -ne $Key) {
     Send-Note $Text
     [System.IO.File]::WriteAllText($path, $Key, $Utf8)
+  } else {
+    Write-Log "$Text (posted already)"
   }
+}
+
+# A restart that worked is posted every time: a harness that dies again before the next
+# round shows up as one reply per restart, not as one reassuring message.
+function Send-Restart([string]$Key, [string]$Text) {
+  Open-Incident
+  Send-Note $Text
+  [System.IO.File]::WriteAllText((Join-Path $State 'reported-failure'), $Key, $Utf8)
 }
 
 function Set-Retry {
@@ -141,15 +181,21 @@ function Invoke-Round {
       & $UpCall recycle
       if (Test-Stopped 'recycle') { return }
       if ($LASTEXITCODE -eq 0) {
-        Send-State 'recycled' "its console writer had died; restarted the harness before its output could kill it"
+        Send-Restart 'recycled' "its console writer had died; restarted the harness before its output could kill it"
       } else {
         Send-State 'recycle-failed' "its console writer had died and restarting the harness failed; see $Log"
       }
       return
     }
     Remove-Item -LiteralPath (Join-Path $State 'reported-failure') -Force -ErrorAction SilentlyContinue
-    if (Test-Path -LiteralPath $failuresFile) {
-      Write-Log "running again after $(Read-Number $failuresFile) restart(s)"
+    if ((Test-Path -LiteralPath $Incident) -or (Test-Path -LiteralPath $failuresFile)) {
+      $again = "running again after $(Read-Number $failuresFile) restart(s)"
+      if (Test-Path -LiteralPath $Incident) {
+        Send-Note "recovered: $again; this incident is closed"
+        Remove-Item -LiteralPath $Incident -Force -ErrorAction SilentlyContinue
+      } else {
+        Write-Log $again
+      }
       Remove-Item -LiteralPath $failuresFile, $nextTryFile -Force -ErrorAction SilentlyContinue
     }
     return
@@ -167,7 +213,7 @@ function Invoke-Round {
   & $UpCall resume
   if (Test-Stopped 'resume') { return }
   if ($LASTEXITCODE -eq 0) {
-    Send-State 'restarted' "found it not running; restarted (attempt $failures)"
+    Send-Restart 'restarted' "found it not running; restarted (attempt $failures)"
   } else {
     Send-State 'start-failed' "found it not running and could not start it (attempt $failures). See $Logs\console.out"
   }

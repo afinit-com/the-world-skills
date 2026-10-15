@@ -71,8 +71,10 @@ pids() {
 # Every key env/harness.env declares. The loader lets an exported shell variable win over
 # the file; under this launcher the file wins, because a stale export in the shell that
 # ran `up` (a token, an OAuth client) is not something the harness was configured with.
+# `-I` keeps world/ off sys.path: run as a script, world/types.py would stand in for the
+# standard `types` module and the import of pathlib would fail.
 env_keys() {
-  "$PY" "$HOME_DIR/world/env.py" --keys "$HOME_DIR/env/harness.env"
+  "$PY" -I "$HOME_DIR/world/env.py" --keys "$HOME_DIR/env/harness.env"
 }
 
 # The pid of the live console writer (bin/ops-log.py holds an flock while it runs), or
@@ -161,7 +163,8 @@ start() {
       if [ -n "$running" ]; then
         if [ -z "$(writer)" ]; then
           echo "{{NAME}}: started (pid $(echo $running)) but its console writer is not" >&2
-          echo "  running, so its output is lost; see $HOME_DIR/logs/ops-log.err" >&2
+          echo "  running, so its output is lost. Why it died: $HOME_DIR/logs/ops-log.crash;" >&2
+          echo "  its earlier warnings: $HOME_DIR/logs/ops-log.err" >&2
           return 1
         fi
         echo "{{NAME}}: started (pid $(echo $running)); console: $OUT"
@@ -235,7 +238,9 @@ cmd_recycle() {
 
 cmd_down() {
   mkdir -p "$STATE"
-  date +%Y-%m-%dT%H:%M:%S%z >"$STATE/down"
+  local t
+  t=$(date +%Y-%m-%dT%H:%M:%S%z)
+  printf '%s:%s\n' "${t%??}" "${t: -2}" >"$STATE/down"  # +09:00, as the logs write it
   local running
   running=$(pids) || return 4
   if [ -z "$running" ] && [ -z "$(writer)" ]; then

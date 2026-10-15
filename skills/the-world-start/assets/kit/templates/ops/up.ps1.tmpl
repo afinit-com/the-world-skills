@@ -64,10 +64,11 @@ try { [Console]::OutputEncoding = $Utf8 } catch { }
 $env:PYTHONIOENCODING = 'utf-8'
 
 # Output goes straight to the console streams, never down the pipeline, so a function's
-# return value is only what it returns. Under the watchdog it goes to its log instead.
+# return value is only what it returns. Under the watchdog it goes to its log instead,
+# stamped like the watchdog's own lines.
 function Say([string]$Text, [switch]$Err) {
   if ($global:WorldOpsLogFile) {
-    [System.IO.File]::AppendAllText($global:WorldOpsLogFile, "$Text`n", $Utf8)
+    [System.IO.File]::AppendAllText($global:WorldOpsLogFile, "$(Stamp) $Text`n", $Utf8)
   } elseif ($Err) {
     [Console]::Error.WriteLine($Text)
   } else {
@@ -112,8 +113,10 @@ function Join-Ids($Processes) { ($Processes | ForEach-Object { $_.ProcessId }) -
 # Every key env\harness.env declares. The loader lets a variable already set win over
 # the file; under this launcher the file wins, because a stale value in the session that
 # ran `up` (a token, an OAuth client) is not something the harness was configured with.
+# `-I` keeps world\ off sys.path: run as a script, world\types.py would stand in for the
+# standard `types` module and the import of pathlib would fail.
 function Get-EnvKeys {
-  $keys = @(& $Py (Join-Path $HomeDir 'world\env.py') --keys (Join-Path $HomeDir 'env\harness.env'))
+  $keys = @(& $Py -I (Join-Path $HomeDir 'world\env.py') --keys (Join-Path $HomeDir 'env\harness.env'))
   if ($LASTEXITCODE -ne 0) { throw 'cannot read harness env keys; not starting' }
   $keys | Where-Object { $_ }
 }
@@ -148,11 +151,15 @@ function Wait-Writer {
 # Start the harness; the caller holds the lock and has checked it is not running.
 function Start-Harness {
   # Win32_Process cannot expose cwd. This blocks a new start, never a running query.
+  # A refused start, not a step it could not check: exit 1 as on macOS and Linux, so the
+  # watchdog reports "could not start it" rather than "could not tell" (exit 4).
   $relative = @(Get-PythonProcesses | Where-Object {
     $_.CommandLine -and $_.CommandLine -match $RelativeMatch
   })
   if ($relative.Count) {
-    throw "relative harness.py launch found (pid $(Join-Ids $relative)); stop it in its original terminal before using ops"
+    Say "{{NAME}}: relative harness.py launch found (pid $(Join-Ids $relative)); not starting." -Err
+    Say "  Stop it in its original terminal before using ops; its home cannot be told on Windows." -Err
+    return $false
   }
   [void][System.IO.Directory]::CreateDirectory($State)
   # A second writer would exit at once and leave the new harness without a reader, so an
@@ -187,7 +194,8 @@ function Start-Harness {
       if (@(Get-HarnessProcesses).Count) {
         if (-not (Get-Writer)) {
           Say "{{NAME}}: started (pid $(Join-Ids $running)) but its console writer is not" -Err
-          Say "  running, so its output is lost; see $HomeDir\logs\ops-log.err" -Err
+          Say "  running, so its output is lost. Why it died: $HomeDir\logs\ops-log.crash;" -Err
+          Say "  its earlier warnings: $HomeDir\logs\ops-log.err" -Err
           return $false
         }
         Say "{{NAME}}: started (pid $(Join-Ids $running)); console: $Out"

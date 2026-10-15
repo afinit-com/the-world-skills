@@ -63,6 +63,9 @@ class RenderTest(unittest.TestCase):
             up = files["scripts/my-harness-up" + suffix][0]
             self.assertIn("--err-file", up)
             self.assertIn("ops-log.err", up)
+            # A writer that died points at its traceback, which is not in ops-log.err.
+            crash = "$HomeDir\\logs\\ops-log.crash" if suffix else "$HOME_DIR/logs/ops-log.crash"
+            self.assertIn("Why it died: " + crash, up)
             watchdog = files["scripts/my-harness-watchdog" + suffix][0]
             self.assertIn("--err-file", watchdog)
             self.assertNotIn("--max-bytes", watchdog)
@@ -116,6 +119,32 @@ class RenderTest(unittest.TestCase):
                             r'python.exe C:\other\harness.py', "uv run python harness.py"):
                 self.assertIsNone(re.search(pattern, command), command)
 
+    def test_process_match_takes_only_an_interpreter_as_the_first_word(self):
+        import re
+        python = self.home / ".venv" / "bin" / "python"
+        harness = str(self.home.resolve() / "harness.py")
+        pattern = ops_kit.process_match(self.home, python)
+        relative = ops_kit.relative_process_match(python=python)
+        for command in (f"/usr/bin/python3 {harness}", f"python {harness} --once",
+                        # the venv in a home with a space in its path
+                        f"{python.parent.resolve()}/python {harness}"):
+            self.assertRegex(command, pattern)
+        for command in (f'/bin/sh -c sleep 20; echo {python} {harness}',
+                        f"zsh -c nohup /usr/bin/python3 {harness}",
+                        f"/opt/my tools/python {harness}"):
+            self.assertIsNone(re.search(pattern, command), command)
+        self.assertRegex(f"{python.parent.resolve()}/python harness.py", relative)
+        self.assertIsNone(re.search(relative, "zsh -c nohup .venv/bin/python harness.py"))
+
+    @unittest.skipUnless(Path("/var").resolve() == Path("/private/var"), "macOS /var link")
+    def test_process_match_sees_the_home_by_its_unresolved_path_too(self):
+        import re
+        with tempfile.TemporaryDirectory(dir="/var/tmp") as tmp:
+            home = Path(tmp)
+            pattern = ops_kit.process_match(home)
+            for spelling in (str(home), str(home.resolve())):
+                self.assertRegex(f"/usr/bin/python3 {spelling}/harness.py", pattern)
+
     def test_systemd_quote_escapes_what_systemd_unescapes(self):
         self.assertEqual(ops_kit.systemd_quote('a\\b "c" 100%'), '"a\\\\b \\"c\\" 100%%"')
 
@@ -168,6 +197,21 @@ class RenderTest(unittest.TestCase):
         arguments = action.find("t:Arguments", TASK_NS).text
         self.assertIn("-ExecutionPolicy Bypass -File", arguments)
         self.assertIn(str(self.home.resolve() / "scripts" / "my-harness-watchdog.ps1"), arguments)
+
+    def test_launchers_read_env_keys_in_isolated_mode(self):
+        # Without -I, world/types.py shadows the standard `types` (InstalledHomeLauncherTest).
+        sh = _render(self.home, "linux")["scripts/my-harness-up"][0]
+        self.assertIn('"$PY" -I "$HOME_DIR/world/env.py" --keys', sh)
+        ps1 = _render(self.home, "windows", user="u")["scripts/my-harness-up.ps1"][0]
+        self.assertIn("& $Py -I (Join-Path $HomeDir 'world\\env.py') --keys", ps1)
+
+    def test_windows_refuses_a_start_beside_a_relative_launch_as_a_start_failure(self):
+        # A throw would end up as exit 4, "could not tell", in up.ps1's last catch.
+        ps1 = _render(self.home, "windows", user="u")["scripts/my-harness-up.ps1"][0]
+        refusal = ps1[ps1.index("if ($relative.Count) {"):]
+        refusal = refusal[:refusal.index("\n  }")]
+        self.assertNotIn("throw", refusal)
+        self.assertIn("return $false", refusal)
 
     def test_windows_scripts_quote_hostile_values_for_powershell(self):
         files = _render(self.home, "windows", user="u", notify=("OBS_SLACK_BOT_TOKEN", "OBS_SLACK_CHANNEL"),
@@ -331,6 +375,40 @@ class NotifyTest(unittest.TestCase):
         self.assertEqual(requests[0].get_header("Authorization"), "Bearer file-token")
         self.assertEqual(json.loads(requests[0].data)["channel"], "file-channel")
 
+    def notify(self, *args, replies):
+        """ops_notify.main with Slack answering `replies` in order; (code, stdout, requests)."""
+        requests = []
+
+        def opener(req, timeout):
+            requests.append(json.loads(req.data))
+            return io.BytesIO(json.dumps(replies[len(requests) - 1]).encode())
+
+        out = io.StringIO()
+        env = {"WORLD_ENV_FILE": self.empty_env, "T_TOKEN": "xoxb-1", "T_CHAN": "C1"}
+        with unittest.mock.patch.dict(os.environ, env), unittest.mock.patch("sys.stdout", out), \
+                unittest.mock.patch("sys.stderr", io.StringIO()):
+            code = ops_notify.main(["--token-env", "T_TOKEN", "--channel-env", "T_CHAN", *args],
+                                   opener=opener)
+        return code, out.getvalue().strip(), requests
+
+    def test_a_new_message_prints_its_ts(self):
+        code, ts, requests = self.notify("down", replies=[{"ok": True, "ts": "111.1"}])
+        self.assertEqual((code, ts), (0, "111.1"))
+        self.assertNotIn("thread_ts", requests[0])
+
+    def test_a_reply_goes_into_the_thread_and_prints_the_thread(self):
+        code, ts, requests = self.notify("--thread-ts", "111.1", "again",
+                                         replies=[{"ok": True, "ts": "222.2"}])
+        self.assertEqual((code, ts), (0, "111.1"))
+        self.assertEqual(requests, [{"channel": "C1", "text": "again", "thread_ts": "111.1"}])
+
+    def test_a_refused_reply_becomes_a_new_message(self):
+        code, ts, requests = self.notify(
+            "--thread-ts", "111.1", "again",
+            replies=[{"ok": False, "error": "thread_not_found"}, {"ok": True, "ts": "333.3"}])
+        self.assertEqual((code, ts), (0, "333.3"))
+        self.assertEqual(requests[1], {"channel": "C1", "text": "again"})
+
     def test_request_carries_the_token_only_in_the_header(self):
         req = ops_notify.build_request("xoxb-secret", "C1", "restarted")
         self.assertEqual(req.get_header("Authorization"), "Bearer xoxb-secret")
@@ -359,6 +437,22 @@ for n in range(1200):
     if os.environ.get("STUB_CHATTY"):
         print(f"tick {n}", flush=True)
     time.sleep(0.1)
+"""
+
+
+FAKE_NOTIFY = """\
+import json, os, sys
+here = os.path.dirname(os.path.abspath(__file__))
+args = sys.argv[1:]
+thread = args[args.index("--thread-ts") + 1] if "--thread-ts" in args else None
+path = os.path.join(here, "posts.jsonl")
+count = len(open(path).read().splitlines()) if os.path.exists(path) else 0
+with open(path, "a") as f:
+    f.write(json.dumps({"thread": thread, "text": args[-1]}) + "\\n")
+if thread and not os.path.exists(os.path.join(here, "thread-gone")):
+    print(thread)
+else:
+    print(f"{count + 1}.0")  # a new message, numbered by post
 """
 
 
@@ -525,15 +619,18 @@ class LauncherAndWatchdogTest(unittest.TestCase):
             subprocess.run([str(self.watchdog)], check=True, capture_output=True)
             self.assertEqual((self.state / "next_try").read_text(), next_try)
             (self.state / "next_try").write_text("0")
+        # Every round is logged; only the first of a run of the same failure is posted.
         log = (self.home / "logs" / "watchdog.log").read_text()
-        self.assertEqual(log.count("stopped this round"), 1)
+        self.assertEqual(log.count("stopped this round"), 2)
+        self.assertEqual(log.count("(posted already)"), 1)
         self.up.write_text("#!/bin/sh\nexit 0\n")
         subprocess.run([str(self.watchdog)], check=True, capture_output=True)
         self.assertFalse((self.state / "failures").exists())
         self.up.write_text("#!/bin/sh\nexit 4\n")
         subprocess.run([str(self.watchdog)], capture_output=True)
         log = (self.home / "logs" / "watchdog.log").read_text()
-        self.assertEqual(log.count("stopped this round"), 2)
+        self.assertEqual(log.count("stopped this round"), 3)
+        self.assertEqual(log.count("(posted already)"), 1)
 
     def test_pgrep_errors_refuse_every_process_decision(self):
         shim = self.home / "shim"
@@ -548,6 +645,48 @@ class LauncherAndWatchdogTest(unittest.TestCase):
                 result = self.run_up(action, env=env)
                 self.assertEqual(result.returncode, 4, result.stdout + result.stderr)
                 self.assertEqual(self.pids(), [])
+
+    def test_a_shell_whose_command_names_the_harness_is_not_the_harness(self):
+        python = self.home / ".venv" / "bin" / "python"
+        shell = subprocess.Popen(["/bin/sh", "-c", f"sleep 20; echo {python} {self.home}/harness.py"])
+        try:
+            time.sleep(0.3)
+            self.assertEqual(self.run_up("running").returncode, 1)
+            started = self.run_up("up")
+            self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
+            self.assertNotIn("already running", started.stdout)
+            self.assertEqual(self.run_up("down").returncode, 0)
+            self.assertIsNone(shell.poll(), "down stopped the shell")
+        finally:
+            shell.kill()
+            shell.wait()
+
+    def test_every_watchdog_log_line_starts_with_the_time_as_the_docs_write_it(self):
+        self.assertEqual(self.run_up("up").returncode, 0)
+        subprocess.run(["kill", "-9", *self.pids()], check=True)
+        self.wait_gone()
+        self.run_watchdog()  # logs what `resume` printed, too
+        self.assertEqual(len(self.pids()), 1)
+        self.assertEqual(self.run_up("down").returncode, 0)
+        stamp = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}"
+        lines = (self.home / "logs" / "watchdog.log").read_text(encoding="utf-8").splitlines()
+        self.assertTrue(any("started (pid" in line for line in lines), lines)
+        for line in lines:
+            self.assertRegex(line, stamp + " ")
+        self.assertRegex((self.state / "down").read_text(), stamp + "$")
+
+    def test_why_the_watchdog_could_not_tell_is_in_its_log(self):
+        shim = self.home / "shim"
+        shim.mkdir()
+        pgrep = shim / "pgrep"
+        pgrep.write_text("#!/bin/sh\nexit 3\n")
+        pgrep.chmod(0o755)
+        env = {**os.environ, "PATH": str(shim) + os.pathsep + os.environ["PATH"]}
+        result = subprocess.run([str(self.watchdog)], capture_output=True, text=True, env=env,
+                                timeout=120)
+        self.assertEqual(result.returncode, 4, result.stdout + result.stderr)
+        log = (self.home / "logs" / "watchdog.log").read_text(encoding="utf-8")
+        self.assertIn("cannot list harness processes (pgrep exit 3)", log)
 
     def test_relative_pgrep_error_refuses_start(self):
         shim = self.home / "shim"
@@ -780,6 +919,83 @@ class LauncherAndWatchdogTest(unittest.TestCase):
         self.assertEqual(len(self.writers()), 1)
         self.assertIn("console writer had died", (self.home / "logs" / "watchdog.log").read_text())
 
+    def posts(self) -> list[dict]:
+        path = self.home / "bin" / "posts.jsonl"
+        if not path.exists():
+            return []
+        return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+    def test_an_incident_is_one_slack_thread_and_every_restart_is_in_it(self):
+        # Stands in for bin/ops-notify.py (its Slack calls are tested in NotifyTest): it
+        # records each post and prints the thread it went into, as the real one does.
+        (self.home / "bin" / "ops-notify.py").write_text(FAKE_NOTIFY, encoding="utf-8")
+        files = ops_kit.render(self.home, "stub", "linux", self.home / ".venv" / "bin" / "python",
+                               "/usr/bin:/bin", notify=("T_TOKEN", "T_CHAN"))
+        ops_kit.write(self.home, files, force=True)
+        incident = self.state / "incident"
+        log = self.home / "logs" / "watchdog.log"
+
+        def crash_and_round():
+            subprocess.run(["kill", "-9", *self.pids()], check=True)
+            self.wait_gone()
+            (self.state / "next_try").unlink(missing_ok=True)
+            self.run_watchdog()
+            self.assertEqual(len(self.pids()), 1)
+
+        self.assertEqual(self.run_up("up").returncode, 0)
+        # A crash loop: each round finds it dead again and restarts it.
+        for _ in range(3):
+            crash_and_round()
+        posts = self.posts()
+        self.assertEqual(len(posts), 3, "every restart is posted, not only the first")
+        self.assertIsNone(posts[0]["thread"])
+        self.assertEqual([p["thread"] for p in posts[1:]], ["1.0", "1.0"])
+        self.assertEqual([("attempt %d" % n) in p["text"] for n, p in enumerate(posts, 1)],
+                         [True] * 3)
+        self.assertEqual(incident.read_text().strip(), "1.0")
+        self.assertEqual(log.read_text(encoding="utf-8").count("restarted (attempt"), 3)
+
+        # The next round finds it running: the thread hears so, and the incident closes.
+        self.run_watchdog()
+        self.assertIn("recovered", self.posts()[-1]["text"])
+        self.assertEqual(self.posts()[-1]["thread"], "1.0")
+        self.assertFalse(incident.exists())
+
+        # The next outage is a new message, and a thread that no longer takes replies is
+        # replaced by the new message ops-notify falls back to.
+        crash_and_round()
+        self.assertIsNone(self.posts()[-1]["thread"])
+        self.assertEqual(incident.read_text().strip(), "5.0")
+        (self.home / "bin" / "thread-gone").touch()
+        crash_and_round()
+        self.assertEqual(self.posts()[-1]["thread"], "5.0")
+        self.assertEqual(incident.read_text().strip(), "6.0")
+
+    def test_a_failure_that_repeats_is_posted_once_and_logged_every_round(self):
+        (self.home / "bin" / "ops-notify.py").write_text(FAKE_NOTIFY, encoding="utf-8")
+        files = ops_kit.render(self.home, "stub", "linux", self.home / ".venv" / "bin" / "python",
+                               "/usr/bin:/bin", notify=("T_TOKEN", "T_CHAN"))
+        ops_kit.write(self.home, files, force=True)
+        (self.home / "harness.py").write_text("raise SystemExit(1)\n", encoding="utf-8")
+        for _ in range(3):
+            (self.state / "next_try").unlink(missing_ok=True)
+            self.run_watchdog()
+        posts = self.posts()
+        self.assertEqual(len(posts), 1)
+        self.assertIn("could not start it (attempt 1", posts[0]["text"])
+        log = (self.home / "logs" / "watchdog.log").read_text(encoding="utf-8")
+        for attempt in (1, 2, 3):
+            self.assertIn(f"could not start it (attempt {attempt};", log)
+
+    def test_a_writer_that_dies_at_start_points_at_its_traceback(self):
+        (self.home / "world" / "process" / "runlog.py").write_text(
+            "raise RuntimeError('writer broke')\n", encoding="utf-8")
+        result = self.run_up("up")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        crash = self.home / "logs" / "ops-log.crash"
+        self.assertIn(str(crash), result.stderr)
+        self.assertIn("writer broke", crash.read_text(encoding="utf-8"))
+
     @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root ignores file modes")
     def test_a_write_failure_drops_lines_but_keeps_the_harness_alive(self):
         self.assertEqual(self.run_up("up", env={"STUB_CHATTY": "1"}).returncode, 0)
@@ -807,6 +1023,54 @@ class LauncherAndWatchdogTest(unittest.TestCase):
             time.sleep(0.1)
         self.assertFalse(dropping.exists())
         self.assertIn("were dropped", console.read_text(encoding="utf-8"))
+
+
+@unittest.skipUnless(POSIX, "the launcher and watchdog are bash + pgrep (macOS, Linux)")
+class InstalledHomeLauncherTest(unittest.TestCase):
+    """`up` in a home laid out by install-kit, with the whole world/ package. The stub
+    homes above copy only world/env.py, so they cannot see world/types.py shadow the
+    standard `types` module when the launcher runs world/env.py as a script."""
+
+    INSTALLER = KIT.parents[1] / "scripts" / "install-kit.py"
+
+    def interpreters(self) -> list[str]:
+        found = [sys.executable]
+        # Xcode's python3 on macOS, the distribution's on Linux: a different stdlib
+        # import order from uv's CPython, and both failed here before.
+        if Path("/usr/bin/python3").exists():
+            found.append("/usr/bin/python3")
+        return found
+
+    def test_up_starts_the_harness_in_an_installed_home(self):
+        for interpreter in self.interpreters():
+            with self.subTest(python=interpreter), tempfile.TemporaryDirectory() as tmp:
+                home = Path(tmp).resolve() / "installed home"
+                subprocess.run([sys.executable, str(self.INSTALLER), str(home),
+                                "--provider", "codex", "--channel", "slack"],
+                               check=True, capture_output=True, text=True)
+                self.assertTrue((home / "world" / "types.py").exists())
+                subprocess.run([interpreter, "-m", "venv", "--without-pip", str(home / ".venv")],
+                               check=True)
+                (home / "harness.py").write_text(STUB_HARNESS, encoding="utf-8")
+                (home / "env").mkdir(exist_ok=True)
+                (home / "env" / "harness.env").write_text("STUB_FROM_FILE=from-file\n",
+                                                          encoding="utf-8")
+                python = home / ".venv" / "bin" / "python"
+                files = ops_kit.render(home, "stub", "linux", python, "/usr/bin:/bin")
+                ops_kit.write(home, files, force=False)
+                up = home / "scripts" / "stub-up"
+                env = {k: v for k, v in os.environ.items() if k != "WORLD_OPS_LOCK_HELD"}
+                env["STUB_FROM_FILE"] = "stale-shell-value"
+                try:
+                    started = subprocess.run([str(up), "up"], capture_output=True, text=True,
+                                             env=env, timeout=120)
+                    self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
+                    seen = json.loads((home / "env-seen.json").read_text(encoding="utf-8"))
+                    self.assertIsNone(seen["file_key"])
+                finally:
+                    subprocess.run([str(up), "down"], capture_output=True, env=env, timeout=120)
+                    subprocess.run(["pkill", "-9", "-f", ops_kit.process_match(home, python)],
+                                   capture_output=True)
 
 
 class LockAndRollOverlapTest(unittest.TestCase):
@@ -995,17 +1259,20 @@ class WindowsLauncherTest(unittest.TestCase):
             self.assertEqual(self.run_up("healthy").returncode, 1)
             for number in (1, 2):
                 result = self.run_ps(self.watchdog)
-                self.assertEqual(result.returncode, 4, result.stdout + result.stderr)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertEqual((self.state / "failures").read_text().strip(), str(number))
                 next_try = (self.state / "next_try").read_text()
                 self.assertEqual(self.run_ps(self.watchdog).returncode, 0)
                 self.assertEqual((self.state / "next_try").read_text(), next_try)
                 (self.state / "next_try").write_text("0")
+            # A refused start, as on macOS and Linux: not "could not tell" (exit 4).
             log = (self.home / "logs" / "watchdog.log").read_text(encoding="utf-8")
-            self.assertEqual(log.count("stopped this round"), 1)
+            self.assertEqual(log.count("could not start it"), 2)
+            self.assertEqual(log.count("(posted already)"), 1)
+            self.assertNotIn("stopped this round", log)
             for action in ("up", "resume"):
                 result = self.run_up(action)
-                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
                 self.assertIn("relative", result.stdout + result.stderr)
                 self.assertEqual(self.pids(), [])
             self.assertIsNone(child.poll())
@@ -1075,6 +1342,44 @@ class WindowsLauncherTest(unittest.TestCase):
         self.assertEqual(self.run_up("up").returncode, 0)
         self.assertFalse((self.state / "down").exists())
         self.assertEqual(self.run_up("down").returncode, 0)
+
+    def test_an_incident_is_one_slack_thread_and_every_restart_is_in_it(self):
+        (self.home / "bin" / "ops-notify.py").write_text(FAKE_NOTIFY, encoding="utf-8")
+        files = ops_kit.render(self.home, "stub", "windows", self.python, self.run_path,
+                               user=self.user, notify=("T_TOKEN", "T_CHAN"))
+        ops_kit.write(self.home, files, force=True)
+        posts_file = self.home / "bin" / "posts.jsonl"
+        incident = self.state / "incident"
+
+        def posts():
+            if not posts_file.exists():
+                return []
+            return [json.loads(line) for line in posts_file.read_text().splitlines()]
+
+        def crash_and_round():
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(self.pids()[0])], check=True,
+                           capture_output=True)
+            self.wait_gone()
+            (self.state / "next_try").unlink(missing_ok=True)
+            round_ = self.run_ps(self.watchdog)
+            self.assertEqual(round_.returncode, 0, round_.stdout + round_.stderr)
+            self.assertEqual(len(self.pids()), 1, self.processes())
+
+        self.assertEqual(self.run_up("up").returncode, 0)
+        for _ in range(3):
+            crash_and_round()
+        self.assertEqual([p["thread"] for p in posts()], [None, "1.0", "1.0"])
+        self.assertEqual(incident.read_text(encoding="utf-8").strip(), "1.0")
+        self.run_ps(self.watchdog)
+        self.assertIn("recovered", posts()[-1]["text"])
+        self.assertEqual(posts()[-1]["thread"], "1.0")
+        self.assertFalse(incident.exists())
+        crash_and_round()
+        self.assertIsNone(posts()[-1]["thread"])
+        (self.home / "bin" / "thread-gone").touch()
+        crash_and_round()
+        self.assertEqual(posts()[-1]["thread"], "5.0")
+        self.assertEqual(incident.read_text(encoding="utf-8").strip(), "6.0")
 
     def test_lifecycle_in_a_home_with_spaces_hangul_quotes_and_brackets(self):
         self.kill_all()

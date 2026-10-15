@@ -9,6 +9,10 @@
 # it does goes to logs/watchdog.log{{NOTIFY_NOTE}}. The console log is not touched here;
 # its writer rolls it (bin/ops-log.py).
 #
+# One outage is one incident: it opens the first round that finds the harness down (or
+# cannot tell) and closes the first round that finds it running again. With Slack on, an
+# incident is one message, and every later line about it is a reply in that thread.
+#
 # Rendered by bin/ops-kit.py from the kit's templates/ops/. Re-render rather than edit.
 set -uo pipefail
 
@@ -19,6 +23,8 @@ SELF={{WATCHDOG}}
 LOGS="$HOME_DIR/logs"
 STATE="$LOGS/.watchdog"
 LOG="$LOGS/watchdog.log"
+# Present while an incident is open; holds the ts of its Slack thread, if it has one yet.
+INCIDENT="$STATE/incident"
 BACKOFF_MIN_S={{BACKOFF_MIN_S}}
 BACKOFF_MAX_S={{BACKOFF_MAX_S}}
 KEEP_DAYS={{KEEP_DAYS}}  # empty: rolled logs are never deleted
@@ -33,21 +39,47 @@ if [ "${WORLD_OPS_LOCK_HELD:-}" != "$HOME_DIR" ]; then
     --wait-s 30 -- "$SELF"
 fi
 
-log() { printf '%s %s\n' "$(date +%Y-%m-%dT%H:%M:%S%z)" "$*" >>"$LOG"; }
+# The time as the console log and the docs write it: 2026-10-15T15:25:00+09:00.
+stamp() { local t; t=$(date +%Y-%m-%dT%H:%M:%S%z); printf '%s:%s' "${t%??}" "${t: -2}"; }
+log() { printf '%s %s\n' "$(stamp)" "$*" >>"$LOG"; }
+# Every line read on stdin, stamped, so what a step printed reads like the rest of the log.
+log_lines() { local line; while IFS= read -r line || [ -n "$line" ]; do log "$line"; done; }
 
+# One step of the up script, its output logged line by line. Through a file rather than
+# a pipe: a background process that kept a pipe open would hold the round until it exits.
+up_step() {
+  local rc=0
+  "$UP" "$1" >"$STATE/step.out" 2>&1 || rc=$?
+  log_lines <"$STATE/step.out"
+  rm -f "$STATE/step.out"
+  return "$rc"
+}
+
+# Log a line and, with Slack on, post it: into the open incident's thread, or as a new
+# message that becomes the thread. ops-notify prints the thread it landed in, a new one
+# when the old thread no longer takes replies.
 notify() {
   log "$*"
   [ -n "$NOTIFY" ] || return 0
+  local thread ts
+  thread=$(cat "$INCIDENT" 2>/dev/null || true)
+  local rc=0
   # shellcheck disable=SC2086  # NOTIFY is the two --*-env flags, word-split on purpose
-  if ! "$PY" "$HOME_DIR/bin/ops-notify.py" $NOTIFY "{{NAME}} watchdog: $*" >>"$LOG" 2>&1; then
+  ts=$("$PY" "$HOME_DIR/bin/ops-notify.py" $NOTIFY ${thread:+--thread-ts "$thread"} \
+    "{{NAME}} watchdog: $*" 2>"$STATE/notify.err") || rc=$?
+  log_lines <"$STATE/notify.err"
+  rm -f "$STATE/notify.err"
+  if [ "$rc" != 0 ]; then
     log "⚠️  Slack notification failed (see the line above); the event is only in this log"
+    return 0
   fi
+  if [ -n "$ts" ] && [ -f "$INCIDENT" ]; then echo "$ts" >"$INCIDENT"; fi
 }
 
 # Only watchdog rounds write this log, one at a time under the lock, so rolling it by
 # rename between rounds loses nothing.
 "$PY" "$HOME_DIR/bin/ops-log.py" --file "$LOG" --roll-only --err-file "$LOGS/ops-log.err" \
-  ${KEEP_DAYS:+--keep-days "$KEEP_DAYS"} >>"$LOG" 2>&1
+  ${KEEP_DAYS:+--keep-days "$KEEP_DAYS"} 2>&1 | log_lines
 
 # Lines the console writer could not write (a full disk, a read-only file): restarting
 # would not help, so say it once each time it starts happening.
@@ -78,13 +110,30 @@ set_retry() {
   retry_scheduled=1
 }
 
+open_incident() { [ -f "$INCIDENT" ] || : >"$INCIDENT"; }
+
+# A failure is posted when the state changes, not again every round it stays the same;
+# the log still gets every round.
 notify_state() {
   local key=$1
   shift
+  open_incident
   if [ "$(cat "$STATE/reported-failure" 2>/dev/null)" != "$key" ]; then
     notify "$*"
     echo "$key" >"$STATE/reported-failure"
+  else
+    log "$* (posted already)"
   fi
+}
+
+# A restart that worked is posted every time: a harness that dies again before the next
+# round shows up as one reply per restart, not as one reassuring message.
+notify_restart() {
+  local key=$1
+  shift
+  open_incident
+  notify "$*"
+  echo "$key" >"$STATE/reported-failure"
 }
 
 check_unknown() {
@@ -98,31 +147,39 @@ check_unknown() {
 now=$(date +%s)
 next_try=$(cat "$STATE/next_try" 2>/dev/null || echo 0)
 
-"$UP" running
+# Their output is why a round could not tell (a pgrep failure), so it goes to the log the
+# notification points at, as everything resume and recycle print does.
+up_step running
 running_rc=$?
 check_unknown "$running_rc" running
 if [ "$running_rc" = 0 ]; then
   # Running without its console writer: the harness's next line of output fails with
   # EPIPE and kills it at a moment nobody chose, so restart it now instead.
-  "$UP" healthy
+  up_step healthy
   healthy_rc=$?
   check_unknown "$healthy_rc" healthy
   if [ "$healthy_rc" != 0 ] && [ ! -f "$STATE/down" ]; then
     [ "$now" -lt "$next_try" ] && exit 0
     set_retry
-    "$UP" recycle >>"$LOG" 2>&1
+    up_step recycle
     recycle_rc=$?
     check_unknown "$recycle_rc" recycle
     if [ "$recycle_rc" = 0 ]; then
-      notify_state recycled "its console writer had died; restarted the harness before its output could kill it"
+      notify_restart recycled "its console writer had died; restarted the harness before its output could kill it"
     else
       notify_state recycle-failed "its console writer had died and restarting the harness failed; see $LOG"
     fi
     exit 0
   fi
   rm -f "$STATE/reported-failure"
-  if [ -f "$STATE/failures" ]; then
-    log "running again after $(cat "$STATE/failures") restart(s)"
+  if [ -f "$INCIDENT" ] || [ -f "$STATE/failures" ]; then
+    again="running again after $(cat "$STATE/failures" 2>/dev/null || echo 0) restart(s)"
+    if [ -f "$INCIDENT" ]; then
+      notify "recovered: $again; this incident is closed"
+      rm -f "$INCIDENT"
+    else
+      log "$again"
+    fi
     rm -f "$STATE/failures" "$STATE/next_try"
   fi
   exit 0
@@ -136,11 +193,11 @@ fi
 set_retry
 
 # `resume`, never `up`: only a person's explicit `up` clears the down marker.
-"$UP" resume >>"$LOG" 2>&1
+up_step resume
 resume_rc=$?
 check_unknown "$resume_rc" resume
 if [ "$resume_rc" = 0 ]; then
-  notify_state restarted "found it not running; restarted (attempt $failures; next retry no sooner than ${delay}s)"
+  notify_restart restarted "found it not running; restarted (attempt $failures; next retry no sooner than ${delay}s)"
 else
   notify_state start-failed "found it not running and could not start it (attempt $failures; retrying in ${delay}s). See $LOGS/console.out"
 fi
