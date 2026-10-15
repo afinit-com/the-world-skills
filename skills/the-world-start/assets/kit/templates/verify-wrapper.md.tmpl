@@ -19,6 +19,15 @@ only a request that leaves nothing outside the chat. Never press an approve or d
 button. Keep speaking in {{universe_name}}'s vocabulary, and keep ids, paths, SHAs, and
 "not confirmed" exact.
 
+For bot-token conversation checks (Slack only), follow `docs/verify.md`:
+`uv run python bin/say-as-human.py init`, then restart the harness and use
+`uv run python bin/say-as-human.py send 'read-only question'`; add `--thread <ts>` for a
+reply. Put `--prefix <PREFIX>` before `init` or `send` when the bot token uses that
+namespace. The credential is `SLACK_AS_HUMAN_SECRET` (or
+`<PREFIX>_SLACK_AS_HUMAN_SECRET`); never show its value to a model. This requires the same
+permission to send messages as a browser check. Simulated messages cannot grant approval
+or click approval buttons; wait for the human approver's click.
+
 This wrapper is yours. If `WORLD.md`'s Vocabulary entry changes, rename this skill's folder
 (the directory holding this `SKILL.md`) to match — it is a one-time scaffold, not read from
 `WORLD.md` at runtime.
