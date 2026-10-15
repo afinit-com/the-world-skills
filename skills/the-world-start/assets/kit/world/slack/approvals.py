@@ -132,9 +132,11 @@ class ApprovalMixin:
                     and pending.get("reply_thread_ts", thread_ts) == (reply_thread_ts or thread_ts)
                     and pending.get("msg_ts")):
                 ts = pending["msg_ts"].replace(".", "")
+                # No preview: an unfurl of the card copies its buttons, and Slack keeps
+                # showing them after the card itself is answered (found live).
                 await self.post(
                     f"대기 중인 승인 요청: <https://slack.com/archives/{slack.channel}/p{ts}|기존 승인 카드>",
-                    thread_ts=thread_ts,
+                    thread_ts=thread_ts, unfurl=False,
                 )
                 return
         ph = self.harness.approval_phrases

@@ -71,6 +71,7 @@ class PostingMixin:
         blocks: list[dict] | None = None,
         channel: str | None = None,
         context: dict | None = None,
+        unfurl: bool = True,
     ) -> str | None:
         """Posts to the dedicated channel (optionally into a thread) AS the given
         bot identity; returns the message ts. Chunks long text. Unknown/tokenless
@@ -84,7 +85,11 @@ class PostingMixin:
         `context` is ONE Block Kit context block attached to the LAST chunk — the small
         grey annotation line (see run_footer.py). Kept separate from `blocks` because it
         is positional-by-meaning (always last, always after any buttons) and because a
-        caller posting plain text should not have to switch to blocks to annotate it."""
+        caller posting plain text should not have to switch to blocks to annotate it.
+
+        `unfurl=False` stops Slack attaching link previews. A preview is a frozen copy:
+        Slack never redraws it, so one of a message with buttons keeps live-looking
+        buttons after the original is answered."""
         web = self._web_for(identity)
         if not web:
             return None
@@ -95,6 +100,8 @@ class PostingMixin:
         for i in offsets:
             body = text[i : i + SLACK_CHUNK] or "(empty)"
             kwargs: dict = {"blocks": blocks} if blocks and i == offsets[0] else {}
+            if not unfurl:
+                kwargs.update(unfurl_links=False, unfurl_media=False)
             # The footer annotates the whole message, so on a reply long enough to chunk
             # it belongs under the END of the reply, not buried above three more posts.
             # Rendered as its own blocks payload so `text` stays the notification body.

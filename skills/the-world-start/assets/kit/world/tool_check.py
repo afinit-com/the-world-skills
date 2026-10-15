@@ -95,6 +95,7 @@ class FakeListener:
         blocks: list[dict] | None = None,
         channel: str | None = None,
         context: dict | None = None,
+        unfurl: bool = True,
     ) -> str | None:
         ts = f"0000000000.{next(self._ts):06d}"
         self.posted.append({"text": text, "ts": ts, "identity": identity,
