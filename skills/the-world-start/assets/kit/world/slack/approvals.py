@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .approval_text import decision_from_text, relay_decision
+from .post import slack_call
 from .rules import LAST_HOP_NOTE
 from ..process import approval_scope
 from ..process.ledger import LedgerFabricationError, append_ledger
@@ -120,7 +121,7 @@ class ApprovalMixin:
         if scope_line:
             summary = f"{summary}\n{scope_line}"
         ph = self.harness.approval_phrases
-        resp = await self.web.chat_postMessage(
+        resp = await slack_call(self.web, "chat_postMessage",
             channel=slack.channel,
             thread_ts=thread_ts,
             text=ph.request_fallback.format(mention=mention, name=req_name, summary=summary),
@@ -352,7 +353,7 @@ class ApprovalMixin:
         The timer is the fallback, not the decision (see worktrees.sweep)."""
         if not self.web:
             return
-        await self.web.chat_postMessage(
+        await slack_call(self.web, "chat_postMessage",
             channel=self.harness.slack.channel,
             thread_ts=thread_ts,
             text=f"워크트리 정리 확인: {path}",  # notification fallback
@@ -413,7 +414,7 @@ class ApprovalMixin:
         kept = [b for b in blocks if b.get("type") != "actions"]
         kept.append({"type": "context", "elements": [{"type": "mrkdwn", "text": result_line}]})
         with contextlib.suppress(Exception):
-            await self.web.chat_update(
+            await slack_call(self.web, "chat_update",
                 channel=self.harness.slack.channel, ts=msg_ts, text=result_line, blocks=kept
             )
 
@@ -444,7 +445,7 @@ class ApprovalMixin:
         text = ph.hop_request.format(
             n=n, mention=mention, from_name=from_name, to_name=to_name, summary=summary,
         )
-        await self.web.chat_postMessage(
+        await slack_call(self.web, "chat_postMessage",
             channel=self.harness.slack.channel,
             thread_ts=thread_ts,
             text=text,
@@ -568,7 +569,7 @@ class ApprovalMixin:
                 original = msg.get("blocks", [])
                 kept = [b for b in original if b.get("type") != "actions"]
                 kept.append({"type": "context", "elements": [{"type": "mrkdwn", "text": result_line}]})
-                await self.web.chat_update(
+                await slack_call(self.web, "chat_update",
                     channel=slack.channel, ts=msg_ts, text=result_line, blocks=kept
                 )
             except Exception:  # noqa: BLE001 — best-effort edit; fall back to a plain reply

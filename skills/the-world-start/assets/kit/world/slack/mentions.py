@@ -17,6 +17,7 @@ import uuid
 from typing import TYPE_CHECKING, NamedTuple
 
 from ..channels.base import task_card_lines
+from .as_human import normalize_message, safe_text
 from .rules import RULES_TEMPLATE, pre_approved_clause, slack_mrkdwn, split_approval_request
 from .run_footer import footer_context, run_fields
 from .ui import EMOJI_DONE, EMOJI_ERROR, EMOJI_QUEUED, EMOJI_WORKING, ToolTrail
@@ -390,6 +391,10 @@ class MentionMixin:
             return ""
         lines = []
         for m in resp.get("messages", []):
+            normalized = normalize_message(self, m)
+            if normalized is None:
+                continue
+            m, _simulated = normalized
             ts = m.get("ts", "")
             # The harness's OWN turns belong in the transcript. They used to be dropped
             # (`m.get("user") == self.bot_user_id`), which left every thread looking like
@@ -681,7 +686,7 @@ class MentionMixin:
             # can then reach the harness's installed plugin skills. Poll agents stay opt-in.
             allow_plugins=self.harness.mention_plugins and bool(self.harness.plugins),
         )
-        result = await run_agent_oneshot(self.harness, mention_agent, prompt, on_tool=on_tool)
+        result = await run_agent_oneshot(self.harness, mention_agent, safe_text(prompt), on_tool=on_tool)
         if record_result_usage(self.state, identity, result):
             self.save_state()
         reply, approval_summary = split_approval_request(result.result_text)
@@ -721,6 +726,7 @@ class MentionMixin:
                 origin_thread_ts, limit=20, channel=origin_channel
             )
         # Before the prompt, so anything this turn calls can attribute back to a person.
+        text = safe_text(text)
         set_current_asker(event.get("user", "") or "")
         prompt = self._build_prompt(
             identity, persona, text, transcript, origin_transcript, origin_channel, note=note
