@@ -2,7 +2,7 @@
 
 *Read this in [한국어](plugins.ko.md).*
 
-Both apps use the same four `skills/` and the same bundled harness. Neither app gets its
+Both apps use the same five `skills/` and the same bundled harness. Neither app gets its
 own copy of the skills or its own harness. The `npx skills` install is still supported,
 but in any one app use **either the skills install or the plugin install, not both**.
 
@@ -146,8 +146,9 @@ See [Codex invocation policy](https://learn.chatgpt.com/docs/build-skills).
 `the-world-start` also proposes work: given only a project path, it reads that project's
 Claude Code and Codex session records and proposes jobs with the evidence attached.
 `the-world-audit` only reads a harness to check it for risks, so it has no
-explicit-invocation policy. All four skills are exposed to both apps under the same
-`skills/` path, and `scan.py` uses only the standard library.
+explicit-invocation policy, and neither has `dig-my-sessions`, which reads local session
+history (its `--jev` mode asks before sending anything). All five skills are exposed to
+both apps under the same `skills/` path, and their scripts use only the standard library.
 
 The repository is itself a marketplace; that does not mean it is listed in any app's
 official marketplace. The license is MIT and is reflected in the manifests and the
