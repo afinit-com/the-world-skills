@@ -1,6 +1,6 @@
 ---
 name: dig-my-sessions
-description: Dig through this machine's past coding-agent sessions (Claude Code, Codex, opencode, Cursor, Gemini CLI) over a date range and projects you choose. Two uses. Find a past session — "그거 어느 세션이었지", "전에 ~하던 세션 찾아줘", "which session did X", a ticket id or branch name. And mine the history for chores the user keeps doing by hand, to hand to a World harness, a skill, or a one-line script — "자동화할 거 찾아줘", "위임할 거 찾아줘", "what should I automate", "내가 반복하는 일 뭐야". Read-only and offline unless the user opts in to Jev labelling.
+description: Dig through this machine's past coding-agent sessions (Claude Code, Codex, opencode, Cursor, Antigravity CLI `agy`, and the legacy Gemini CLI) over a date range and projects you choose. Two uses. Find a past session — "그거 어느 세션이었지", "전에 ~하던 세션 찾아줘", "which session did X", a ticket id or branch name. And mine the history for chores the user keeps doing by hand, to hand to a World harness, a skill, or a one-line script — "자동화할 거 찾아줘", "위임할 거 찾아줘", "what should I automate", "내가 반복하는 일 뭐야". Read-only and offline unless the user opts in to Jev labelling.
 ---
 
 # dig-my-sessions
@@ -15,7 +15,7 @@ and say what range you read.
 
 ```
 --days N | --since YYYY-MM-DD [--until YYYY-MM-DD]
---agent claude,codex,opencode,cursor,gemini     (default: every one found)
+--agent claude,codex,opencode,cursor,agy,gemini     (default: every one found)
 --project SUBSTR   (repeatable, any)   --exclude-project SUBSTR   (repeatable)
 ```
 
@@ -136,5 +136,7 @@ A run that proposes nothing new is a good run. Say so and stop.
   filter. Skill bodies would dominate every cluster.
 - Openers are cut to 400 characters. When a cluster hinges on more, read the transcript:
   the `file:` of a `find` hit, or the session's path in `--json` output.
-- Cursor's IDE agent chats are read; the `cursor-agent` CLI's store is not.
+- Cursor's IDE agent chats are read; the `cursor-agent` CLI's store is not. For `agy`,
+  prompts come from its `history.jsonl`, and `find` also reads the text fields of each
+  conversation's step records. The Antigravity IDE's conversations are not read.
 - Everything except `--jev` is offline and read-only. SQLite stores open with `mode=ro`.

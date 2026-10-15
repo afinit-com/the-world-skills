@@ -9,10 +9,10 @@ Two questions, one index:
   python3 dig.py chores --project my-app --exclude-project work --json out.json
   python3 dig.py chores --days 120 --jev           # + Jev labels and same-chore grouping
 
-History is read from Claude Code, Codex, opencode, Cursor and Gemini CLI, whichever are
-on this machine (`--agent` narrows it). The archive is far too big for a model to read;
-this script does the deterministic reduction and makes no judgment. Which chores are worth
-automating is the caller's.
+History is read from Claude Code, Codex, opencode, Cursor, Antigravity CLI (`agy`) and the
+legacy Gemini CLI, whichever are on this machine (`--agent` narrows it). The archive is
+far too big for a model to read; this script does the deterministic reduction and makes
+no judgment. Which chores are worth automating is the caller's.
 
 Everything is offline and read-only, except `--jev`, which sends redacted openers to
 TypeSafe's API and needs TYPESAFE_API_KEY. Stdlib only.

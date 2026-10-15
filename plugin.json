@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "the-world-skills",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "license": "MIT",
   "description": "Learn harnesses by building a world of collaborating bot characters and tools.",
   "author": {

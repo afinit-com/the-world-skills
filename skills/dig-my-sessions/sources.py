@@ -7,7 +7,9 @@ the only place that knows those formats; everything downstream sees `Session` re
   codex     ~/.codex/sessions/**/rollout-*.jsonl                   (CODEX_HOME)
   opencode  ~/.local/share/opencode/opencode.db                    (XDG_DATA_HOME)
   cursor    <Cursor user dir>/globalStorage/state.vscdb            (the IDE's agent chats)
-  gemini    ~/.gemini/tmp/<name>/chats/session-*.json[l]           (GEMINI_DIR)
+  agy       ~/.gemini/antigravity-cli/{history.jsonl,conversations/} (ANTIGRAVITY_CLI_DIR)
+  gemini    ~/.gemini/tmp/<name>/chats/session-*.json[l]           (GEMINI_DIR; legacy,
+            retired for personal accounts in favour of Antigravity's `agy`)
 
 Only what the human typed is kept as a prompt. Each agent wraps the user turn in injected
 context (environment blocks, skill listings, slash-command bodies); left in, that
@@ -29,7 +31,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterator
 
-AGENTS = ("claude", "codex", "opencode", "cursor", "gemini")
+AGENTS = ("claude", "codex", "opencode", "cursor", "agy", "gemini")
 
 # Text an agent injects into the user turn. None of it was typed by the human.
 SYNTHETIC_PREFIXES = (
@@ -498,6 +500,155 @@ def cursor(window: Window) -> Iterator[Session]:
             yield s
 
 
+# ---------------------------------------------------------------- agy (Antigravity CLI)
+
+
+def _varint(b: bytes, i: int) -> tuple[int, int]:
+    shift = result = 0
+    while True:
+        c = b[i]
+        i += 1
+        result |= (c & 0x7F) << shift
+        shift += 7
+        if c < 0x80:
+            return result, i
+
+
+def proto_strings(b: bytes, depth: int = 0) -> list[str] | None:
+    """Every text field of a protobuf message, without its schema.
+
+    agy stores each conversation step as an undocumented protobuf blob. The wire format
+    alone says which fields are length-delimited; a field that parses as a nested message
+    is walked, one that doesn't and decodes as UTF-8 is text. None means "not a message".
+    """
+    out: list[str] = []
+    i = 0
+    try:
+        while i < len(b):
+            key, i = _varint(b, i)
+            wire = key & 7
+            if wire == 0:
+                _, i = _varint(b, i)
+            elif wire == 1:
+                i += 8
+            elif wire == 5:
+                i += 4
+            elif wire == 2:
+                n, i = _varint(b, i)
+                if i + n > len(b):
+                    return None
+                chunk = b[i:i + n]
+                i += n
+                nested = proto_strings(chunk, depth + 1) if depth < 12 and n else None
+                if nested:
+                    out.extend(nested)
+                    continue
+                try:
+                    text = chunk.decode("utf-8")
+                except UnicodeDecodeError:
+                    continue
+                if text and (text.isprintable() or "\n" in text):
+                    out.append(text)
+            else:
+                return None
+        return out if i == len(b) else None
+    except IndexError:
+        return None
+
+
+def _agy_steps(db: Path) -> tuple[list[str], Counter]:
+    con = _sqlite(db)
+    if con is None:
+        return [], Counter()
+    try:
+        rows = con.execute("select step_payload from steps order by idx").fetchall()
+    except sqlite3.Error:
+        rows = []
+    finally:
+        con.close()
+    texts, tools = [], Counter()
+    for (payload,) in rows:
+        strings = proto_strings(payload or b"") or []
+        texts.extend(strings)
+        # A tool step carries its call id and then the tool's name.
+        for a, b in zip(strings, strings[1:]):
+            if a.startswith("call_") and re.fullmatch(r"[a-z_][\w.-]*", b):
+                tools[b] += 1
+                break
+    return texts, tools
+
+
+def agy(window: Window) -> Iterator[Session]:
+    root = Path(os.environ.get("ANTIGRAVITY_CLI_DIR")
+                or Path(os.environ.get("GEMINI_DIR") or Path.home() / ".gemini")
+                / "antigravity-cli")
+    con = _sqlite(root / "conversation_summaries.db")
+    convs: dict[str, dict] = {}
+    if con is not None:
+        try:
+            for cid, title, uris, depth, last_input, modified in con.execute(
+                    "select conversation_id, title, workspace_uris, nesting_depth,"
+                    " last_user_input_time, last_modified_time from conversation_summaries"):
+                try:
+                    folders = json.loads(uris or "[]")
+                except ValueError:
+                    folders = []
+                folder = str(folders[0]) if folders else ""
+                convs[cid] = {"title": title or "", "depth": depth or 0,
+                              "project": folder[7:] if folder.startswith("file://") else folder,
+                              "input": parse_ts(last_input), "modified": parse_ts(modified),
+                              "prompts": []}
+        except sqlite3.Error as e:
+            print(f"agy: cannot read {root / 'conversation_summaries.db'}: {e}", file=sys.stderr)
+        finally:
+            con.close()
+    # history.jsonl holds what was typed, in every workspace. Newer entries name their
+    # conversation; older ones go to the conversation in the same workspace whose last
+    # input is closest, or, failing that, to one session per workspace and day.
+    loose: dict[tuple[str, str], list[tuple[datetime, str]]] = {}
+    for d in _jsonl(root / "history.jsonl"):
+        text = str(d.get("display") or "").strip()
+        dt = parse_ts(d.get("timestamp"))
+        if dt is None or d.get("type") == "slash_command" or not is_typed(text):
+            continue
+        cid = d.get("conversationId")
+        if cid not in convs:
+            ws = str(d.get("workspace") or "")
+            near = [(abs((c["input"] - dt).total_seconds()), k) for k, c in convs.items()
+                    if c["project"] == ws and c["input"]]
+            cid = min(near)[1] if near and min(near)[0] < 12 * 3600 else None
+        if cid:
+            convs[cid]["prompts"].append((dt, text))
+        else:
+            loose.setdefault((str(d.get("workspace") or ""), dt.date().isoformat()),
+                             []).append((dt, text))
+    for cid, c in convs.items():
+        if c["depth"]:  # a subagent's conversation is a sidechain, not an errand
+            continue
+        db = root / "conversations" / f"{cid}.db"
+        texts: list[str] = [c["title"]]
+
+        def read(db=db, texts=texts) -> str:
+            return "\n".join(texts + _agy_steps(db)[0])
+
+        times = [t for t in (c["input"], c["modified"]) if t] + [t for t, _ in c["prompts"]]
+        if not times:
+            continue
+        s = Session("agy", cid, c["project"], str(db), min(times), max(times),
+                    prompts=sorted(c["prompts"]), resume=f"agy --conversation {cid}",
+                    text=read)
+        s.tools = _agy_steps(db)[1] if db.is_file() and window.has(s.last) else Counter()
+        if (s := _finish(s, window)) is not None:
+            yield s
+    for (ws, day), prompts in loose.items():
+        prompts.sort()
+        s = Session("agy", f"history:{day}", ws, str(root / "history.jsonl"),
+                    prompts[0][0], prompts[-1][0], prompts=prompts,
+                    text=lambda p=prompts: "\n".join(t for _, t in p))
+        if (s := _finish(s, window)) is not None:
+            yield s
+
+
 # ---------------------------------------------------------------- gemini
 
 
@@ -561,7 +712,7 @@ def gemini(window: Window) -> Iterator[Session]:
 
 
 READERS = {"claude": claude, "codex": codex, "opencode": opencode, "cursor": cursor,
-           "gemini": gemini}
+           "agy": agy, "gemini": gemini}
 
 
 def sessions(window: Window, agents=AGENTS) -> list[Session]:
