@@ -47,6 +47,34 @@ def _env(name: str | None, value: str | None) -> str:
     return f"`{value}` (`{name}`)" if value else f"`{name}` is not set"
 
 
+def _icon(p, channel: str) -> str:
+    """The picture chat shows for a persona: Persona.chat_icon, the same value the Slack
+    and Discord posts read, never `portrait` alone (a local file is the world map's)."""
+    if p.icon_url:
+        return "its icon (`icon_url`)"
+    if p.chat_icon:
+        return "its icon (the http(s) `portrait`)"
+    if channel == "slack":
+        return "the main app's icon (no `icon_url` set)"
+    return "no picture of its own (no `icon_url` set)"
+
+
+def _face(p, channel: str) -> str:
+    """The rest of a sub-persona's line: its picture, and on Slack which app it posts
+    through. Other channels get no Slack app or scope to check."""
+    if channel != "slack":
+        return f"{_icon(p, channel)} and voice"
+    # Same test as PostingMixin._face: a token, not the variable's name, decides.
+    # Only whether it is set is read; the value is never printed.
+    if p.token:
+        return f"its own app's icon and voice, through its own app (`{p.bot_token_env}`)"
+    how = ("the main app with `chat:write.customize` (without it, the post shows the "
+           "main app's name)")
+    if p.bot_token_env:
+        how += f"; `{p.bot_token_env}` is not set, so it falls back to the main app"
+    return f"{_icon(p, channel)} and voice, through {how}"
+
+
 def verify_plan(harness) -> str:
     personas = harness.personas
     main = harness.main_persona
@@ -108,22 +136,16 @@ def verify_plan(harness) -> str:
             slack = harness.slack
             out += [f"- home channel: {_env(slack.channel_env, slack.channel)}",
                     f"- approver: {_env(slack.approver_env, slack.approver)}"]
+            if slack.co_approver_env:
+                out.append("- co-approver, whose decision also counts (a bot one answers "
+                           f"with a message, not a button): "
+                           f"{_env(slack.co_approver_env, slack.co_approver)}")
             if not slack.channel:
                 out.append("- the channel is not set, so this step cannot run yet")
         out.append(f"- [ ] {main.display} (`{main.key}`) answers a mention in the thread")
         for p in subs:
-            # Same test as PostingMixin._face: a token, not the variable's name, decides.
-            # Only whether it is set is read; the value is never printed.
-            if p.token:
-                how = f"its own app (`{p.bot_token_env}`)"
-            else:
-                how = ("the main app with `chat:write.customize` (without it, the post "
-                       "shows the main app's name)")
-                if p.bot_token_env:
-                    how += f"; `{p.bot_token_env}` is not set, so it falls back to the main app"
-            icon = "its portrait" if p.portrait else "no portrait set (the main app's icon)"
             out.append(f"- [ ] {p.display} (`{p.key}`) posts under its own name, "
-                       f"{icon} and voice, through {how}")
+                       f"{_face(p, channel)}")
         if subs:
             out.append("- [ ] each handoff shows as a `→ <name>: …` line and the teammate "
                        "answers in the same thread")

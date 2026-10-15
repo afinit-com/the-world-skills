@@ -30,7 +30,22 @@ Slack connection and not a real agent result; it proves the tick renders.
 For each boundary a tool's code claims (a fixed host, an allowlist, a verdict that blocks
 an action, a pinned head SHA, a path), make one call it must refuse and read the refusal.
 `world.tool_check` builds a thread-bound tool the way the listener does, from a fake
-listener whose `post` and `save_state` reach nothing:
+listener whose `post` and `save_state` reach nothing.
+
+The check stubs the function a tool writes through, so give each write its own function.
+A tool built on the kit's `world.toolkit.run_cmd` runs its reads (`gh pr view`) and its
+writes (`gh pr comment`) through the same helper; wrap the writes:
+
+```python
+# abilities/reviewer/tools.py
+from world.toolkit import run_cmd
+
+async def gh_write(*args: str, cwd: str) -> tuple[int, str]:
+    """Every gh call that changes something outside goes through here, and only those."""
+    return await run_cmd("gh", *args, cwd=cwd)
+```
+
+Then the check names that function:
 
 ```python
 import asyncio
@@ -42,7 +57,7 @@ async def main():
     listener = FakeListener(state={})
     tools = await bind(PERSONA.mention_tools, listener, "1700000000.000100")
     refused = await refuses(tools, "pr_comment", {"url": "https://example.com/x/y/pull/1"},
-                            outward=["tools.github.gh_write"])   # the function that writes
+                            outward=["abilities.reviewer.tools.gh_write"])  # the name it writes through
     print("other host refused:", text(refused))
 
 asyncio.run(main())
@@ -52,11 +67,27 @@ Keep a script like this in the harness's own `tests/` so the next change runs it
 
 The fake stands in for Slack, not for the tool: the handler runs for real. So a boundary
 check never lets a write tool reach the outside. Name the function the tool writes
-through (`gh`, an HTTP post, `subprocess.run`) in `outward`. `refuses` stubs each one for
-the call and fails if any was reached, even when the tool then reported an error, and it
+through in `outward`. `refuses` stubs each one for the call and fails if any was reached,
+even when the tool then reported an error or broke on the stub's return value, and it
 will not run with none named. An open boundary then shows up as a failed check with
 nothing written. If the tool has no single function to stub, that is worth fixing in the
 tool before checking it.
+
+Stub a function that only writes. `subprocess.run` does not cover `run_cmd`, which goes
+through `asyncio.create_subprocess_exec`, so the write would run. Stubbing `run_cmd`
+itself stubs the reads as well: the tool fails on a read it needed, and the check reports
+an open boundary where there is none.
+
+Name the function where the tool looks it up: `abilities.reviewer.tools.gh_write`, the name
+in the tool's own module, not only the module it came from. A tool module that did
+`from tools.github import gh_write` has its own name for it. `refuses` stubs every other
+module-level name bound to the same function as well, but a reference kept in a closure, a
+default argument, or a dict of handlers is not found, and the real write would run.
+
+A write the handler hands to a task (`asyncio.create_task`) and does not wait for is waited
+for, still stubbed, for a couple of seconds; a task still running then is cancelled and
+fails the check. A write handed to a thread (`run_in_executor`) is not seen; keep the write
+in the handler's own `await`.
 
 `bind` returns the tools without the approval gate the listener wraps around
 `mention_tools`. That is on purpose: this step checks the tool's own code. The gate is the

@@ -11,7 +11,7 @@ listener in every harness. This is that fake, once:
     listener = FakeListener(state={"worktrees": {...}})
     tools = await bind(PERSONA.mention_tools, listener, "1700000000.000100")
     await refuses(tools, "github_pr_comment", {"number": 999999, "body": "x"},
-                  outward=["tools.github.gh_write"])
+                  outward=["abilities.reviewer.tools.gh_write"])
 
 A boundary check must never be able to write. The tool handler runs for real, so a write
 tool whose boundary turns out to be open would comment, push, or merge from inside the
@@ -19,6 +19,19 @@ check. `refuses` therefore stubs every outward call named in `outward` for the l
 the call, and fails if any stub was reached, whatever the tool returned. It refuses to
 run without at least one, and `call` makes the same choice explicit: `outward=()` is a
 declaration that the tool writes nothing outside, not a default.
+
+Name the function the tool looks up when it writes, as the tool's module sees it. A
+module that did `from tools.github import gh_write` holds its own name for the function,
+and patching `tools.github.gh_write` alone would leave that name pointing at the real
+one. So every other module-level name bound to the same function is stubbed too. A
+reference kept anywhere else (a closure, a default argument, a dict of handlers) is not
+found; stub that name instead. Name a function that only writes: the kit's
+`world.toolkit.run_cmd` also runs the reads, and `subprocess.run` does not cover it (it
+goes through `asyncio.create_subprocess_exec`), so wrap the write in its own function.
+
+A task the handler starts and does not wait for is waited for, still stubbed, for up to
+`SETTLE_SECONDS`; one still running then is cancelled and fails the check, because its
+write would land after the stubs are gone.
 
 What else is faked:
 
@@ -38,12 +51,16 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import itertools
+import pkgutil
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Iterable
 from unittest import mock
 
 from .tools.spec import ToolResult, ToolSpec
+
+SETTLE_SECONDS = 2.0  # how long `call` waits, stubs still in place, for tasks a handler left
 
 class FakeListener:
     """The part of `SlackListener` a tool factory reads, with nothing behind it.
@@ -102,31 +119,76 @@ async def bind(tools: Any, listener: FakeListener, thread_ts: str) -> list[ToolS
     return list(tools)
 
 
-def _patch(target: Any):
-    """A stub for one outward call: a dotted path as `unittest.mock.patch` takes it
-    ("tools.github.gh_write", "subprocess.run"), or an (object, attribute) pair."""
+def _owner(target: Any) -> tuple[Any, str]:
+    """The object and attribute a stub target names: a dotted path as `unittest.mock.patch`
+    takes it ("abilities.reviewer.tools.gh_write", "subprocess.run"), or an (object,
+    attribute) pair."""
     if isinstance(target, str):
-        return mock.patch(target, autospec=True)
-    owner, attribute = target
-    return mock.patch.object(owner, attribute, autospec=True)
+        owner, _, attribute = target.rpartition(".")
+        return pkgutil.resolve_name(owner), attribute
+    return target
+
+
+def _patch(stack: contextlib.ExitStack, target: Any) -> Any:
+    """Stub one outward call where it was named, and under every other module-level name
+    bound to the same object, so a `from x import f` in the tool's module is covered too.
+    Returns the stub."""
+    owner, attribute = _owner(target)
+    original = getattr(owner, attribute)
+    stub = stack.enter_context(mock.patch.object(owner, attribute, autospec=True))
+    for module in list(sys.modules.values()):
+        names = getattr(module, "__dict__", None)
+        if not isinstance(names, dict):
+            continue
+        for name, value in list(names.items()):
+            if value is original and not (module is owner and name == attribute):
+                stack.enter_context(mock.patch.object(module, name, stub))
+    return stub
+
+
+async def _settle(started: set) -> list[str]:
+    """Wait, stubs still in place, for the tasks a handler started and left; cancel and
+    name the ones still running after SETTLE_SECONDS."""
+    left = {t for t in asyncio.all_tasks() - started if not t.done()}
+    left.discard(asyncio.current_task())
+    if not left:
+        return []
+    _, pending = await asyncio.wait(left, timeout=SETTLE_SECONDS)
+    for task in pending:
+        task.cancel()
+    if pending:
+        await asyncio.wait(pending, timeout=SETTLE_SECONDS)
+    return sorted(task.get_name() for task in pending)
 
 
 async def call(tools: list[ToolSpec], name: str, args: dict[str, Any], *,
                outward: Iterable[Any]) -> dict[str, Any]:
     """Run the tool called `name` with `args`, every call in `outward` stubbed, and return
     its result as a dict (`content`, `is_error`). Raises AssertionError if a stub was
-    reached. `outward=()` declares the tool writes nothing outside; pass it only for a
-    tool that reads. A tool name that is not there is an error, not a skip."""
+    reached, even when the handler then raised, or if a task it started outlives
+    SETTLE_SECONDS. `outward=()` declares the tool writes nothing outside; pass it only
+    for a tool that reads. A tool name that is not there is an error, not a skip."""
     found = [t for t in tools if t.name == name]
     if not found:
         raise LookupError(f"no tool named {name!r}; bound: {[t.name for t in tools]}")
+    failure: BaseException | None = None
     with contextlib.ExitStack() as stack:
-        stubs = {repr(t): stack.enter_context(_patch(t)) for t in outward}
-        out = await found[0].handler(dict(args))
+        stubs = {repr(t): _patch(stack, t) for t in outward}
+        started = asyncio.all_tasks()
+        try:
+            out = await found[0].handler(dict(args))
+        except Exception as exc:  # a stub's return value can break the handler; say why
+            failure = exc
+        unfinished = await _settle(started)
     reached = [t for t, stub in stubs.items() if stub.called]
     if reached:
         raise AssertionError(f"{name} reached outward call(s) {reached}; stubbed, so nothing "
-                             "was written, but this boundary is open")
+                             "was written, but this boundary is open") from failure
+    if unfinished:
+        raise AssertionError(f"{name} left task(s) {unfinished} running past the check; "
+                             "cancelled, but a write there would have run unstubbed")
+    if failure is not None:
+        raise failure
     return out.as_dict() if isinstance(out, ToolResult) else dict(out)
 
 

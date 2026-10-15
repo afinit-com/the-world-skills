@@ -93,9 +93,10 @@ reported alongside the question, but it doesn't replace the question.
 
 ## What must hold
 
-**Every worker's authority is declared in code, and narrow.** `write_scope` is required
-and is never empty; `tasks/{task}/work` is the ordinary lane. A worker that only reads
-gets no write path. A new worker never comes out wider than the ones already there.
+**Every worker's authority is declared in code, and narrow.** A worker that writes declares
+a `write_scope`; `tasks/{task}/work` is the ordinary lane. A worker that only reads leaves
+it empty, which writes nothing, and gets no write path. A new worker never comes out wider
+than the ones already there.
 
 **A promise in a prompt is not enforcement.** If a boundary matters, it lives in code or
 the capability is absent. Prefer a scoped tool over a wider Bash allowlist, and omit a
@@ -170,11 +171,16 @@ connected yet" stays there after it stops being true. Those go elsewhere:
 `WORLD.md`; fix every `[WARN] WORLD.md` line before you finish.
 
 The two creation words become real commands via
-`bin/scaffold-world-skill.py <word> agent|tool --universe ... --description ...`. Default
+`bin/scaffold-world-skill.py <word> agent|tool|verify --universe ... --description ...`. Default
 to `recruit` and `equip` when the user has no preference. Honor explicit naming choices.
 The tool word does not assume a tool: it splits the request into pieces, places each as a
 tool, code, prompt procedure, skill, knowledge, setting or world sentence, and builds only
 after the user confirms the proposal table.
+The scaffolder keeps a wrapper that exists, so a tool word scaffolded before this flow has
+no proposal table, and it and an older agent word still say "`write_scope` never empty".
+On resume, move such a `SKILL.md` aside (under `.claude/skills/<word>/` and
+`.agents/skills/<word>/`), re-run the scaffolder with the same flow, and carry over the
+user's own edits.
 Scaffold the word for checking the harness the same way, with `verify` as the flow; default
 to `verify`.
 
