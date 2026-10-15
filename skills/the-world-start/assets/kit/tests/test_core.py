@@ -458,7 +458,9 @@ class AnnounceCardBodyTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_code_block_cut_in_the_middle_is_closed(self) -> None:
         body = await self._card("```python\n" + "x=1\n" * 200 + "```")
         self.assertEqual(0, body.count("```") % 2, body[-40:])
-        self.assertEqual("> ```", body.splitlines()[-1])
+        self.assertEqual("```", body.splitlines()[-1])
+        self.assertNotIn("> x=1", body)
+        self.assertNotIn("> ```", body)
 
     async def test_long_evidence_alone_stays_inside_one_slack_section(self) -> None:
         body = await self._card("", evidence=("x" * 99 + "\n") * 40)
@@ -483,7 +485,9 @@ class AnnounceCardBodyTests(unittest.IsolatedAsyncioTestCase):
         body = await self._card("", evidence="```\n" + ("x" * 99 + "\n") * 40 + "```")
         self.assertLessEqual(len(body), 3000)
         self.assertEqual(0, body.count("```") % 2, body[-40:])
-        self.assertEqual("> ```", body.splitlines()[-1])
+        self.assertEqual("```", body.splitlines()[-1])
+        self.assertNotIn("> x", body)
+        self.assertNotIn("> ```", body)
         self.assertTrue(body.splitlines()[-2].endswith("…"), body[-40:])
 
 
