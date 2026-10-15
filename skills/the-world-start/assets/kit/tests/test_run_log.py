@@ -4,6 +4,7 @@ Before: Harness.log printed local time with no offset, so a launcher added a sec
 timestamp to every line, and logs/harness.jsonl grew forever.
 """
 
+import asyncio
 import contextlib
 import gzip
 import io
@@ -11,7 +12,9 @@ import json
 import os
 import re
 import stat
+import subprocess
 import sys
+import threading
 import tempfile
 import time
 import unittest
@@ -24,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from world import Harness, Persona  # noqa: E402
 from world.process import runlog  # noqa: E402
-from world.process.orchestrator import append_run_log  # noqa: E402
+from world.process.orchestrator import append_run_log, flush_run_log  # noqa: E402
 
 
 def _at(day_offset: int, hour: int = 12) -> float:
@@ -162,6 +165,7 @@ class RunLogRollTest(unittest.TestCase):
         os.replace = refuse
         try:
             append_run_log(h, {"agent": "x", "status": "ok"})
+            flush_run_log()
         finally:
             os.replace = real_replace
         self.assertTrue(any("could not roll" in m for m in self.messages), self.messages)
@@ -193,6 +197,7 @@ class RunLogRollTest(unittest.TestCase):
 
         h = SimpleNamespace(logs_dir=self.logs, run_log_path=self.path, log=self.messages.append)
         append_run_log(h, {"n": "after"})
+        flush_run_log()
         self.assertFalse(plain.exists())
         self.assertEqual(list(self.logs.glob("*.tmp")), [])
         with gzip.open(self.logs / f"harness.{day}.jsonl.gz", "rt", encoding="utf-8") as f:
@@ -218,6 +223,7 @@ class RunLogRollTest(unittest.TestCase):
         h.run_log_path.write_text('{"old": true}\n', encoding="utf-8")
         os.utime(h.run_log_path, (_at(-2), _at(-2)))
         append_run_log(h, {"agent": "x", "status": "ok"})
+        flush_run_log()
         lines = h.run_log_path.read_text(encoding="utf-8").splitlines()
         self.assertEqual(len(lines), 1)
         self.assertEqual(json.loads(lines[0])["agent"], "x")
@@ -309,6 +315,83 @@ class RollCostTest(unittest.TestCase):
             runlog.append(self.path, b"d\n", max_bytes=1, log=self.messages.append)
         warnings = [m for m in self.messages if "could not roll" in m]
         self.assertEqual(len(warnings), 2, self.messages)
+
+
+class RunLogOffTheLoopTest(unittest.TestCase):
+    """R5: append_run_log ran runlog.append (an flock, and a roll that gzips up to 10MB)
+    inside async code, so a roll held up the event loop and with it Slack's 3s ack."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        home = Path(self.tmp.name)
+        self.h = SimpleNamespace(logs_dir=home / "logs", run_log_path=home / "logs" / "harness.jsonl",
+                                 log=lambda _m: None)
+        self.h.logs_dir.mkdir()
+
+    def test_a_slow_write_does_not_hold_the_event_loop_and_keeps_order(self):
+        real_append = runlog.append
+        written: list[int] = []
+        busy = [0, 0]  # writers now, most at once
+        lock = threading.Lock()
+
+        def slow_append(path, data, **kw):
+            with lock:
+                busy[0] += 1
+                busy[1] = max(busy)
+            time.sleep(0.2)
+            written.append(json.loads(data)["n"])
+            real_append(path, data, **kw)
+            with lock:
+                busy[0] -= 1
+
+        async def scenario():
+            start = time.monotonic()
+            for n in range(4):
+                append_run_log(self.h, {"n": n})
+            returned = time.monotonic() - start
+            await asyncio.sleep(0)
+            await asyncio.to_thread(flush_run_log)
+            return returned
+
+        with mock.patch.object(runlog, "append", side_effect=slow_append):
+            returned = asyncio.run(scenario())
+        self.assertLess(returned, 0.1, "append_run_log waited for the write")
+        self.assertEqual(written, [0, 1, 2, 3])
+        self.assertEqual(busy[1], 1, "two writes ran at once")
+        lines = self.h.run_log_path.read_text(encoding="utf-8").splitlines()
+        self.assertEqual([json.loads(line)["n"] for line in lines], [0, 1, 2, 3])
+
+    def test_a_failed_write_is_logged_not_raised(self):
+        messages: list[str] = []
+        self.h.log = messages.append
+        with mock.patch.object(runlog, "append", side_effect=OSError("disk full")):
+            append_run_log(self.h, {"agent": "x", "status": "ok"})
+            flush_run_log()
+        self.assertTrue(any("disk full" in m for m in messages), messages)
+
+    def test_entries_still_queued_at_exit_are_written(self):
+        script = (
+            "import sys, time\n"
+            "from pathlib import Path\n"
+            "from types import SimpleNamespace\n"
+            f"sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r})\n"
+            "from world.process import orchestrator, runlog\n"
+            "real = runlog.append\n"
+            "def slow(*a, **k):\n"
+            "    time.sleep(0.2)\n"
+            "    real(*a, **k)\n"
+            "runlog.append = slow\n"
+            "p = Path(sys.argv[1])\n"
+            "h = SimpleNamespace(run_log_path=p, log=print)\n"
+            "for n in range(3):\n"
+            "    orchestrator.append_run_log(h, {'n': n})\n"
+        )
+        done = subprocess.run([sys.executable, "-c", script, str(self.h.run_log_path)],
+                              capture_output=True, text=True, timeout=60)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        lines = self.h.run_log_path.read_text(encoding="utf-8").splitlines()
+        self.assertEqual([json.loads(line)["n"] for line in lines], [0, 1, 2])
 
 
 if __name__ == "__main__":
