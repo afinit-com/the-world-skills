@@ -69,8 +69,16 @@ Each of these was a bug in a hand-built launcher first.
   be found stops the render.
 - **A crash loop backs off.** The watchdog restarts a harness that died, waits 30s before
   the next try, doubles that up to 30 minutes, and resets once a round finds it running.
-  Each restart and failed restart goes to `logs/watchdog.log`, and with `--notify` to the
-  Slack channel. `--notify` is refused unless `env/harness.env` already holds the bot
+  Every round's restart, failed restart or unreadable state goes to `logs/watchdog.log`.
+  `--notify` also posts it to the Slack channel, one thread per incident: the first round
+  that finds the harness down posts a new message, every later line about that outage
+  is a reply in its thread, and the first round that finds it running again replies
+  "recovered" and closes the incident (`logs/.watchdog/incident` holds the thread while
+  it is open). The next outage starts a new message. A restart that worked is posted
+  every time, so a crash loop shows up as a run of replies; a failure that repeats
+  unchanged is posted once and logged every round. If the thread no longer takes
+  replies (its message was deleted), the line is posted as a new message, which becomes
+  the thread. `--notify` is refused unless `env/harness.env` already holds the bot
   token and the channel.
 - **A deliberate stop stays stopped.** `down` leaves a marker
   (`logs/.watchdog/down`) the watchdog respects until the next `up`. Before it existed, a

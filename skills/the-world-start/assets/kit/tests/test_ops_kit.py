@@ -341,6 +341,40 @@ class NotifyTest(unittest.TestCase):
         self.assertEqual(requests[0].get_header("Authorization"), "Bearer file-token")
         self.assertEqual(json.loads(requests[0].data)["channel"], "file-channel")
 
+    def notify(self, *args, replies):
+        """ops_notify.main with Slack answering `replies` in order; (code, stdout, requests)."""
+        requests = []
+
+        def opener(req, timeout):
+            requests.append(json.loads(req.data))
+            return io.BytesIO(json.dumps(replies[len(requests) - 1]).encode())
+
+        out = io.StringIO()
+        env = {"WORLD_ENV_FILE": self.empty_env, "T_TOKEN": "xoxb-1", "T_CHAN": "C1"}
+        with unittest.mock.patch.dict(os.environ, env), unittest.mock.patch("sys.stdout", out), \
+                unittest.mock.patch("sys.stderr", io.StringIO()):
+            code = ops_notify.main(["--token-env", "T_TOKEN", "--channel-env", "T_CHAN", *args],
+                                   opener=opener)
+        return code, out.getvalue().strip(), requests
+
+    def test_a_new_message_prints_its_ts(self):
+        code, ts, requests = self.notify("down", replies=[{"ok": True, "ts": "111.1"}])
+        self.assertEqual((code, ts), (0, "111.1"))
+        self.assertNotIn("thread_ts", requests[0])
+
+    def test_a_reply_goes_into_the_thread_and_prints_the_thread(self):
+        code, ts, requests = self.notify("--thread-ts", "111.1", "again",
+                                         replies=[{"ok": True, "ts": "222.2"}])
+        self.assertEqual((code, ts), (0, "111.1"))
+        self.assertEqual(requests, [{"channel": "C1", "text": "again", "thread_ts": "111.1"}])
+
+    def test_a_refused_reply_becomes_a_new_message(self):
+        code, ts, requests = self.notify(
+            "--thread-ts", "111.1", "again",
+            replies=[{"ok": False, "error": "thread_not_found"}, {"ok": True, "ts": "333.3"}])
+        self.assertEqual((code, ts), (0, "333.3"))
+        self.assertEqual(requests[1], {"channel": "C1", "text": "again"})
+
     def test_request_carries_the_token_only_in_the_header(self):
         req = ops_notify.build_request("xoxb-secret", "C1", "restarted")
         self.assertEqual(req.get_header("Authorization"), "Bearer xoxb-secret")
@@ -369,6 +403,22 @@ for n in range(1200):
     if os.environ.get("STUB_CHATTY"):
         print(f"tick {n}", flush=True)
     time.sleep(0.1)
+"""
+
+
+FAKE_NOTIFY = """\
+import json, os, sys
+here = os.path.dirname(os.path.abspath(__file__))
+args = sys.argv[1:]
+thread = args[args.index("--thread-ts") + 1] if "--thread-ts" in args else None
+path = os.path.join(here, "posts.jsonl")
+count = len(open(path).read().splitlines()) if os.path.exists(path) else 0
+with open(path, "a") as f:
+    f.write(json.dumps({"thread": thread, "text": args[-1]}) + "\\n")
+if thread and not os.path.exists(os.path.join(here, "thread-gone")):
+    print(thread)
+else:
+    print(f"{count + 1}.0")  # a new message, numbered by post
 """
 
 
@@ -535,15 +585,18 @@ class LauncherAndWatchdogTest(unittest.TestCase):
             subprocess.run([str(self.watchdog)], check=True, capture_output=True)
             self.assertEqual((self.state / "next_try").read_text(), next_try)
             (self.state / "next_try").write_text("0")
+        # Every round is logged; only the first of a run of the same failure is posted.
         log = (self.home / "logs" / "watchdog.log").read_text()
-        self.assertEqual(log.count("stopped this round"), 1)
+        self.assertEqual(log.count("stopped this round"), 2)
+        self.assertEqual(log.count("(posted already)"), 1)
         self.up.write_text("#!/bin/sh\nexit 0\n")
         subprocess.run([str(self.watchdog)], check=True, capture_output=True)
         self.assertFalse((self.state / "failures").exists())
         self.up.write_text("#!/bin/sh\nexit 4\n")
         subprocess.run([str(self.watchdog)], capture_output=True)
         log = (self.home / "logs" / "watchdog.log").read_text()
-        self.assertEqual(log.count("stopped this round"), 2)
+        self.assertEqual(log.count("stopped this round"), 3)
+        self.assertEqual(log.count("(posted already)"), 1)
 
     def test_pgrep_errors_refuse_every_process_decision(self):
         shim = self.home / "shim"
@@ -789,6 +842,74 @@ class LauncherAndWatchdogTest(unittest.TestCase):
         self.assertNotEqual(self.pids(), before)
         self.assertEqual(len(self.writers()), 1)
         self.assertIn("console writer had died", (self.home / "logs" / "watchdog.log").read_text())
+
+    def posts(self) -> list[dict]:
+        path = self.home / "bin" / "posts.jsonl"
+        if not path.exists():
+            return []
+        return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+    def test_an_incident_is_one_slack_thread_and_every_restart_is_in_it(self):
+        # Stands in for bin/ops-notify.py (its Slack calls are tested in NotifyTest): it
+        # records each post and prints the thread it went into, as the real one does.
+        (self.home / "bin" / "ops-notify.py").write_text(FAKE_NOTIFY, encoding="utf-8")
+        files = ops_kit.render(self.home, "stub", "linux", self.home / ".venv" / "bin" / "python",
+                               "/usr/bin:/bin", notify=("T_TOKEN", "T_CHAN"))
+        ops_kit.write(self.home, files, force=True)
+        incident = self.state / "incident"
+        log = self.home / "logs" / "watchdog.log"
+
+        def crash_and_round():
+            subprocess.run(["kill", "-9", *self.pids()], check=True)
+            self.wait_gone()
+            (self.state / "next_try").unlink(missing_ok=True)
+            self.run_watchdog()
+            self.assertEqual(len(self.pids()), 1)
+
+        self.assertEqual(self.run_up("up").returncode, 0)
+        # A crash loop: each round finds it dead again and restarts it.
+        for _ in range(3):
+            crash_and_round()
+        posts = self.posts()
+        self.assertEqual(len(posts), 3, "every restart is posted, not only the first")
+        self.assertIsNone(posts[0]["thread"])
+        self.assertEqual([p["thread"] for p in posts[1:]], ["1.0", "1.0"])
+        self.assertEqual([("attempt %d" % n) in p["text"] for n, p in enumerate(posts, 1)],
+                         [True] * 3)
+        self.assertEqual(incident.read_text().strip(), "1.0")
+        self.assertEqual(log.read_text(encoding="utf-8").count("restarted (attempt"), 3)
+
+        # The next round finds it running: the thread hears so, and the incident closes.
+        self.run_watchdog()
+        self.assertIn("recovered", self.posts()[-1]["text"])
+        self.assertEqual(self.posts()[-1]["thread"], "1.0")
+        self.assertFalse(incident.exists())
+
+        # The next outage is a new message, and a thread that no longer takes replies is
+        # replaced by the new message ops-notify falls back to.
+        crash_and_round()
+        self.assertIsNone(self.posts()[-1]["thread"])
+        self.assertEqual(incident.read_text().strip(), "5.0")
+        (self.home / "bin" / "thread-gone").touch()
+        crash_and_round()
+        self.assertEqual(self.posts()[-1]["thread"], "5.0")
+        self.assertEqual(incident.read_text().strip(), "6.0")
+
+    def test_a_failure_that_repeats_is_posted_once_and_logged_every_round(self):
+        (self.home / "bin" / "ops-notify.py").write_text(FAKE_NOTIFY, encoding="utf-8")
+        files = ops_kit.render(self.home, "stub", "linux", self.home / ".venv" / "bin" / "python",
+                               "/usr/bin:/bin", notify=("T_TOKEN", "T_CHAN"))
+        ops_kit.write(self.home, files, force=True)
+        (self.home / "harness.py").write_text("raise SystemExit(1)\n", encoding="utf-8")
+        for _ in range(3):
+            (self.state / "next_try").unlink(missing_ok=True)
+            self.run_watchdog()
+        posts = self.posts()
+        self.assertEqual(len(posts), 1)
+        self.assertIn("could not start it (attempt 1", posts[0]["text"])
+        log = (self.home / "logs" / "watchdog.log").read_text(encoding="utf-8")
+        for attempt in (1, 2, 3):
+            self.assertIn(f"could not start it (attempt {attempt};", log)
 
     def test_a_writer_that_dies_at_start_points_at_its_traceback(self):
         (self.home / "world" / "process" / "runlog.py").write_text(
@@ -1069,7 +1190,8 @@ class WindowsLauncherTest(unittest.TestCase):
                 self.assertEqual((self.state / "next_try").read_text(), next_try)
                 (self.state / "next_try").write_text("0")
             log = (self.home / "logs" / "watchdog.log").read_text(encoding="utf-8")
-            self.assertEqual(log.count("stopped this round"), 1)
+            self.assertEqual(log.count("stopped this round"), 2)
+            self.assertEqual(log.count("(posted already)"), 1)
             for action in ("up", "resume"):
                 result = self.run_up(action)
                 self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -1142,6 +1264,44 @@ class WindowsLauncherTest(unittest.TestCase):
         self.assertEqual(self.run_up("up").returncode, 0)
         self.assertFalse((self.state / "down").exists())
         self.assertEqual(self.run_up("down").returncode, 0)
+
+    def test_an_incident_is_one_slack_thread_and_every_restart_is_in_it(self):
+        (self.home / "bin" / "ops-notify.py").write_text(FAKE_NOTIFY, encoding="utf-8")
+        files = ops_kit.render(self.home, "stub", "windows", self.python, self.run_path,
+                               user=self.user, notify=("T_TOKEN", "T_CHAN"))
+        ops_kit.write(self.home, files, force=True)
+        posts_file = self.home / "bin" / "posts.jsonl"
+        incident = self.state / "incident"
+
+        def posts():
+            if not posts_file.exists():
+                return []
+            return [json.loads(line) for line in posts_file.read_text().splitlines()]
+
+        def crash_and_round():
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(self.pids()[0])], check=True,
+                           capture_output=True)
+            self.wait_gone()
+            (self.state / "next_try").unlink(missing_ok=True)
+            round_ = self.run_ps(self.watchdog)
+            self.assertEqual(round_.returncode, 0, round_.stdout + round_.stderr)
+            self.assertEqual(len(self.pids()), 1, self.processes())
+
+        self.assertEqual(self.run_up("up").returncode, 0)
+        for _ in range(3):
+            crash_and_round()
+        self.assertEqual([p["thread"] for p in posts()], [None, "1.0", "1.0"])
+        self.assertEqual(incident.read_text(encoding="utf-8").strip(), "1.0")
+        self.run_ps(self.watchdog)
+        self.assertIn("recovered", posts()[-1]["text"])
+        self.assertEqual(posts()[-1]["thread"], "1.0")
+        self.assertFalse(incident.exists())
+        crash_and_round()
+        self.assertIsNone(posts()[-1]["thread"])
+        (self.home / "bin" / "thread-gone").touch()
+        crash_and_round()
+        self.assertEqual(posts()[-1]["thread"], "5.0")
+        self.assertEqual(incident.read_text(encoding="utf-8").strip(), "6.0")
 
     def test_lifecycle_in_a_home_with_spaces_hangul_quotes_and_brackets(self):
         self.kill_all()
