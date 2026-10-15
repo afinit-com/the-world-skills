@@ -119,7 +119,8 @@ class RunLogRollTest(unittest.TestCase):
         with mock.patch.object(runlog.shutil, "copyfileobj", side_effect=OSError("disk full")):
             runlog.append(self.path, b"after failure\n", max_bytes=1, log=self.messages.append)
         self.assertEqual(stat.S_IMODE(self.path.stat().st_mode), 0o600)
-        runlog.append(self.path, b"after recovery\n", max_bytes=None, log=self.messages.append)
+        with mock.patch.object(runlog.time, "time", return_value=time.time() + runlog.ROLL_RETRY_S + 1):
+            runlog.append(self.path, b"after recovery\n", max_bytes=None, log=self.messages.append)
         for gz in self.logs.glob("*.gz"):
             self.assertEqual(stat.S_IMODE(gz.stat().st_mode), 0o600)
 
@@ -207,8 +208,9 @@ class RunLogRollTest(unittest.TestCase):
                          "a partial .gz must never carry the final name")
 
         h = SimpleNamespace(logs_dir=self.logs, run_log_path=self.path, log=self.messages.append)
-        append_run_log(h, {"n": "after"})
-        flush_run_log()
+        with mock.patch.object(runlog.time, "time", return_value=_at(0) + runlog.ROLL_RETRY_S + 1):
+            append_run_log(h, {"n": "after"})
+            flush_run_log()
         self.assertFalse(plain.exists())
         self.assertEqual(list(self.logs.glob("*.tmp")), [])
         with gzip.open(self.logs / f"harness.{day}.jsonl.gz", "rt", encoding="utf-8") as f:
@@ -270,6 +272,63 @@ class RollCostTest(unittest.TestCase):
         self.assertFalse(plain.exists())
         with gzip.open(self.logs / f"console.{day}.out.gz", "rt", encoding="utf-8") as f:
             self.assertEqual(f.read(), "kept\n")
+
+    def test_a_later_process_crash_is_recovered_without_scanning_each_line(self):
+        runlog.append(self.path, b"from A\n")
+        child = (
+            "from pathlib import Path; from world.process import runlog; import os,sys; "
+            "runlog._compress=lambda plain: os._exit(7); "
+            "runlog.maybe_roll(Path(sys.argv[1]),max_bytes=1)"
+        )
+        done = subprocess.run([sys.executable, "-c", child, str(self.path)],
+                              cwd=Path(__file__).resolve().parents[1], timeout=30)
+        self.assertEqual(done.returncode, 7)
+        plain, = self.logs.glob("console.*.out")
+        clock = time.time()
+        with mock.patch.object(runlog.time, "time", return_value=clock + runlog.RECOVERY_SCAN_S + 1):
+            runlog.append(self.path, b"after crash\n", log=self.messages.append)
+        self.assertFalse(plain.exists())
+        with gzip.open(str(plain) + ".gz", "rb") as f:
+            self.assertEqual(f.read(), b"from A\n")
+        self.assertEqual(self.path.read_bytes(), b"after crash\n")
+
+    def test_old_archive_failure_does_not_block_current_file_rolls(self):
+        old = self.logs / "console.2000-01-01.out"
+        old.write_bytes(b"old\n")
+        real_compress = runlog._compress
+
+        def compress(path):
+            if path == old:
+                raise PermissionError("old archive inaccessible")
+            return real_compress(path)
+
+        with mock.patch.object(runlog, "_compress", side_effect=compress):
+            for _ in range(100):
+                runlog.append(self.path, b"x" * 10, max_bytes=100, log=self.messages.append)
+        self.assertLessEqual(self.path.stat().st_size, 100)
+        recovered = b""
+        for p in self.logs.glob("*.gz"):
+            with gzip.open(p, "rb") as f:
+                recovered += f.read()
+        self.assertEqual(len(recovered) + self.path.stat().st_size, 1000)
+        self.assertEqual(old.read_bytes(), b"old\n")
+
+    def test_compression_failure_backs_off_and_warns_once_across_names(self):
+        clock = [time.time()]
+        with mock.patch.object(runlog.time, "time", side_effect=lambda: clock[0]), \
+                mock.patch.object(runlog, "_compress", side_effect=PermissionError("disk full")) as compress:
+            runlog.append(self.path, b"first\n", max_bytes=1, log=self.messages.append)
+            runlog.append(self.path, b"second\n", max_bytes=1, log=self.messages.append)
+            self.assertEqual(compress.call_count, 1)
+            runlog.append(self.path, b"third\n", max_bytes=1, log=self.messages.append)
+            self.assertEqual(compress.call_count, 1)
+            clock[0] += runlog.ROLL_RETRY_S + 1
+            runlog.append(self.path, b"fourth\n", max_bytes=1, log=self.messages.append)
+            self.assertGreater(compress.call_count, 1)
+        self.assertEqual(len(self.messages), 1, self.messages)
+        plain = b"".join(p.read_bytes() for p in self.logs.glob("console.*.out"))
+        self.assertCountEqual((plain + self.path.read_bytes()).splitlines(),
+                              [b"first", b"second", b"third", b"fourth"])
 
     def test_a_failing_roll_backs_off_and_warns_once(self):
         """Windows: someone follows the console log, so every rename fails. One warning
@@ -340,6 +399,15 @@ class RunLogOffTheLoopTest(unittest.TestCase):
                                  log=lambda _m: None)
         self.h.logs_dir.mkdir()
 
+    def test_entries_keep_epoch_time_and_include_iso_time_with_offset(self):
+        append_run_log(self.h, {"n": 1})
+        flush_run_log()
+        entry = json.loads(self.h.run_log_path.read_text())
+        self.assertIsInstance(entry["ts"], float)
+        stamp = datetime.fromisoformat(entry["time"])
+        self.assertIsNotNone(stamp.tzinfo)
+        self.assertAlmostEqual(stamp.timestamp(), entry["ts"], places=5)
+
     def test_a_slow_write_does_not_hold_the_event_loop_and_keeps_order(self):
         real_append = runlog.append
         written: list[int] = []
@@ -380,6 +448,56 @@ class RunLogOffTheLoopTest(unittest.TestCase):
             append_run_log(self.h, {"agent": "x", "status": "ok"})
             flush_run_log()
         self.assertTrue(any("disk full" in m for m in messages), messages)
+
+    @unittest.skipUnless(hasattr(os, "fork"), "fork is not available on Windows")
+    def test_a_forked_child_gets_a_live_writer_after_the_parent_used_it(self):
+        script = (
+            "import os,sys,warnings\n"
+            "from pathlib import Path\n"
+            "from types import SimpleNamespace\n"
+            f"sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r})\n"
+            "from world.process import orchestrator\n"
+            "h = SimpleNamespace(run_log_path=Path(sys.argv[1]), log=print)\n"
+            "orchestrator.append_run_log(h, {'parent': True})\n"
+            "orchestrator.flush_run_log()\n"
+            "with warnings.catch_warnings():\n"
+            "    warnings.simplefilter('ignore')\n"
+            "    pid = os.fork()\n"
+            "if pid == 0:\n"
+            "    orchestrator.append_run_log(h, {'child': True})\n"
+            "    try:\n"
+            "        orchestrator._run_log_writer.submit(lambda: None).result(timeout=2)\n"
+            "        orchestrator.flush_run_log()\n"
+            "    except TimeoutError:\n"
+            "        os._exit(7)\n"
+            "    os._exit(0)\n"
+            "_, status = os.waitpid(pid, 0)\n"
+            "sys.exit(os.waitstatus_to_exitcode(status))\n"
+        )
+        done = subprocess.run([sys.executable, "-c", script, str(self.h.run_log_path)],
+                              capture_output=True, text=True, timeout=30)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        entries = [json.loads(line) for line in self.h.run_log_path.read_text().splitlines()]
+        self.assertTrue(entries[0]["parent"])
+        self.assertTrue(entries[1]["child"])
+
+    def test_writer_also_starts_without_the_posix_at_fork_api(self):
+        script = (
+            "import importlib, os, sys\n"
+            "from pathlib import Path\n"
+            "from types import SimpleNamespace\n"
+            f"sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r})\n"
+            "from world.process import orchestrator\n"
+            "if hasattr(os, 'register_at_fork'): del os.register_at_fork\n"
+            "importlib.reload(orchestrator)\n"
+            "h = SimpleNamespace(run_log_path=Path(sys.argv[1]), log=print)\n"
+            "orchestrator.append_run_log(h, {'n': 1})\n"
+            "orchestrator.flush_run_log()\n"
+        )
+        done = subprocess.run([sys.executable, "-c", script, str(self.h.run_log_path)],
+                              capture_output=True, text=True, timeout=30)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(json.loads(self.h.run_log_path.read_text())["n"], 1)
 
     def test_entries_still_queued_at_exit_are_written(self):
         script = (
@@ -474,6 +592,49 @@ class OpsLogErrFileTest(unittest.TestCase):
                              stdin=io.BytesIO(b"x\n"))
         self.assertEqual(len(list(self.logs.glob("ops-log.*.err.gz"))), 1)
         self.assertEqual(len(self.err.read_text("utf-8").splitlines()), 1)
+
+    def test_old_err_archive_failure_does_not_disable_the_one_mb_cap(self):
+        old = self.logs / "ops-log.2000-01-01.err"
+        old.write_bytes(b"old\n")
+        self.err.write_bytes(b"x" * (ops_log.ERR_MAX_BYTES - 1024))
+        real_compress = runlog._compress
+
+        def compress(path):
+            if path == old:
+                raise PermissionError("old archive inaccessible")
+            return real_compress(path)
+
+        with mock.patch.object(ops_log, "_runlog", return_value=runlog), \
+                mock.patch.object(runlog, "_compress", side_effect=compress), \
+                contextlib.redirect_stderr(io.StringIO()):
+            for _ in range(20):
+                ops_log.main(["--file", str(self.console), "--err-file", str(self.err)],
+                             stdin=io.BytesIO(b"x\n"))
+        self.assertLessEqual(self.err.stat().st_size, ops_log.ERR_MAX_BYTES)
+        self.assertTrue(list(self.logs.glob("ops-log.*.err.gz")))
+        self.assertEqual(old.read_bytes(), b"old\n")
+
+    def test_a_restarted_writer_reports_and_clears_previous_drops(self):
+        console = self.logs / "restarted.out"
+        previous = ops_log.Dropping(console, log=lambda _: None)
+        previous.failed(PermissionError("read only"))
+        previous.failed(PermissionError("read only"))
+        ops_log.main(["--file", str(console), "--err-file", str(self.err)],
+                     stdin=io.BytesIO(b"writing again\n"))
+        self.assertFalse(previous.state.exists())
+        content = console.read_text()
+        self.assertIn("2 line(s) were dropped", content)
+        self.assertIn(previous.since, content)
+        self.assertIn("writing again", content)
+        self.assertIn("again after dropping 2 line(s)", self.err.read_text())
+
+    def test_a_restarted_writer_keeps_counting_until_a_write_succeeds(self):
+        previous = ops_log.Dropping(self.console, log=lambda _: None)
+        previous.failed(PermissionError("read only"))
+        ops_log.main(["--file", str(self.console), "--err-file", str(self.err)],
+                     stdin=io.BytesIO(b"another failure\n"))
+        self.assertTrue(previous.state.read_text().startswith("2 line(s) dropped since "))
+        self.assertIn(previous.since, previous.state.read_text())
 
     def test_without_err_file_warnings_stay_on_stderr(self):
         stderr = io.StringIO()

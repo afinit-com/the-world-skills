@@ -29,6 +29,7 @@ import asyncio
 import contextlib
 import inspect
 import json
+import os
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -57,9 +58,20 @@ WORKTREE_SWEEP_INTERVAL_S = 3600
 _run_log_writer = ThreadPoolExecutor(max_workers=1, thread_name_prefix="run-log")
 
 
+def _reset_run_log_writer() -> None:
+    # fork keeps the executor's queue and thread set, but none of its worker threads.
+    global _run_log_writer
+    _run_log_writer = ThreadPoolExecutor(max_workers=1, thread_name_prefix="run-log")
+
+
+if hasattr(os, "register_at_fork"):  # Windows starts a fresh interpreter instead.
+    os.register_at_fork(after_in_child=_reset_run_log_writer)
+
+
 def append_run_log(harness: "Harness", entry: dict) -> None:
     """Queue one run-log entry and return without waiting for the write."""
-    entry = {"ts": time.time(), **entry}
+    now = time.time()
+    entry = {"ts": now, "time": datetime.fromtimestamp(now).astimezone().isoformat(), **entry}
     # getattr: test stubs and harnesses built before the cap existed carry no settings.
     _run_log_writer.submit(
         _write_run_log, harness.run_log_path, (json.dumps(entry) + "\n").encode("utf-8"),
