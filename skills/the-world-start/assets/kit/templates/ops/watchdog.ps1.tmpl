@@ -72,7 +72,7 @@ function Send-Note([string]$Text) {
   $printed = @()
   foreach ($line in $out) {
     if ($line -is [System.Management.Automation.ErrorRecord]) {
-      [System.IO.File]::AppendAllText($Log, "$line`n", $Utf8)
+      Write-Log "$line"
     } else {
       $printed += "$line"
     }

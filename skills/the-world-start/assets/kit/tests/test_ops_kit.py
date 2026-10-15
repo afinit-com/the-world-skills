@@ -661,6 +661,20 @@ class LauncherAndWatchdogTest(unittest.TestCase):
             shell.kill()
             shell.wait()
 
+    def test_every_watchdog_log_line_starts_with_the_time_as_the_docs_write_it(self):
+        self.assertEqual(self.run_up("up").returncode, 0)
+        subprocess.run(["kill", "-9", *self.pids()], check=True)
+        self.wait_gone()
+        self.run_watchdog()  # logs what `resume` printed, too
+        self.assertEqual(len(self.pids()), 1)
+        self.assertEqual(self.run_up("down").returncode, 0)
+        stamp = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}"
+        lines = (self.home / "logs" / "watchdog.log").read_text(encoding="utf-8").splitlines()
+        self.assertTrue(any("started (pid" in line for line in lines), lines)
+        for line in lines:
+            self.assertRegex(line, stamp + " ")
+        self.assertRegex((self.state / "down").read_text(), stamp + "$")
+
     def test_why_the_watchdog_could_not_tell_is_in_its_log(self):
         shim = self.home / "shim"
         shim.mkdir()

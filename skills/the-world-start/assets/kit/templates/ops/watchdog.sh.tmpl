@@ -39,7 +39,21 @@ if [ "${WORLD_OPS_LOCK_HELD:-}" != "$HOME_DIR" ]; then
     --wait-s 30 -- "$SELF"
 fi
 
-log() { printf '%s %s\n' "$(date +%Y-%m-%dT%H:%M:%S%z)" "$*" >>"$LOG"; }
+# The time as the console log and the docs write it: 2026-10-15T15:25:00+09:00.
+stamp() { local t; t=$(date +%Y-%m-%dT%H:%M:%S%z); printf '%s:%s' "${t%??}" "${t: -2}"; }
+log() { printf '%s %s\n' "$(stamp)" "$*" >>"$LOG"; }
+# Every line read on stdin, stamped, so what a step printed reads like the rest of the log.
+log_lines() { local line; while IFS= read -r line || [ -n "$line" ]; do log "$line"; done; }
+
+# One step of the up script, its output logged line by line. Through a file rather than
+# a pipe: a background process that kept a pipe open would hold the round until it exits.
+up_step() {
+  local rc=0
+  "$UP" "$1" >"$STATE/step.out" 2>&1 || rc=$?
+  log_lines <"$STATE/step.out"
+  rm -f "$STATE/step.out"
+  return "$rc"
+}
 
 # Log a line and, with Slack on, post it: into the open incident's thread, or as a new
 # message that becomes the thread. ops-notify prints the thread it landed in, a new one
@@ -49,9 +63,13 @@ notify() {
   [ -n "$NOTIFY" ] || return 0
   local thread ts
   thread=$(cat "$INCIDENT" 2>/dev/null || true)
+  local rc=0
   # shellcheck disable=SC2086  # NOTIFY is the two --*-env flags, word-split on purpose
-  if ! ts=$("$PY" "$HOME_DIR/bin/ops-notify.py" $NOTIFY ${thread:+--thread-ts "$thread"} \
-      "{{NAME}} watchdog: $*" 2>>"$LOG"); then
+  ts=$("$PY" "$HOME_DIR/bin/ops-notify.py" $NOTIFY ${thread:+--thread-ts "$thread"} \
+    "{{NAME}} watchdog: $*" 2>"$STATE/notify.err") || rc=$?
+  log_lines <"$STATE/notify.err"
+  rm -f "$STATE/notify.err"
+  if [ "$rc" != 0 ]; then
     log "⚠️  Slack notification failed (see the line above); the event is only in this log"
     return 0
   fi
@@ -61,7 +79,7 @@ notify() {
 # Only watchdog rounds write this log, one at a time under the lock, so rolling it by
 # rename between rounds loses nothing.
 "$PY" "$HOME_DIR/bin/ops-log.py" --file "$LOG" --roll-only --err-file "$LOGS/ops-log.err" \
-  ${KEEP_DAYS:+--keep-days "$KEEP_DAYS"} >>"$LOG" 2>&1
+  ${KEEP_DAYS:+--keep-days "$KEEP_DAYS"} 2>&1 | log_lines
 
 # Lines the console writer could not write (a full disk, a read-only file): restarting
 # would not help, so say it once each time it starts happening.
@@ -131,19 +149,19 @@ next_try=$(cat "$STATE/next_try" 2>/dev/null || echo 0)
 
 # Their output is why a round could not tell (a pgrep failure), so it goes to the log the
 # notification points at, as everything resume and recycle print does.
-"$UP" running >>"$LOG" 2>&1
+up_step running
 running_rc=$?
 check_unknown "$running_rc" running
 if [ "$running_rc" = 0 ]; then
   # Running without its console writer: the harness's next line of output fails with
   # EPIPE and kills it at a moment nobody chose, so restart it now instead.
-  "$UP" healthy >>"$LOG" 2>&1
+  up_step healthy
   healthy_rc=$?
   check_unknown "$healthy_rc" healthy
   if [ "$healthy_rc" != 0 ] && [ ! -f "$STATE/down" ]; then
     [ "$now" -lt "$next_try" ] && exit 0
     set_retry
-    "$UP" recycle >>"$LOG" 2>&1
+    up_step recycle
     recycle_rc=$?
     check_unknown "$recycle_rc" recycle
     if [ "$recycle_rc" = 0 ]; then
@@ -175,7 +193,7 @@ fi
 set_retry
 
 # `resume`, never `up`: only a person's explicit `up` clears the down marker.
-"$UP" resume >>"$LOG" 2>&1
+up_step resume
 resume_rc=$?
 check_unknown "$resume_rc" resume
 if [ "$resume_rc" = 0 ]; then

@@ -238,7 +238,9 @@ cmd_recycle() {
 
 cmd_down() {
   mkdir -p "$STATE"
-  date +%Y-%m-%dT%H:%M:%S%z >"$STATE/down"
+  local t
+  t=$(date +%Y-%m-%dT%H:%M:%S%z)
+  printf '%s:%s\n' "${t%??}" "${t: -2}" >"$STATE/down"  # +09:00, as the logs write it
   local running
   running=$(pids) || return 4
   if [ -z "$running" ] && [ -z "$(writer)" ]; then

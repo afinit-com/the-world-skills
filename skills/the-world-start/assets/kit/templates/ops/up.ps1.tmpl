@@ -64,10 +64,11 @@ try { [Console]::OutputEncoding = $Utf8 } catch { }
 $env:PYTHONIOENCODING = 'utf-8'
 
 # Output goes straight to the console streams, never down the pipeline, so a function's
-# return value is only what it returns. Under the watchdog it goes to its log instead.
+# return value is only what it returns. Under the watchdog it goes to its log instead,
+# stamped like the watchdog's own lines.
 function Say([string]$Text, [switch]$Err) {
   if ($global:WorldOpsLogFile) {
-    [System.IO.File]::AppendAllText($global:WorldOpsLogFile, "$Text`n", $Utf8)
+    [System.IO.File]::AppendAllText($global:WorldOpsLogFile, "$(Stamp) $Text`n", $Utf8)
   } elseif ($Err) {
     [Console]::Error.WriteLine($Text)
   } else {
