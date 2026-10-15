@@ -405,15 +405,45 @@ class SayAsHumanTests(unittest.IsolatedAsyncioTestCase):
         module = self.module()
         web = SimpleNamespace(auth_test=AsyncMock(return_value={'user_id': 'UBOT'}),
                               chat_postMessage=AsyncMock(return_value={'ts': '42'}))
-        with patch.dict(os.environ, {'OBS_SLACK_AS_HUMAN_SECRET': SECRET,
-                                     'OBS_SLACK_BOT_TOKEN': 'bot', 'OBS_SLACK_CHANNEL': 'HOME'}), \
-                patch.object(module, 'AsyncWebClient', return_value=web):
+        persona = SimpleNamespace(auth_test=AsyncMock(return_value={'user_id': 'UOTHER'}))
+        with patch.dict(os.environ, {'OBS_SLACK_AS_HUMAN_SECRET': SECRET, 'OBS_SLACK_BOT_TOKEN': 'bot',
+                                     'OBS_SLACK_CHANNEL': 'HOME', 'OTHER_SLACK_BOT_TOKEN': 'xoxb-other'},
+                        clear=True), \
+                patch.object(module, 'AsyncWebClient',
+                             side_effect=lambda token: persona if token == 'xoxb-other' else web):
             await module.send('OBS', 'hello')
             self.assertEqual(web.chat_postMessage.call_args.kwargs['text'],
                              f'[as-human:{SECRET}] <@UBOT> hello')
             await module.send('OBS', '<@UOTHER> hello')
             self.assertEqual(web.chat_postMessage.call_args.kwargs['text'],
                              f'[as-human:{SECRET}] <@UOTHER> hello')
+
+    async def test_send_mentions_main_unless_a_bot_is_already_mentioned(self):
+        """docs/verify.md: only a bot mention replaces the automatic one. A message that
+        mentioned only a colleague went out with no bot mention, and nothing answered it."""
+        module = self.module()
+        users = {'xoxb-main': 'UBOT', 'xoxb-persona': 'UPERSONA'}
+        clients = {}
+
+        def client(token):
+            clients.setdefault(token, SimpleNamespace(
+                auth_test=AsyncMock(return_value={'user_id': users[token]}),
+                chat_postMessage=AsyncMock(return_value={'ts': '42'})))
+            return clients[token]
+
+        env = {'SLACK_AS_HUMAN_SECRET': SECRET, 'SLACK_BOT_TOKEN': 'xoxb-main', 'SLACK_CHANNEL': 'HOME',
+               'REVIEWER_SLACK_BOT_TOKEN': 'xoxb-persona'}
+        with patch.dict(os.environ, env, clear=True), patch.object(module, 'AsyncWebClient', side_effect=client):
+            for text, posted in [('<@UCOLLEAGUE> can you check?', '<@UBOT> <@UCOLLEAGUE> can you check?'),
+                                 ('<@UPERSONA> review this', '<@UPERSONA> review this'),
+                                 ('hi <@UBOT>', 'hi <@UBOT>'), ('hello', '<@UBOT> hello')]:
+                await module.send('', text)
+                self.assertEqual(clients['xoxb-main'].chat_postMessage.call_args.kwargs['text'],
+                                 f'[as-human:{SECRET}] {posted}')
+            await module.send('', '<@UCOLLEAGUE> in a thread', thread='1')
+            self.assertEqual(clients['xoxb-main'].chat_postMessage.call_args.kwargs['text'],
+                             f'[as-human:{SECRET}] <@UCOLLEAGUE> in a thread')
+        clients['xoxb-persona'].chat_postMessage.assert_not_awaited()
 
     async def test_short_secret_send_does_not_call_slack(self):
         module = self.module()

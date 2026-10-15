@@ -144,8 +144,10 @@ new simulation. Other bots cannot use it. A person's marker is stripped as text 
 not change their identity.
 
 This exercises mentions and thread replies, including handoffs. A new thread automatically
-mentions the main bot unless the text already mentions a bot; a thread reply keeps its
-existing owner unless explicitly addressed elsewhere. It cannot simulate approval button
+mentions the main bot unless the text already mentions a bot: the main bot, or a persona
+app whose `xoxb-` token is in the environment. Mentioning only a person still adds the
+main bot, so the harness answers. A thread reply is sent as written and keeps its existing
+owner unless explicitly addressed elsewhere. It cannot simulate approval button
 clicks, and a simulated "approve" message never grants `mention_tools` access. Hand an
 approval card to the human approver and report its click path as unverified until they
 click. Discord is outside this feature's scope. The same authorization and outward-action

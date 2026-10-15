@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import os
 import re
 import secrets
@@ -56,6 +57,19 @@ def init_secret(key: str) -> None:
     print('as-human secret initialized; restart the harness to load it')
 
 
+async def mentions_a_bot(text: str, main_user: str, main_token: str) -> bool:
+    """The main bot, or a persona app whose xoxb token is in this environment. Telling
+    any other user apart would need users:read, which the kit's apps do not request."""
+    mentioned = set(MENTION_RE.findall(text))
+    if main_user in mentioned or not mentioned:
+        return main_user in mentioned
+    for token in {v for v in os.environ.values() if v.startswith('xoxb-') and v != main_token}:
+        with contextlib.suppress(Exception):  # a stale persona token must not stop the check
+            if (await AsyncWebClient(token=token).auth_test())['user_id'] in mentioned:
+                return True
+    return False
+
+
 async def send(prefix: str, text: str, *, thread: str | None = None,
                channel: str | None = None) -> str:
     p = f'{prefix}_' if prefix else ''
@@ -68,8 +82,9 @@ async def send(prefix: str, text: str, *, thread: str | None = None,
     web = AsyncWebClient(token=token)
     me = await web.auth_test()
     # Slack does not emit app_mention for bots: the listener recognizes this mention
-    # in a message event, even when this is the first message of a new thread.
-    if not thread and not MENTION_RE.search(text):
+    # in a message event, even when this is the first message of a new thread. Mentioning
+    # only a person would reach no bot at all, so the main bot is added then too.
+    if not thread and not await mentions_a_bot(text, me['user_id'], token):
         text = f'<@{me["user_id"]}> {text}'
     response = await web.chat_postMessage(
         channel=channel, thread_ts=thread,
