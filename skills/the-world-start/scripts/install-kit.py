@@ -102,6 +102,7 @@ KIT_FILES = [
     "bin/discord-setup.py",
     "bin/slack-provision.py",
     "bin/slack-pair.py",
+    "bin/say-as-human.py",
     "bin/ops-kit.py",
     "bin/ops-notify.py",
     "bin/ops-log.py",
