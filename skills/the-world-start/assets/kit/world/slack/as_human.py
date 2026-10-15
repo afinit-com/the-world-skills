@@ -5,7 +5,8 @@ import hmac
 import os
 import re
 
-MARKER = re.compile(r"\[as-human:[^\]]*(?:\]|$)")
+OPEN = "[as-human:"
+MARKER = re.compile(r"\[as-human:[^\]\r\n]*\]")
 PREFIX = re.compile(r"^\[as-human:([^\]\r\n]*)\] ")
 
 
@@ -17,9 +18,13 @@ def secret_env(slack) -> str:
 
 
 def safe_text(text: str) -> str:
-    """Remove even an unknown or unfinished marker, and bare configured secrets."""
-    while "[as-human:" in text:
-        text = MARKER.sub("", text)
+    """Remove even an unknown marker, and bare configured secrets.
+
+    Of an unfinished marker only the opening goes: the text after it is the person's or
+    the model's, and dropping it to the end of the message lost it without a sign.
+    """
+    while OPEN in text:
+        text = MARKER.sub("", text).replace(OPEN, "")
     for key, value in os.environ.items():
         if value and (key == "SLACK_AS_HUMAN_SECRET" or key.endswith("_SLACK_AS_HUMAN_SECRET")):
             text = text.replace(value, "[redacted]")

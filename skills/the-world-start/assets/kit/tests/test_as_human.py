@@ -185,6 +185,22 @@ class AsHumanTests(unittest.IsolatedAsyncioTestCase):
                      '[as-human:unfinished', '[as-human:line\nbreak] hello']:
             self.assertNotIn('[as-human:', safe_text(text))
 
+    def test_an_unfinished_marker_loses_only_itself(self):
+        """`[^\]]*(?:\]|$)` ran to the end of the message, newlines included, so a question
+        about the marker reached the model, or a reply was posted, cut off without a sign."""
+        from world.slack.as_human import safe_text
+        question = '<@UBOT> what does `[as-human:` mean?\nAlso please check deploy X and Y'
+        self.assertEqual(safe_text(question), '<@UBOT> what does `` mean?\nAlso please check deploy X and Y')
+        reply = 'Step 1: ok\nStep 2: the regex starts with `[as-human:` and\nStep 3: done'
+        self.assertEqual(safe_text(reply), 'Step 1: ok\nStep 2: the regex starts with `` and\nStep 3: done')
+        self.assertEqual(safe_text('[as-human:line\nbreak] hello'), 'line\nbreak] hello')
+        self.assertEqual(safe_text(f'[as-human:{SECRET}] hi'), ' hi')
+
+    async def test_an_unfinished_marker_keeps_the_rest_of_a_mention(self):
+        obj = self.listener()
+        await self.deliver(obj, 'UHUMAN', text='<@UBOT> what is `[as-human:`?\nAlso check deploy X')
+        self.assertEqual(obj._handle_mention.call_args.args[1], '<@UBOT> what is ``?\nAlso check deploy X')
+
     def test_all_slack_message_writes_use_the_sanitizing_boundary(self):
         # Prevent a future direct SDK call in a card/handoff path from reopening it.
         for path in (KIT / 'world/slack').glob('*.py'):
