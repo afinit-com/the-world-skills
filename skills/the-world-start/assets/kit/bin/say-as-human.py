@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import importlib.util
 import os
 import re
 import secrets
@@ -59,13 +60,33 @@ def init_secret(key: str) -> None:
     print('as-human secret initialized; restart the harness to load it')
 
 
+def persona_tokens(main_token: str) -> set[str]:
+    """Use the same app roster and token keys as slack-provision, never ambient tokens.
+    Without a valid roster, keep the main mention so the conversation still reaches it.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "slack_provision", Path(__file__).with_name("slack-provision.py"))
+    provision = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(provision)
+    try:
+        apps = provision.load_spec(ROOT / "slack-app" / "slack-apps.json")["apps"]
+    except (provision.SpecError, OSError, TypeError, AttributeError):
+        return set()
+    main = next(app for app in apps if app.get("main"))
+    if os.environ.get(main["bot_token_env"]) != main_token:
+        return set()
+    return {token for app in apps if not app.get("main")
+            if (token := os.environ.get(app["bot_token_env"], "")).startswith("xoxb-")
+            and token != main_token}
+
+
 async def mentions_a_bot(text: str, main_user: str, main_token: str) -> bool:
-    """The main bot, or a persona app whose xoxb token is in this environment. Telling
+    """The main bot, or a persona app in this harness's Slack app roster. Telling
     any other user apart would need users:read, which the kit's apps do not request."""
     mentioned = set(MENTION_RE.findall(text))
     if main_user in mentioned or not mentioned:
         return main_user in mentioned
-    for token in {v for v in os.environ.values() if v.startswith('xoxb-') and v != main_token}:
+    for token in persona_tokens(main_token):
         with contextlib.suppress(Exception):  # a stale persona token must not stop the check
             if (await AsyncWebClient(token=token).auth_test())['user_id'] in mentioned:
                 return True

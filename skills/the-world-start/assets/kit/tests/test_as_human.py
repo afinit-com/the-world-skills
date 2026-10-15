@@ -3,6 +3,7 @@ import ast
 import contextlib
 import importlib.util
 import io
+import json
 import os
 import tempfile
 import unittest
@@ -419,6 +420,7 @@ class SayAsHumanTests(unittest.IsolatedAsyncioTestCase):
         with patch.dict(os.environ, {'OBS_SLACK_AS_HUMAN_SECRET': SECRET, 'OBS_SLACK_BOT_TOKEN': 'bot',
                                      'OBS_SLACK_CHANNEL': 'HOME', 'OTHER_SLACK_BOT_TOKEN': 'xoxb-other'},
                         clear=True), \
+                patch.object(module, 'persona_tokens', return_value={'xoxb-other'}), \
                 patch.object(module, 'AsyncWebClient',
                              side_effect=lambda token: persona if token == 'xoxb-other' else web):
             await module.send('OBS', 'hello')
@@ -443,7 +445,9 @@ class SayAsHumanTests(unittest.IsolatedAsyncioTestCase):
 
         env = {'SLACK_AS_HUMAN_SECRET': SECRET, 'SLACK_BOT_TOKEN': 'xoxb-main', 'SLACK_CHANNEL': 'HOME',
                'REVIEWER_SLACK_BOT_TOKEN': 'xoxb-persona'}
-        with patch.dict(os.environ, env, clear=True), patch.object(module, 'AsyncWebClient', side_effect=client):
+        with patch.dict(os.environ, env, clear=True), \
+                patch.object(module, 'persona_tokens', return_value={'xoxb-persona'}), \
+                patch.object(module, 'AsyncWebClient', side_effect=client):
             for text, posted in [('<@UCOLLEAGUE> can you check?', '<@UBOT> <@UCOLLEAGUE> can you check?'),
                                  ('<@UPERSONA> review this', '<@UPERSONA> review this'),
                                  ('hi <@UBOT>', 'hi <@UBOT>'), ('hello', '<@UBOT> hello')]:
@@ -454,6 +458,48 @@ class SayAsHumanTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(clients['xoxb-main'].chat_postMessage.call_args.kwargs['text'],
                              f'[as-human:{SECRET}] <@UCOLLEAGUE> in a thread')
         clients['xoxb-persona'].chat_postMessage.assert_not_awaited()
+
+    async def test_missing_or_malformed_roster_keeps_main_mention(self):
+        module = self.module()
+        with tempfile.TemporaryDirectory() as raw, patch.object(module, 'ROOT', Path(raw)):
+            self.assertEqual(set(), module.persona_tokens('xoxb-main'))
+            path = Path(raw) / 'slack-app/slack-apps.json'
+            path.parent.mkdir()
+            for text in ('invalid JSON', '{"apps": [1]}', '[]'):
+                path.write_text(text)
+                self.assertEqual(set(), module.persona_tokens('xoxb-main'))
+
+    async def test_unrelated_env_bot_is_not_a_persona(self):
+        module = self.module()
+        clients = {}
+
+        def client(token):
+            clients.setdefault(token, SimpleNamespace(
+                auth_test=AsyncMock(return_value={'user_id': {
+                    'xoxb-main': 'UBOT', 'xoxb-persona': 'UPERSONA',
+                    'xoxb-foreign': 'UFOREIGN'}[token]}),
+                chat_postMessage=AsyncMock(return_value={'ts': '42'})))
+            return clients[token]
+
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / 'slack-app').mkdir()
+            (root / 'slack-app/slack-apps.json').write_text(json.dumps({'apps': [
+                {'key': 'main', 'display': 'Keeper', 'main': True,
+                 'bot_token_env': 'SLACK_BOT_TOKEN', 'app_token_env': 'SLACK_APP_TOKEN'},
+                {'key': 'scout', 'display': 'Scout', 'bot_token_env': 'PERSONA_TOKEN'}]}))
+            with patch.object(module, 'ROOT', root), patch.dict(os.environ, {
+                'SLACK_AS_HUMAN_SECRET': SECRET, 'SLACK_CHANNEL': 'HOME',
+                'SLACK_BOT_TOKEN': 'xoxb-main', 'PERSONA_TOKEN': 'xoxb-persona',
+                'UNRELATED_SERVICE_TOKEN': 'xoxb-foreign'}, clear=True), \
+                    patch.object(module, 'AsyncWebClient', side_effect=client):
+                await module.send('', '<@UFOREIGN> hello')
+                self.assertEqual(f'[as-human:{SECRET}] <@UBOT> <@UFOREIGN> hello',
+                                 clients['xoxb-main'].chat_postMessage.call_args.kwargs['text'])
+                await module.send('', '<@UPERSONA> hello')
+                self.assertEqual(f'[as-human:{SECRET}] <@UPERSONA> hello',
+                                 clients['xoxb-main'].chat_postMessage.call_args.kwargs['text'])
+            self.assertNotIn('xoxb-foreign', clients)
 
     async def test_short_secret_send_does_not_call_slack(self):
         module = self.module()
