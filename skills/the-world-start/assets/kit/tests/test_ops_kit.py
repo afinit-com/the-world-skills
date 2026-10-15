@@ -960,6 +960,28 @@ class WindowsLauncherTest(unittest.TestCase):
                 return
             time.sleep(0.5)
 
+    def test_relative_other_home_does_not_break_this_homes_running_status(self):
+        self.assertEqual(self.run_up("up").returncode, 0)
+        other = self.home.parent / "other"
+        other.mkdir()
+        (other / "harness.py").write_text(STUB_HARNESS_WINDOWS, encoding="utf-8")
+        child = subprocess.Popen([str(self.python), "harness.py"], cwd=other,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            for _ in range(100):
+                if (other / "env-seen.json").exists():
+                    break
+                time.sleep(0.05)
+            self.assertTrue((other / "env-seen.json").exists())
+            self.assertEqual(self.run_up("running").returncode, 0)
+            self.assertEqual(self.run_up("healthy").returncode, 0)
+            self.assertEqual(self.run_ps(self.watchdog).returncode, 0)
+            self.assertEqual(self.run_up("down").returncode, 0)
+            self.assertIsNone(child.poll(), "ops stopped an unidentified other home")
+        finally:
+            subprocess.run(["taskkill", "/PID", str(child.pid), "/T", "/F"], capture_output=True)
+            child.wait(timeout=10)
+
     def test_relative_readme_launch_blocks_a_second_start(self):
         child = subprocess.Popen([str(self.python), "harness.py"], cwd=self.home,
                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
