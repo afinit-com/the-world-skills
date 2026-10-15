@@ -120,6 +120,20 @@ class ApprovalMixin:
         scope_line = approval_scope.describe(scope_files)
         if scope_line:
             summary = f"{summary}\n{scope_line}"
+        for pending in self.state.get("pending_approvals", []):
+            if (pending.get("thread_ts") == thread_ts
+                    and pending.get("requester") == requester
+                    and pending.get("request_summary", pending.get("summary")) == summary
+                    and pending.get("scope_hash", _hash) == _hash
+                    and pending.get("reply_channel", slack.channel) == (reply_channel or slack.channel)
+                    and pending.get("reply_thread_ts", thread_ts) == (reply_thread_ts or thread_ts)
+                    and pending.get("msg_ts")):
+                ts = pending["msg_ts"].replace(".", "")
+                await self.post(
+                    f"대기 중인 승인 요청: <https://slack.com/archives/{slack.channel}/p{ts}|기존 승인 카드>",
+                    thread_ts=thread_ts,
+                )
+                return
         ph = self.harness.approval_phrases
         resp = await slack_call(self.web, "chat_postMessage",
             channel=slack.channel,
@@ -145,6 +159,10 @@ class ApprovalMixin:
             "thread_ts": thread_ts,
             "requester": requester,
             "summary": summary[:300],
+            "request_summary": summary,
+            "scope_hash": _hash,
+            "reply_channel": reply_channel or slack.channel,
+            "reply_thread_ts": reply_thread_ts or thread_ts,
             "ts": time.time(),
         })
         self.state["pending_approvals"] = self.state["pending_approvals"][-MAX_PENDING_APPROVALS:]

@@ -87,11 +87,22 @@ def split_approval_request(reply: str) -> tuple[str, str | None]:
 # protected byte-for-byte so a `**` or `#` INSIDE a code sample is never rewritten.
 # Applied to model PROSE only (mention/relay replies), never to world's own structured
 # or HMAC-signed posts.
-_MD_FENCE = re.compile(r"```.*?```", re.DOTALL)
+_MD_FENCE = re.compile(r"```(?:.*?```|.*\Z)", re.DOTALL)
 _MD_INLINE = re.compile(r"`[^`\n]+`")
+# One level of balanced parentheses stays in the URL (a wiki link), so it is not cut at
+# its first `)`.
+_MD_LINK = re.compile(r"\[([^\]\n]+)\]\(<?(https?://(?:[^\s<>()]|\([^\s<>()]*\))+)>?\)")
+# Slack escapes only these three. An `&` already starting one of them stays as it is.
+_SLACK_AMP = re.compile(r"&(?!(?:amp|lt|gt);)")
 _MD_HEADER = re.compile(r"^[ \t]{0,3}#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$", re.MULTILINE)
 _MD_BOLD_STAR = re.compile(r"(?<!\*)\*\*(?!\s)(.+?)(?<!\s)\*\*(?!\*)", re.DOTALL)
 _MD_BOLD_US = re.compile(r"(?<![\w_])__(?!\s)(.+?)(?<!\s)__(?![\w_])", re.DOTALL)
+
+
+def _slack_escape(text: str) -> str:
+    """Escape `&`, `<`, `>` as Slack asks. Not html.unescape first: it also reads
+    `&not`, `&para`, `&reg` without a semicolon, so `?a=1&notify=1` became `¬ify`."""
+    return _SLACK_AMP.sub("&amp;", text).replace("<", "&lt;").replace(">", "&gt;")
 
 
 def slack_mrkdwn(text: str) -> str:
@@ -106,6 +117,14 @@ def slack_mrkdwn(text: str) -> str:
         return f"\x00{len(spans) - 1}\x00"
 
     out = _MD_INLINE.sub(stash, _MD_FENCE.sub(stash, text))
+    def link(m: "re.Match") -> str:
+        # Slack has no escape for a label's pipe: use its visible fullwidth form.
+        label = re.sub(r"\x00(\d+)\x00", lambda code: spans[int(code[1])], m[1])
+        label = _slack_escape(label).replace("|", "｜")
+        url = _slack_escape(m[2]).replace("|", "%7C")
+        return f"<{url}|{label}>"
+
+    out = _MD_LINK.sub(link, out)
     out = _MD_HEADER.sub(r"*\1*", out)
     out = _MD_BOLD_STAR.sub(r"*\1*", out)
     out = _MD_BOLD_US.sub(r"*\1*", out)

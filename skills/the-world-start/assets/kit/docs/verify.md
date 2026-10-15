@@ -126,7 +126,9 @@ uv run python bin/say-as-human.py send --thread 1700000000.000100 'What did you 
 For a harness using `OBS_SLACK_BOT_TOKEN`, pass `--prefix OBS` before `init` or `send`.
 The matching key is `OBS_SLACK_AS_HUMAN_SECRET`; without a prefix it is
 `SLACK_AS_HUMAN_SECRET`. `init` keeps an existing value and the env file's permissions,
-prints no value, and creates a new env file with mode 600. An empty or missing secret, or
+prints no value, and creates a new env file with mode 600. For an existing short value,
+clear its key in the env file and unset the shell override, then run the matching
+`init` command and restart; `init` preserves existing nonempty credentials. An empty or missing secret, or
 one shorter than 16 characters (the harness warns once), turns this feature off: messages, history and model input are then handled as if it did
 not exist, and harness posts only drop a complete marker. Clear the value in
 `env/harness.env` and restart to disable it.
@@ -143,9 +145,20 @@ cards and progress messages strip the reserved pattern, so the model cannot gene
 new simulation. Other bots cannot use it. A person's marker is stripped as text and does
 not change their identity.
 
+For browser verification, Slack web can redraw a thread late and restore the original
+as-human input after a DOM-only mask. Before capturing, let the thread finish loading,
+mask every visible input marker and credential, then wait for a redraw and check the
+visible thread again. Repeat the check after opening or scrolling the thread; a previous
+mask is not evidence that it stayed masked. Inspect the captured image locally before
+saving or sharing it; if any credential appears, discard the capture immediately and
+repeat the masking and visual check. Prefer a view containing only harness replies.
+After testing, ask the channel owner to delete the as-human input messages (including
+thread replies); this is recommended cleanup, not permission for a verifier to delete them.
+
 This exercises mentions and thread replies, including handoffs. A new thread automatically
 mentions the main bot unless the text already mentions a bot: the main bot, or a persona
-app whose `xoxb-` token is in the environment. Mentioning only a person still adds the
+app listed in `slack-app/slack-apps.json`, using its configured `bot_token_env` key.
+If that roster is missing or invalid, the CLI keeps the main mention. Mentioning only a person still adds the
 main bot, so the harness answers. A thread reply is sent as written and keeps its existing
 owner unless explicitly addressed elsewhere. It cannot simulate approval button
 clicks, and a simulated "approve" message never grants `mention_tools` access. Hand an

@@ -432,6 +432,18 @@ class AnnounceCardBodyTests(unittest.IsolatedAsyncioTestCase):
         body = await self._card("## 요약\n**완료** 4건\n`**그대로**`")
         self.assertEqual(["> *요약*", "> *완료* 4건", "> `**그대로**`"], body.splitlines()[2:])
 
+    async def test_card_links_keep_query_parameters(self) -> None:
+        body = await self._card("[알림](https://example.com/a?x=1&notify=true&amp;region=kr)")
+        self.assertEqual("> <https://example.com/a?x=1&amp;notify=true&amp;region=kr|알림>",
+                         body.splitlines()[-1])
+
+    async def test_an_inline_code_fence_stays_in_the_quote(self) -> None:
+        # A line that opens and closes ``` is not a block: leaving it unquoted broke the
+        # quote bar in the middle of the card.
+        body = await self._card("see ```inline``` here\nnext line\n```\ncode\n```")
+        self.assertEqual(["> see ```inline``` here", "> next line", "```", "code", "```"],
+                         body.splitlines()[2:])
+
     async def test_broadcast_mentions_in_the_card_do_not_notify_the_channel(self) -> None:
         # A poll run that summarised outside text (a PR body) could carry these through,
         # and Slack notifies the whole channel for them even inside a bot's quote.
@@ -458,7 +470,9 @@ class AnnounceCardBodyTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_code_block_cut_in_the_middle_is_closed(self) -> None:
         body = await self._card("```python\n" + "x=1\n" * 200 + "```")
         self.assertEqual(0, body.count("```") % 2, body[-40:])
-        self.assertEqual("> ```", body.splitlines()[-1])
+        self.assertEqual("```", body.splitlines()[-1])
+        self.assertNotIn("> x=1", body)
+        self.assertNotIn("> ```", body)
 
     async def test_long_evidence_alone_stays_inside_one_slack_section(self) -> None:
         body = await self._card("", evidence=("x" * 99 + "\n") * 40)
@@ -483,7 +497,9 @@ class AnnounceCardBodyTests(unittest.IsolatedAsyncioTestCase):
         body = await self._card("", evidence="```\n" + ("x" * 99 + "\n") * 40 + "```")
         self.assertLessEqual(len(body), 3000)
         self.assertEqual(0, body.count("```") % 2, body[-40:])
-        self.assertEqual("> ```", body.splitlines()[-1])
+        self.assertEqual("```", body.splitlines()[-1])
+        self.assertNotIn("> x", body)
+        self.assertNotIn("> ```", body)
         self.assertTrue(body.splitlines()[-2].endswith("…"), body[-40:])
 
 

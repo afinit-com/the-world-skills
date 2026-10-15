@@ -55,7 +55,7 @@ def _closed(cut: str, fence: str = "```") -> str:
     return cut + "\n" + fence if cut.count("```") % 2 else cut
 
 
-def _fit(lines: list[str], limit: int) -> list[str]:
+def _fit(lines: list[str], limit: int, fence: str = _QUOTED_FENCE) -> list[str]:
     """Keep lines while they fit; cut the first that does not, marked, and stop. The cut
     keeps room to close a code block it leaves open, as a quoted line."""
     out: list[str] = []
@@ -66,13 +66,13 @@ def _fit(lines: list[str], limit: int) -> list[str]:
             out.append(line)
             used += len(line) + (1 if len(out) > 1 else 0)
             continue
-        room -= len("\n" + _QUOTED_FENCE)
+        room -= len("\n" + fence)
         if room > 1:
             out.append(line[: room - 1] + "…")
-        closed = _closed("\n".join(out), _QUOTED_FENCE)
+        closed = _closed("\n".join(out), fence)
         while len(closed) > limit:  # cut at a line edge with no room left to close
             out.pop()
-            closed = _closed("\n".join(out), _QUOTED_FENCE)
+            closed = _closed("\n".join(out), fence)
         return closed.split("\n")
     return out
 
@@ -87,8 +87,22 @@ def _excerpt(text: str) -> str:
     return _closed(text[: CARD_EXCERPT_CHARS - 1] + "…")
 
 
+def _quote(text: str, quote_code: bool) -> list[str]:
+    lines = []
+    in_code = False
+    for line in text.splitlines():
+        fence = line.count("```") % 2
+        # Slack treats quote prefixes inside fences as literal code. Keep the whole
+        # block outside the quote, including both fences; Discord keeps its nesting.
+        # A line that opens and closes ``` itself is not a block and stays quoted.
+        lines.append(line if not quote_code and (in_code or fence) else f"> {line}")
+        if fence:
+            in_code = not in_code
+    return lines
+
+
 def task_card_lines(home: Path, record: Any, result: Any, *,
-                    render: Callable[[str], str] = str) -> list[str]:
+                    render: Callable[[str], str] = str, quote_code: bool = True) -> list[str]:
     """The lines under a task card's headline: a status line, then what the run said.
 
     What the agent wrote leads. The default completion check records the same evidence
@@ -110,12 +124,14 @@ def task_card_lines(home: Path, record: Any, result: Any, *,
     evidence = [redact(str(item)) for item in (verdict or {}).get("evidence") or []][:4]
     text = (result.result_text or "").strip() if result is not None else ""
     if not text:
-        quoted = [f"> {line}" for item in evidence for line in item.splitlines()]
-        return _fit([status, *quoted], CARD_BODY_CHARS)
+        quoted = _quote("\n".join(evidence), quote_code)
+        return _fit([status, *quoted], CARD_BODY_CHARS,
+                    _QUOTED_FENCE if quote_code else "```")
     if evidence:
         status += " · " + _one_line(" · ".join(evidence), CARD_EVIDENCE_CHARS)
     excerpt = render(_excerpt(text))
-    return _fit([status, *(f"> {line}" for line in excerpt.splitlines())], CARD_BODY_CHARS)
+    return _fit([status, *_quote(excerpt, quote_code)], CARD_BODY_CHARS,
+                _QUOTED_FENCE if quote_code else "```")
 
 
 class ConversationGateway(Protocol):

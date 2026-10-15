@@ -320,7 +320,7 @@ class MentionMixin:
             head = f"♻️ *운영자 재처리 요청*\n{head}"
 
         body = _defuse_broadcasts("\n".join(
-            [head, *task_card_lines(self.harness.home, record, result, render=slack_mrkdwn)]
+            [head, *task_card_lines(self.harness.home, record, result, render=slack_mrkdwn, quote_code=False)]
         ))
 
         primary = result.artifacts[0] if (result and result.artifacts) else ""

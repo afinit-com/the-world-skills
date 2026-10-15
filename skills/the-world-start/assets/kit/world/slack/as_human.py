@@ -22,6 +22,13 @@ def secret_env(slack) -> str:
     return prefix + "SLACK_AS_HUMAN_SECRET"
 
 
+def secret_recovery(key: str) -> str:
+    prefix = key.removesuffix("SLACK_AS_HUMAN_SECRET").removesuffix("_")
+    command = "uv run python bin/say-as-human.py" + (f" --prefix {prefix}" if prefix else "") + " init"
+    return (f"clear {key} in env/harness.env and unset it in the shell, then run "
+            f"{command} and restart the harness")
+
+
 def _usable(key: str, value: str) -> bool:
     """A short secret leaves the feature off, said once per key and never shown."""
     if len(value) >= MIN_SECRET:
@@ -29,7 +36,7 @@ def _usable(key: str, value: str) -> bool:
     if key not in _warned_short:
         _warned_short.add(key)
         print(f"[world] {key} is shorter than {MIN_SECRET} characters, so as-human checks are "
-              f"off; bin/say-as-human.py init writes a usable one", file=sys.stderr)
+              f"off; {secret_recovery(key)}", file=sys.stderr)
     return False
 
 
