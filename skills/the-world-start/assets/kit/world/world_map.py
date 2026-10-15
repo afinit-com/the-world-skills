@@ -4,15 +4,23 @@ from __future__ import annotations
 
 import base64
 import json
+import sys
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .types import MentionTrigger, PollTrigger, ScheduleTrigger
+from .types import MentionTrigger, PollTrigger, ScheduleTrigger, is_http_url
 
 
-def _portrait(home: Path, filename: str) -> str:
+def _portrait(home: Path, filename: str, key: str = "") -> str:
     if not filename:
+        return ""
+    if is_http_url(filename):
+        # A URL is a chat icon put in the map's field (harnesses older than icon_url
+        # did this). The map embeds local files only, so it draws the name card.
+        print(f"[world-map] {key}: portrait is a URL, so the map shows a name card. "
+              "portrait is a local image file for the map; put the Slack/Discord "
+              "icon URL in Persona.icon_url.", file=sys.stderr)
         return ""
     path = (home / filename).resolve()
     if not path.is_relative_to(home.resolve()):
@@ -81,7 +89,7 @@ def world_map_data(harness) -> dict:
             })
         characters.append({
             "key": key, "name": persona.display, "flavor": persona.flavor,
-            "portrait": _portrait(harness.home, persona.portrait),
+            "portrait": _portrait(harness.home, persona.portrait, key),
             "main": key == harness.main_persona.key, "jobs": jobs,
             "tool_groups": [
                 _tool_group("대화할 때 · 모두에게 공통", harness.mention_tools),

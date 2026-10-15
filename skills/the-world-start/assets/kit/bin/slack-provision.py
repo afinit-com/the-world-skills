@@ -53,8 +53,13 @@ RE-RUNS
 
 An app whose project already records a deployed app (`slack-app/<key>/.slack/apps.json`)
 AND whose token variables are already filled in env/harness.env is skipped. Anything
-else is deployed again, which reuses the recorded app rather than creating a second one.
-`--force` re-deploys regardless (e.g. after a manifest change). env/harness.env is
+else is deployed again, which reuses the recorded app rather than creating a second one
+— but only while that apps.json is there. It is the CLI's only record of which app this
+project is; delete `slack-app/<key>/.slack/` (or the harness folder) and the next deploy
+creates a new app. Keep it, or put it back, to keep the app.
+`--force` re-deploys regardless (e.g. after a manifest change). A redeploy passes
+`--manifest-source local`: the manifest rendered from the spec overwrites the app's
+settings, including any changed by hand at api.slack.com. env/harness.env is
 updated in place: other lines are kept, the file stays mode 600, and no token value is
 ever printed.
 """
@@ -375,6 +380,18 @@ def resolve_team(team: str | None, slack: str | None) -> str | None:
                     f"(logged in: {found}). Add \"team\": \"T…\" to the spec or pass --team T…")
 
 
+def deploy_flags(slack: str) -> set[str]:
+    """The long flags `slack deploy --help` lists; empty when it cannot say. Asked rather
+    than assumed because the kit does not pin a CLI version, and an older CLI refuses
+    an unknown flag outright (the whole deploy fails, not just the flag)."""
+    try:
+        out = subprocess.run([slack, "deploy", "--help"], capture_output=True, encoding="utf-8",
+                             errors="replace", timeout=30, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return set()
+    return set(re.findall(r"--[a-z][a-z-]+", out.stdout + out.stderr))
+
+
 def selected_apps(spec: dict, only: list[str] | None) -> list[dict]:
     if not only:
         return spec["apps"]
@@ -430,6 +447,19 @@ def provision(args: argparse.Namespace) -> int:
         command = [slack or "slack", "deploy", "--hide-triggers", "--skip-update"]
         if team:
             command += ["--team", team]
+        if deployed_app_ids(project):
+            # A redeploy. Slack adds settings of its own to a live app
+            # (app_level_token_rotation_enabled, is_mcp_enabled — found live), so the
+            # remote manifest drifts from ours and the CLI asks which one wins. Off a
+            # terminal it cannot ask and fails with app_manifest_update_error. The
+            # project manifest is the source of truth here: it is what this script
+            # renders from the spec on every run.
+            if args.dry_run or "--manifest-source" in deploy_flags(slack or "slack"):
+                command += ["--manifest-source", "local"]
+            else:
+                print(f"slack-provision: {key}: this Slack CLI has no --manifest-source; if "
+                      "the app's settings drifted, the redeploy asks on the terminal "
+                      "(or fails without one) — `slack upgrade` avoids that.", file=sys.stderr)
         if args.dry_run:
             results.append((key, f"dry run — would run `{' '.join(command)}` in {project}"))
             continue

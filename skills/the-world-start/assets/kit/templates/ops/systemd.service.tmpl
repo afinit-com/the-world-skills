@@ -1,0 +1,11 @@
+# {{NAME}} watchdog, rendered by bin/ops-kit.py. Started by {{NAME}}-watchdog.timer;
+# see that file for how to enable it and how to take the harness down for good.
+[Unit]
+Description=The World harness watchdog: {{NAME}}
+
+[Service]
+Type=oneshot
+# Without this, systemd stops what a round started (the harness) when the round exits,
+# because it is in the service's cgroup.
+KillMode=process
+ExecStart=/bin/bash {{WATCHDOG}}

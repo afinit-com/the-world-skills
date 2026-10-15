@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-16"?>
+<!-- {{NAME}} watchdog, rendered by bin/ops-kit.py. Not registered: a person registers it
+     with `schtasks /Create /TN {{TASK_NAME}} /XML <this file>`. To take the harness
+     down for good, remove the task first (`schtasks /Delete /TN {{TASK_NAME}} /F`),
+     then run `{{NAME}}-up.ps1 down`.
+
+     Two triggers, each repeating every {{INTERVAL_S}}s: the user's logon (so it comes
+     back after a reboot), and the time it was rendered (so it starts without a fresh
+     logon). It runs only while that user is logged on, with the user's own rights and
+     no stored password. pythonw.exe starts PowerShell with no window, so no console
+     flashes up every round. -->
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>The World harness watchdog: {{NAME}}</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+      <UserId>{{USER}}</UserId>
+      <Repetition>
+        <Interval>PT{{INTERVAL_M}}M</Interval>
+        <StopAtDurationEnd>false</StopAtDurationEnd>
+      </Repetition>
+    </LogonTrigger>
+    <TimeTrigger>
+      <Enabled>true</Enabled>
+      <StartBoundary>{{START}}</StartBoundary>
+      <Repetition>
+        <Interval>PT{{INTERVAL_M}}M</Interval>
+        <StopAtDurationEnd>false</StopAtDurationEnd>
+      </Repetition>
+    </TimeTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>{{USER}}</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT30M</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>{{LAUNCHER}}</Command>
+      <Arguments>{{ARGUMENTS}}</Arguments>
+      <WorkingDirectory>{{HOME_DIR}}</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>

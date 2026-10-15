@@ -11,9 +11,21 @@
 |---|---|
 | Start | `uv run python harness.py` |
 | Check without Slack | `uv run python harness.py --once --dry-run --no-slack` |
+| Check it end to end | `uv run python harness.py --verify-plan`, then `docs/verify.md` |
 | Is it running, is Slack on | `STATUS.md` (regenerated every tick) |
 | What it did and what waits for you | `HEARTBEAT.md` |
-| Run log | `logs/harness.jsonl` |
+| Run log | `logs/harness.jsonl`, earlier days in `logs/harness.<date>.jsonl.gz` |
+
+## Stopping it on purpose
+
+<!-- Fill this in if the harness runs all the time (bin/ops-kit.py, docs/operations.md);
+     otherwise leave the first row and delete the second. With a watchdog the order
+     matters: stopped the other way round, it is running again within two minutes. -->
+
+| To | Run |
+|---|---|
+| Stop it for a while | Ctrl-C in its terminal, or `scripts/…-up down` (the watchdog leaves it down until `scripts/…-up`) |
+| Take it down for good | Remove the watchdog first (`launchctl bootout …` / `systemctl --user disable --now …` / `schtasks /Delete /TN … /F`), then `scripts/…-up down` |
 
 ## Where to change what
 

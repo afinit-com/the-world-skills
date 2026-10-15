@@ -55,10 +55,10 @@ import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, AsyncContextManager, Awaitable, Callable, Protocol
 
+from ..channels.base import posting_icon, task_card_lines
 from ..context import reset_current_asker, set_current_asker
 from ..env import redact
 from ..process import approval_scope
-from ..process import task as tasks
 from ..process.spawn import run_agent_oneshot
 from ..process.state import pending_approvals_snippet, record_result_usage
 from ..slack.approvals import MAX_PENDING_APPROVALS
@@ -292,12 +292,11 @@ class DiscordGateway:
     def _face(self, identity: str) -> tuple[str, str] | None:
         """(name, avatar URL) for a persona that is not the bot itself, else None.
         Unknown keys and the main persona post as the bot, like Slack's tokenless
-        fallback. The avatar is Persona.portrait when it is an http(s) URL."""
+        fallback. The avatar is Persona.chat_icon, the same picture Slack shows."""
         persona = self.harness.personas.get(identity)
         if persona is None or persona.key == self.harness.main_persona.key:
             return None
-        avatar = persona.portrait if persona.portrait.startswith(("https://", "http://")) else ""
-        return persona.display, avatar
+        return persona.display, posting_icon(persona, self.harness.log)
 
     async def notify_thread(self, thread_ts: str, text: str, *, channel: str | None = None) -> None:
         await self.post(text, thread_ts=thread_ts)
@@ -314,15 +313,7 @@ class DiscordGateway:
         )
 
     async def announce_task(self, record, result, persona: "Persona") -> str:
-        lines = [f"**{record.title}**", f"`{record.id}` · {record.status} · {record.agent}"]
-        verdict = next(
-            (e for e in reversed(tasks.read_events(self.harness.home, record.id))
-             if e.get("kind") == "verify"), None,
-        )
-        if verdict and verdict.get("evidence"):
-            lines += [f"> {item}" for item in verdict["evidence"][:4]]
-        elif result is not None and result.result_text:
-            lines.append(f"> {redact(result.result_text)[:300]}")
+        lines = [f"**{record.title}**", *task_card_lines(self.harness.home, record, result)]
         body = "\n".join(lines) + self._footer(result)
 
         threads = self.state["threads"]

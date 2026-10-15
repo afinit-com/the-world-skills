@@ -65,6 +65,12 @@ if __name__ == "__main__":
 HTML에 담으므로 파일 하나로 열 수 있습니다. 그림이 없으면 이름으로 만든 카드를
 보여줍니다. 새 이미지 생성은 별도의 요청이 있을 때 진행합니다.
 
+그림 칸은 두 개이고 읽는 곳이 다릅니다. `Persona.portrait`는 관계도가 담는 하네스 안의
+로컬 이미지 파일(PNG/JPEG/WebP, 2 MB 이하)이고, `Persona.icon_url`은 Slack과 Discord가
+페르소나의 메시지 옆에 보여주는 공개 http(s) 이미지 URL입니다. `icon_url`이 생기기 전
+하네스처럼 `portrait`에 URL을 넣었다면, 관계도는 오류 없이 이름 카드를 보여주고 그
+URL을 `icon_url`로 옮기라는 경고를 stderr에 남깁니다.
+
 tool 목록은 별도로 작성하지 않습니다. 실제 등록한 코드에서 가져옵니다:
 
 - `Agent.tools`: 해당 캐릭터의 작업에 등록된 tool.

@@ -35,6 +35,35 @@ class InstallerOwnershipTests(unittest.TestCase):
             self.assertNotEqual("# stale kit copy\n", (target / "world" / "toolkit.py").read_text())
             self.assertEqual(pyproject, (target / "pyproject.toml").read_text())
 
+    def test_new_kit_files_back_up_conflicting_harness_content(self) -> None:
+        paths = ("docs/verify.md", "docs/operations.md", "bin/ops-kit.py",
+                 "templates/ops/up.ps1.tmpl")
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "harness"
+            for rel in paths:
+                dest = target / rel
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_text("original harness content\n")
+            command = [sys.executable, str(INSTALLER), str(target), "--provider", "codex"]
+            first = subprocess.run(command, check=True, capture_output=True, text=True).stdout
+            for rel in paths:
+                dest = target / rel
+                backup = dest.with_name(dest.name + ".bak")
+                self.assertEqual(backup.read_text(), "original harness content\n")
+                self.assertEqual(dest.read_bytes(), (KIT / rel).read_bytes())
+                self.assertIn(rel + ".bak", first)
+                dest.write_text("another edit\n")
+            second = subprocess.run(command, check=True, capture_output=True, text=True).stdout
+            for rel in paths:
+                dest = target / rel
+                self.assertEqual(dest.with_name(dest.name + ".bak").read_text(),
+                                 "original harness content\n")
+                self.assertEqual(dest.with_name(dest.name + ".bak.1").read_text(), "another edit\n")
+                self.assertIn(rel + ".bak.1", second)
+            third = subprocess.run(command, check=True, capture_output=True, text=True).stdout
+            self.assertNotIn("backed up", third)
+            self.assertEqual(len(list(target.rglob("*.bak*"))), 2 * len(paths))
+
     def test_installed_kit_can_render_the_character_demo(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "harness"
@@ -51,6 +80,43 @@ class InstallerOwnershipTests(unittest.TestCase):
             self.assertIn("별빛 탐험대", output)
             self.assertNotIn("__WORLD_DATA__", output)
             self.assertIn("WORLD.html", (target / ".gitignore").read_text())
+
+    def test_installed_kit_prints_a_verification_plan_without_running_anything(self) -> None:
+        # Issue #2: the flow past the dry run ships with the harness, and the plan is read
+        # from harness.py so it names this harness's cast rather than a generic list.
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "harness"
+            self.run_installer(target, "codex")
+            self.assertTrue((target / "docs" / "verify.md").is_file())
+            self.assertTrue((target / "world" / "tool_check.py").is_file())
+            plan = subprocess.run(
+                [sys.executable, "-c",
+                 "import runpy; runpy.run_path('bin/world-map-demo.py', run_name='__main__')",
+                 "--verify-plan"],
+                cwd=target, check=True, capture_output=True, text=True,
+                env={**os.environ, "PYTHONUTF8": "1"},
+            ).stdout
+            for step in ("## 1. Local checks", "## 2. Tool boundaries", "## 4. A real thread",
+                         "## 6. Report"):
+                self.assertIn(step, plan)
+            self.assertFalse((target / "state.json").exists())
+            self.assertFalse((target / "WORLD.html").exists())
+
+    def test_verify_word_scaffolds_its_own_wrapper(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "harness"
+            self.run_installer(target, "codex")
+            subprocess.run(
+                ["python3", str(target / "bin/scaffold-world-skill.py"), "inspect", "verify",
+                 "--host", "codex", "--universe", "Crew", "--description", "Inspect the ship"],
+                check=True, capture_output=True,
+            )
+            body = (target / ".agents/skills/inspect/SKILL.md").read_text()
+            self.assertIn("name: inspect", body)
+            self.assertIn("harness.py --verify-plan", body)
+            self.assertIn("docs/verify.md", body)
+            self.assertIn("Never press an approve or deny", " ".join(body.split()))
+            self.assertNotIn("{{", body)
 
     def test_installed_slack_provisioner_renders_from_the_installed_template(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -162,6 +228,41 @@ class InstallerOwnershipTests(unittest.TestCase):
             subprocess.run(command, check=True, capture_output=True, text=True)
             self.assertEqual(codex.read_text(), "mine")
 
+    def test_tool_word_proposes_a_placement_before_building(self) -> None:
+        # The tool word used to start from the answer ("add the tool the user asked
+        # for"), so a request mixing a boundary, a procedure and a changing value all
+        # went into one tool. It must split, place and confirm first (issue #3).
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "harness"
+            self.run_installer(target, "both")
+            script = target / "bin" / "scaffold-world-skill.py"
+            for word, flow in (("equip", "tool"), ("recruit", "agent")):
+                subprocess.run(
+                    ["python3", str(script), word, flow, "--host", "all",
+                     "--universe", "Crew", "--description", f"{word} the crew"],
+                    check=True, capture_output=True, text=True,
+                )
+            tool = (target / ".claude/skills/equip/SKILL.md").read_text()
+            self.assertEqual(tool, (target / ".agents/skills/equip/SKILL.md").read_text())
+            self.assertTrue(tool.startswith("---\nname: equip\n"))
+            self.assertNotIn("{{", tool)
+            self.assertIn("docs/philosophy.md", tool)
+            self.assertIn("wait for the user's confirmation", tool)
+            self.assertIn(
+                "| Piece | Kind | Where it goes | Why | What enforces it | Approval |", tool)
+            for place in ("`Persona.mention_tools`", "`check()`", "prompt file",
+                          "`Harness.plugins`", "`knowledge/`", "`settings.json`",
+                          "`WORLD.md` |"):
+                self.assertIn(place, tool)
+            self.assertIn("The `Skill` tool is disallowed by default", tool)
+            self.assertIn("equipping the cast", tool)
+            self.assertIn("leaves\n`write_scope` empty", tool)
+            self.assertNotIn("never empty", tool)
+            self.assertIn("short note a person writes", tool)
+            agent = (target / ".claude/skills/recruit/SKILL.md").read_text()
+            self.assertNotIn("Where it goes", agent)
+            self.assertIn("add the agent the user asked for", agent)
+
 
     @unittest.skipIf(os.name == "nt", "chmod cannot make a directory unwritable on Windows")
     def test_unwritable_codex_dir_fails_before_writing_anything(self) -> None:
@@ -218,6 +319,29 @@ class InstallerProfileTests(unittest.TestCase):
     def install(self, target: Path, *flags: str) -> str:
         return subprocess.run(["python3", str(INSTALLER), str(target), *flags],
                               check=True, capture_output=True, text=True).stdout
+
+    def test_installed_ops_kit_renders_for_each_os(self) -> None:
+        for os_name in ("macos", "linux", "windows"):
+            with self.subTest(os=os_name), tempfile.TemporaryDirectory() as tmp:
+                target = Path(tmp) / "harness"
+                self.install(target, "--os", os_name, "--provider", "codex")
+                # Render using only the installed files, without a CLI, venv or service
+                # manager. The pure renderer allows checking every OS on this host.
+                code = """
+import runpy
+from pathlib import Path
+ops = runpy.run_path('bin/ops-kit.py')
+home = Path.cwd()
+files = ops['render'](home, 'installed', OS_NAME, home / '.venv/python', '/bin',
+                      user='tester')
+ops['write'](home, files, force=False)
+assert len(files) == (3 if OS_NAME == 'macos' else 4)
+for rel in files:
+    assert (home / rel).is_file(), rel
+""".replace("OS_NAME", repr(os_name))
+                result = subprocess.run([sys.executable, "-I", "-c", code], cwd=target,
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_windows_codex_slack_profile_installs_only_what_it_needs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

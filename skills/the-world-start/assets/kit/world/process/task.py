@@ -35,6 +35,7 @@ import datetime
 import json
 import re
 import secrets
+import shutil
 from dataclasses import dataclass, field, replace
 from hashlib import sha256
 from pathlib import Path
@@ -106,6 +107,36 @@ def new_task_id(now: datetime.datetime | None = None) -> str:
     execution is split, and date+random needs none."""
     now = now or datetime.datetime.now(datetime.timezone.utc)
     return f"{now.strftime('%Y%m%d')}-{secrets.token_hex(2)}"
+
+
+def _claim_task_dir(home: Path, now: datetime.datetime | None = None) -> str:
+    """A fresh id whose directory this call created. The suffix is 16 random bits, so two
+    tasks of one day share an id often enough to matter (about 7% of days with 100
+    tasks), and creating the directory with exist_ok wrote the second task over the
+    first: one of them was gone without a word. mkdir without exist_ok is atomic, so
+    another process filing a task at the same moment cannot take the same one either.
+
+    On Windows a directory removed a moment ago (a create that failed and cleaned up)
+    stays "delete pending" for a while, and mkdir on it is a PermissionError, so that
+    is taken too. Only once in a row, though: a second id refused the same way says
+    the tasks directory itself is not writable, and that is the error to raise."""
+    root = tasks_dir(home)
+    root.mkdir(parents=True, exist_ok=True)
+    denied = False
+    for _ in range(1000):
+        task_id = new_task_id(now)
+        try:
+            (root / task_id).mkdir()
+        except FileExistsError:
+            denied = False
+            continue
+        except PermissionError:
+            if denied:
+                raise
+            denied = True
+            continue
+        return task_id
+    raise TaskError(f"no free task id left for {task_id[:8]} after 1000 tries")
 
 
 # --- the record ---------------------------------------------------------------
@@ -307,6 +338,14 @@ def _split(text: str) -> tuple[dict, str]:
     return meta, body.lstrip("\n")
 
 
+def _header_value(value: str) -> str:
+    """A header value on one line. The header is one key per line and _split keeps a
+    repeated key's last value, so a value with a line break in it wrote keys of its own:
+    a title of "Daily\nid: …" came back with another task's id. Every boundary
+    str.splitlines() honours, since that is what _split reads the header with."""
+    return " ".join(value.splitlines())
+
+
 def _render(task: Task) -> str:
     flat = {
         "id": task.id, "type": task.type, "title": task.title, "status": task.status,
@@ -324,7 +363,7 @@ def _render(task: Task) -> str:
         "lease_until": task.lease_until, "thread": task.thread, "slug": task.slug,
         "created": task.created, "updated": task.updated,
     }
-    lines = [f"{key}: {flat[key]}" for key in _ORDER]
+    lines = [f"{key}: {_header_value(flat[key])}" for key in _ORDER]
     return "---\n" + "\n".join(lines) + "\n---\n\n" + task.body.strip() + "\n"
 
 
@@ -455,10 +494,27 @@ def create(
     if raw is not None and not origin.source_hash:
         origin = replace(origin, source_hash=f"sha256:{sha256(raw).hexdigest()}")
 
+    task_id = _claim_task_dir(home, now)
+    try:
+        return _fill_task_dir(home, task_id, type=type, title=title, slug=slug, origin=origin,
+                              task_type=task_type, stamp=stamp, body=body, raw=raw,
+                              source_name=source_name, fields=fields)
+    except BaseException:
+        # The directory is this call's own (it claimed it), so a task that could not be
+        # written in full leaves nothing behind: no half-written record to list.
+        shutil.rmtree(tasks_dir(home) / task_id, ignore_errors=True)
+        raise
+
+
+def _fill_task_dir(home: Path, task_id: str, *, type: str, title: str, slug: str,  # noqa: A002
+                   origin: "Origin", task_type, stamp: str, body: str, raw: bytes | None,
+                   source_name: str, fields: dict) -> "Task":
+    """Write a claimed task directory: the record, its source, its first event."""
     task = Task(
-        id=new_task_id(now),
+        id=task_id,
         type=type,
-        title=title,
+        # As task.md will hold it, so the record handed back reads the same as one re-read.
+        title=_header_value(title),
         slug=slug,
         origin=origin,
         # An explicit retry_budget wins over the type's default: passing both used to
@@ -473,7 +529,7 @@ def create(
     task.validate()
 
     directory = tasks_dir(home) / task.dirname
-    (directory / "work").mkdir(parents=True, exist_ok=True)
+    (directory / "work").mkdir(exist_ok=True)
     if raw is not None:
         (directory / "source").mkdir(exist_ok=True)
         (directory / "source" / source_name).write_bytes(raw)

@@ -11,9 +11,12 @@ from __future__ import annotations
 import contextlib
 from typing import TYPE_CHECKING
 
-from slack_sdk.web.async_client import AsyncWebClient
+from .as_human import safe_payload, safe_text
+from ..channels.base import posting_icon
 
 if TYPE_CHECKING:
+    from slack_sdk.web.async_client import AsyncWebClient
+
     from ..harness import Harness
 
 SLACK_CHUNK = 3900  # Slack rejects messages over ~4k
@@ -21,6 +24,11 @@ SLACK_CHUNK = 3900  # Slack rejects messages over ~4k
 # Slack telling us the world is already the way we asked it to be. Not a failure, and
 # `_react` provokes both constantly: the ladder removes 👀 that a retry already removed.
 BENIGN_SLACK_ERRORS = frozenset({"already_reacted", "no_reaction"})
+
+
+async def slack_call(web, method: str, **kwargs):
+    """One outbound boundary for messages, cards, edits and progress indicators."""
+    return await getattr(web, method)(**safe_payload(kwargs, posting=True))
 
 
 class PostingMixin:
@@ -39,20 +47,19 @@ class PostingMixin:
         """chat.postMessage kwargs that make the main bot's message show `identity`'s
         name and icon, for a persona with no Slack app of its own (no bot_token_env).
         Needs chat:write.customize on the main app. The main persona keeps the app's
-        name and only takes its portrait as the icon; a persona with its own token posts
-        as itself, and an unknown key gets {}."""
+        name and only takes Persona.chat_icon as the icon; a persona with its own token
+        posts as itself, and an unknown key gets {}."""
         persona = self.harness.personas.get(identity or "")
         if persona is None or persona.token:
             return {}
+        icon = posting_icon(persona, self.harness.log)
         if persona.key == self.harness.main_persona.key:
             # The main persona IS the app: its name stays the app's (that is what people
-            # @-mention), only its picture follows Persona.portrait.
-            if persona.portrait.startswith(("https://", "http://")):
-                return {"icon_url": persona.portrait}
-            return {}
+            # @-mention), only its picture follows Persona.chat_icon.
+            return {"icon_url": icon} if icon else {}
         face = {"username": persona.display}
-        if persona.portrait.startswith(("https://", "http://")):
-            face["icon_url"] = persona.portrait
+        if icon:
+            face["icon_url"] = icon
         return face
 
     async def post(
@@ -64,6 +71,7 @@ class PostingMixin:
         blocks: list[dict] | None = None,
         channel: str | None = None,
         context: dict | None = None,
+        unfurl: bool = True,
     ) -> str | None:
         """Posts to the dedicated channel (optionally into a thread) AS the given
         bot identity; returns the message ts. Chunks long text. Unknown/tokenless
@@ -77,16 +85,23 @@ class PostingMixin:
         `context` is ONE Block Kit context block attached to the LAST chunk — the small
         grey annotation line (see run_footer.py). Kept separate from `blocks` because it
         is positional-by-meaning (always last, always after any buttons) and because a
-        caller posting plain text should not have to switch to blocks to annotate it."""
+        caller posting plain text should not have to switch to blocks to annotate it.
+
+        `unfurl=False` stops Slack attaching link previews. A preview is a frozen copy:
+        Slack never redraws it, so one of a message with buttons keeps live-looking
+        buttons after the original is answered."""
         web = self._web_for(identity)
         if not web:
             return None
+        text = safe_text(text, posting=True)
         channel = channel or self.harness.slack.channel
         first_ts = None
         offsets = list(range(0, max(len(text), 1), SLACK_CHUNK))
         for i in offsets:
             body = text[i : i + SLACK_CHUNK] or "(empty)"
             kwargs: dict = {"blocks": blocks} if blocks and i == offsets[0] else {}
+            if not unfurl:
+                kwargs.update(unfurl_links=False, unfurl_media=False)
             # The footer annotates the whole message, so on a reply long enough to chunk
             # it belongs under the END of the reply, not buried above three more posts.
             # Rendered as its own blocks payload so `text` stays the notification body.
@@ -95,7 +110,7 @@ class PostingMixin:
                     "blocks", [{"type": "section", "text": {"type": "mrkdwn", "text": body}}]
                 )
                 kwargs["blocks"] = [*kwargs["blocks"], context]
-            resp = await web.chat_postMessage(
+            resp = await slack_call(web, "chat_postMessage",
                 channel=channel, text=body, thread_ts=thread_ts, **kwargs, **self._face(identity),
             )
             first_ts = first_ts or resp["ts"]
@@ -173,7 +188,7 @@ class PostingMixin:
             return
         await self._best_effort(
             "assistant.threads.setStatus",
-            web.assistant_threads_setStatus(
+            slack_call(web, "assistant_threads_setStatus",
                 channel_id=self.harness.slack.channel, thread_ts=thread_ts, status=status,
             ),
         )

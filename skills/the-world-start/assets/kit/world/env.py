@@ -71,6 +71,24 @@ def parse_value(raw: str) -> str:
     return _INLINE_COMMENT.sub("", value).strip()
 
 
+def parse_env_file(path: pathlib.Path) -> dict[str, str]:
+    """Read one env file without imports or environment changes; missing means empty.
+
+    A key declared twice keeps its first value, as the harness loader always did: the
+    later line is ignored, never a silent override of what the file said first.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}
+    values: dict[str, str] = {}
+    for line in text.splitlines():
+        match = re.match(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$", line)
+        if match:
+            values.setdefault(match.group(1), parse_value(match.group(2)))
+    return values
+
+
 def load_harness_env() -> pathlib.Path | None:
     """Populate os.environ from the harness env file. Returns the path it read, or
     None if there was nothing to read. Idempotent — a second call is a no-op.
@@ -97,13 +115,7 @@ def load_harness_env() -> pathlib.Path | None:
     if not path.exists():
         return None
     _warn_if_readable(path)
-    for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        key = key.strip()
-        value = parse_value(value)
+    for key, value in parse_env_file(path).items():
         _FILE_KEYS.add(key)
         if key not in os.environ:
             os.environ[key] = value
@@ -267,8 +279,34 @@ _TOKEN_SHAPES = re.compile(
 )
 
 
+# A secret has no shape to recognise, so it is masked by name: the value of every
+# *_SECRET variable (SLACK_AS_HUMAN_SECRET, <PREFIX>_SLACK_AS_HUMAN_SECRET, a signing
+# secret). Not one shorter than this: a short value is likely an ordinary word too, and
+# masking it everywhere would mangle text while pointing at where the secret appears.
+_SECRET_VALUE_MIN = 8
+
+
+def _secret_values() -> list[str]:
+    values = {value for key, value in os.environ.items()
+              if key.endswith("_SECRET") and len(value.strip()) >= _SECRET_VALUE_MIN}
+    return sorted(values, key=len, reverse=True)  # one that contains another goes first
+
+
 def redact(text: str) -> str:
-    """Mask token-shaped substrings before error text leaves the harness (a failed run's
-    output posted to Slack/Discord). Keeps the first few characters so the kind of token
-    stays recognizable; the secret part never ships."""
+    """Mask secrets before error text leaves the harness (a failed run's output posted to
+    Slack/Discord). Token-shaped substrings keep their first few characters so the kind of
+    token stays recognizable; the value of a *_SECRET variable is masked whole. The secret
+    part never ships."""
+    for value in _secret_values():
+        text = text.replace(value, "[redacted]")
     return _TOKEN_SHAPES.sub(lambda m: m.group(0)[:5] + "…[redacted]", text)
+
+
+if __name__ == "__main__":
+    # Launchers need names only, never secret values or the world package's imports.
+    # Run it with `python -I`: as a script, its directory comes first on sys.path and
+    # world/types.py shadows the standard `types` that pathlib's imports need.
+    import argparse
+    parser = argparse.ArgumentParser(description="List keys declared by a harness env file.")
+    parser.add_argument("--keys", type=pathlib.Path, required=True)
+    print("\n".join(parse_env_file(parser.parse_args().keys)))

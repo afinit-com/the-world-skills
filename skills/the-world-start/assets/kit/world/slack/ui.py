@@ -17,6 +17,8 @@ import json
 import time
 from typing import TYPE_CHECKING
 
+from .post import slack_call
+
 if TYPE_CHECKING:
     from .listener import SlackListener
     from ..types import StatusPhrases
@@ -189,14 +191,14 @@ class ToolTrail:
             return
         try:
             if self.ts is None:
-                resp = await web.chat_postMessage(
+                resp = await slack_call(web, "chat_postMessage",
                     channel=channel, thread_ts=self.thread_ts, text=line,
                     **self.listener._face(self.identity),
                 )
                 self.ts = resp["ts"]
                 self.last_update = now
             elif now - self.last_update >= STATUS_UPDATE_MIN_S:
-                await web.chat_update(channel=channel, ts=self.ts, text=line)
+                await slack_call(web, "chat_update", channel=channel, ts=self.ts, text=line)
                 self.last_update = now
         except Exception:
             pass  # progress display only — never fail the turn over it
@@ -217,6 +219,6 @@ class ToolTrail:
             return
         # a trail that fails to redraw is cosmetic; the turn it narrates is not
         with contextlib.suppress(Exception):
-            await web.chat_update(channel=channel, ts=self.ts, text=first)
+            await slack_call(web, "chat_update", channel=channel, ts=self.ts, text=first)
             for text in rest:
-                await web.chat_postMessage(channel=channel, thread_ts=self.thread_ts, text=text)
+                await slack_call(web, "chat_postMessage", channel=channel, thread_ts=self.thread_ts, text=text)

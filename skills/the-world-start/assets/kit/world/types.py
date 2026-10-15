@@ -26,10 +26,14 @@ class Signal:
                recent-findings context snippet.
     on_done  — bookkeeping to run only after a *verified-complete* run. Never mark
                input seen or processed from exit code alone.
+    title    — the headline a human sees on the task and its Slack/Discord card. Empty
+               falls back to the prompt's first line, so a prompt that opens with an
+               instruction to the model shows that instruction as the headline.
     """
 
     prompt: str
     on_done: Callable[["RunResult"], None] | None = None
+    title: str = ""
 
 
 # check(state, now) -> Signal to spawn, or None to stay idle this tick.
@@ -139,10 +143,12 @@ class ScheduleTrigger:
     dedup lives in the orchestrator (state["agents"][name]["last_fired"]); see Schedule.
 
     `prompt` is the trigger payload the run gets (the standing instructions still come
-    from the agent's prompt_file). Override it to say what the scheduled run should do."""
+    from the agent's prompt_file). Override it to say what the scheduled run should do.
+    `title` is the card headline, as on Signal; empty means the prompt's first line."""
 
     schedule: Schedule
     prompt: str = "정기 실행 시각입니다. 표준 지침(prompt.md)에 따라 이번 회차를 수행하세요."
+    title: str = ""
 
 
 @dataclass
@@ -248,6 +254,13 @@ def voice_clause(persona: "Persona | None") -> str:
     return f"Your speaking style: {persona.voice.strip()}\n{VOICE_GUARD}"
 
 
+def is_http_url(value: str) -> bool:
+    """Whether a picture field holds a web URL rather than a file in the harness. Spaces
+    around it and the scheme's case do not count: " HTTPS://…" pasted from a settings
+    file is still a URL, and read as a path it is a file that does not exist."""
+    return value.strip().lower().startswith(("https://", "http://"))
+
+
 @dataclass
 class Persona:
     """A Slack posting identity — one themed bot from the harness's WORLD.md.
@@ -294,14 +307,41 @@ class Persona:
     # shapes as mention_tools: a list, or an async FACTORY `(listener, thread_ts) ->
     # list` — which is what a thread-bound tool actually needs.
     thread_tools: list[Any] | Callable[..., Awaitable[list]] = field(default_factory=list)
+    # Two pictures, two readers. `portrait` is a local image file inside the harness
+    # (PNG/JPEG/WebP, 2 MB or less) that the world map embeds; `icon_url` is a public
+    # http(s) image URL that Slack and Discord show beside this persona's messages.
     portrait: str = ""
     # How this persona talks on Slack (register, verbal habits, emoji, length), as the
-    # user approved it. Last, so positional Persona(...) calls keep their meaning. Injected beside flavor with VOICE_GUARD; "" adds nothing.
+    # user approved it. Injected beside flavor with VOICE_GUARD; "" adds nothing.
     voice: str = ""
+    # After voice, so positional Persona(...) calls keep their meaning. See `portrait`.
+    icon_url: str = ""
 
     @property
     def token(self) -> str | None:
         return os.environ.get(self.bot_token_env) if self.bot_token_env else None
+
+    def __post_init__(self) -> None:
+        self.icon_url = (self.icon_url or "").strip()
+        self._check_icon_url()
+
+    def _check_icon_url(self) -> None:
+        # A new field, so no harness relies on a non-URL here: refuse it rather than
+        # post under some other picture without a word.
+        if self.icon_url.strip() and not is_http_url(self.icon_url):
+            raise ValueError(
+                f"persona {self.key!r}: icon_url must be a public http(s) image URL, "
+                f"got {self.icon_url!r}; a local image file for the world map goes in portrait")
+
+    @property
+    def chat_icon(self) -> str:
+        """The public URL chat shows as this persona's picture, or "" for none.
+        icon_url when set; a harness written before icon_url existed put that URL in
+        portrait, so an http(s) portrait still counts, but only when icon_url is empty."""
+        self._check_icon_url()  # also catches an icon_url assigned after construction
+        if self.icon_url.strip():
+            return self.icon_url.strip()
+        return self.portrait.strip() if is_http_url(self.portrait) else ""
 
 
 @dataclass(frozen=True)

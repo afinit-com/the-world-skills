@@ -43,8 +43,8 @@
 
 - **Mentionable sub-personas.** One Discord application is one bot user, and only the main
   persona answers. Every other persona posts under its own name and avatar
-  (`Persona.display`, and `Persona.portrait` when it is an http(s) URL) through a channel
-  webhook the bot creates, so it needs **Manage Webhooks** (in the invite URL that
+  (`Persona.display`, and `Persona.icon_url`, or an http(s) `Persona.portrait` when
+  `icon_url` is empty) through a channel webhook the bot creates, so it needs **Manage Webhooks** (in the invite URL that
   `bin/discord-setup.py` prints). A webhook is not a user: no one can @-mention a
   sub-persona, and without the permission the message goes out as the bot.
 - **The over-cap ask.** On Slack the approver can let a handoff past the cap through with

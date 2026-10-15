@@ -1,0 +1,36 @@
+# Shared by {{NAME}}-up.ps1 and {{NAME}}-watchdog.ps1; Windows PowerShell 5.1.
+
+function Stamp { (Get-Date).ToString('yyyy-MM-ddTHH:mm:sszzz') }
+
+function Inner([System.Exception]$e) {
+  while ($e.InnerException) { $e = $e.InnerException }
+  return $e
+}
+
+# The lock, or $null once it stayed busy for $WaitS seconds. Only a sharing violation
+# means busy; any other error, here or in recording the holder's pid, is thrown, with
+# the lock released first so this process does not keep itself out.
+function Enter-OpsLock([double]$WaitS) {
+  [void][System.IO.Directory]::CreateDirectory($State)
+  $deadline = (Get-Date).AddSeconds($WaitS)
+  while ($true) {
+    try {
+      $stream = [System.IO.File]::Open($Lock, [System.IO.FileMode]::OpenOrCreate,
+        [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+      break
+    } catch {
+      $e = Inner $_.Exception
+      if ($e -isnot [System.IO.IOException]) { throw "cannot open the lock ${Lock}: $($e.Message)" }
+      if ((Get-Date) -ge $deadline) { return $null }
+      Start-Sleep -Milliseconds 100
+    }
+  }
+  try {
+    [System.IO.File]::WriteAllText("$Lock.pid", "$PID`n", $Utf8)
+  } catch {
+    $stream.Dispose()
+    throw "took the lock but could not record its holder in $Lock.pid: $((Inner $_.Exception).Message)"
+  }
+  return $stream
+}
+

@@ -16,6 +16,8 @@ import time
 import uuid
 from typing import TYPE_CHECKING, NamedTuple
 
+from ..channels.base import task_card_lines
+from .as_human import normalize_message, safe_text
 from .rules import RULES_TEMPLATE, pre_approved_clause, slack_mrkdwn, split_approval_request
 from .run_footer import footer_context, run_fields
 from .ui import EMOJI_DONE, EMOJI_ERROR, EMOJI_QUEUED, EMOJI_WORKING, ToolTrail
@@ -126,6 +128,14 @@ def _agent_of(rel_path: str) -> str:
     """The producing agent, read off the finding path: findings/<agent>/… → <agent>."""
     parts = rel_path.split("/")
     return parts[1] if len(parts) > 2 and parts[0] == "findings" else ""
+
+
+def _defuse_broadcasts(text: str) -> str:
+    """Show `<!channel>`, `<!here>`, `<!everyone>` (and any other `<!…>` command) as
+    text instead of notifying the channel. A task card carries a run's result and a
+    title nobody reviewed before it posted; a poll that summarised outside text (a PR
+    body) could otherwise page everyone. Discord has its allowed_mentions for this."""
+    return text.replace("<!", "&lt;!")
 
 
 class MentionTurn(NamedTuple):
@@ -309,16 +319,9 @@ class MentionMixin:
             # human pushed a past notice back through the pipeline on purpose.
             head = f"♻️ *운영자 재처리 요청*\n{head}"
 
-        verdict = next(
-            (e for e in reversed(task.read_events(self.harness.home, record.id))
-             if e.get("kind") == "verify"), None,
-        )
-        lines = [head, f"`{record.id}` · {record.status} · {record.agent}"]
-        if verdict and verdict.get("evidence"):
-            lines += [f"> {item}" for item in verdict["evidence"][:4]]
-        elif result is not None and result.result_text:
-            lines.append(f"> {redact(result.result_text)[:300]}")
-        body = "\n".join(lines)
+        body = _defuse_broadcasts("\n".join(
+            [head, *task_card_lines(self.harness.home, record, result, render=slack_mrkdwn, quote_code=False)]
+        ))
 
         primary = result.artifacts[0] if (result and result.artifacts) else ""
         blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": body}}]
@@ -334,6 +337,11 @@ class MentionMixin:
             body, identity=persona.key, blocks=blocks, thread_ts=record.thread or None,
             # The real run, not a lookup of the agent's most recent one.
             context=self._footer(run_fields(result)),
+            # The body is an excerpt of whatever the run wrote, so its links are the
+            # run's, not ones anybody chose to show; one Wikipedia link put a preview
+            # bigger than the card under it (found live). A conversation reply keeps
+            # previews: there the persona is answering someone and the link is the point.
+            unfurl=False,
         )
         if not ts:
             return ""
@@ -388,6 +396,10 @@ class MentionMixin:
             return ""
         lines = []
         for m in resp.get("messages", []):
+            normalized = normalize_message(self, m)
+            if normalized is None:
+                continue
+            m, _simulated = normalized
             ts = m.get("ts", "")
             # The harness's OWN turns belong in the transcript. They used to be dropped
             # (`m.get("user") == self.bot_user_id`), which left every thread looking like
@@ -679,7 +691,7 @@ class MentionMixin:
             # can then reach the harness's installed plugin skills. Poll agents stay opt-in.
             allow_plugins=self.harness.mention_plugins and bool(self.harness.plugins),
         )
-        result = await run_agent_oneshot(self.harness, mention_agent, prompt, on_tool=on_tool)
+        result = await run_agent_oneshot(self.harness, mention_agent, safe_text(prompt), on_tool=on_tool)
         if record_result_usage(self.state, identity, result):
             self.save_state()
         reply, approval_summary = split_approval_request(result.result_text)
@@ -719,6 +731,7 @@ class MentionMixin:
                 origin_thread_ts, limit=20, channel=origin_channel
             )
         # Before the prompt, so anything this turn calls can attribute back to a person.
+        text = safe_text(text)
         set_current_asker(event.get("user", "") or "")
         prompt = self._build_prompt(
             identity, persona, text, transcript, origin_transcript, origin_channel, note=note

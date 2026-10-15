@@ -144,7 +144,9 @@ class GatewayCase(unittest.IsolatedAsyncioTestCase):
             main_persona=Persona(key="main", display="Main"),
             extra_personas=[Persona(key="scout", display="Scout",
                                     portrait="https://example.test/scout.png"),
-                            Persona(key="keeper", display="Keeper", portrait="art/keeper.png")],
+                            Persona(key="keeper", display="Keeper", portrait="art/keeper.png"),
+                            Persona(key="beacon", display="Beacon", portrait="art/beacon.png",
+                                    icon_url="https://example.test/beacon-icon.png")],
             discord=DiscordConfig(bot_token_env="T_DISCORD_TOKEN",
                                   channel_env="T_DISCORD_CHANNEL",
                                   approver_env="T_DISCORD_APPROVER"),
@@ -246,6 +248,66 @@ class AnnounceTests(GatewayCase):
         self.assertEqual("t-m1", thread)
         self.assertEqual(record.id, self.state["threads"]["t-m1"]["task_id"])
 
+    async def test_the_result_leads_the_card_over_the_completion_evidence(self) -> None:
+        # Issue #5, the Discord twin of the Slack card.
+        record = tasks.create(self.home, type="watch", title="nightly diff", agent="watch")
+        tasks.append_event(self.home, record.id, "verify", verdict="done",
+                           evidence=["watch 실행 완료 · work/ 산출물 diff.md"])
+        await self.gw.announce_task(record, RunResult(status="ok", result_text="3 changes"),
+                                    self.harness.main_persona)
+        lines = self.transport.sent[0]["text"].splitlines()
+        self.assertIn("watch 실행 완료 · work/ 산출물 diff.md", lines[1])
+        self.assertEqual("> 3 changes", lines[2])
+
+    async def test_a_card_with_long_evidence_is_still_one_discord_message(self) -> None:
+        record = tasks.create(self.home, type="watch", title="t" * 120, agent="watch")
+        tasks.append_event(self.home, record.id, "verify", verdict="done",
+                           evidence=[("e" * 99 + "\n") * 28])
+        run = RunResult(status="ok", result_text="r" * 300, input_tokens=900,
+                        output_tokens=100, cost_usd=0.01, duration_s=4.0)
+        await self.gw.announce_task(record, run, self.harness.main_persona)
+        [post] = self.transport.sent
+        self.assertLessEqual(len(post["text"]), 2000)
+
+    async def test_a_card_with_only_long_evidence_is_still_one_discord_message(self) -> None:
+        # No result_text, so the evidence is the body: up to CARD_BODY_CHARS of it.
+        record = tasks.create(self.home, type="watch", title="t" * 120, agent="watch")
+        tasks.append_event(self.home, record.id, "verify", verdict="done",
+                           evidence=[("e" * 99 + "\n") * 28] * 4)
+        run = RunResult(status="ok", input_tokens=900, output_tokens=100, cost_usd=0.01,
+                        duration_s=4.0)
+        await self.gw.announce_task(record, run, self.harness.main_persona)
+        [post] = self.transport.sent
+        self.assertLessEqual(len(post["text"]), 2000)
+        self.assertIn("-# ", post["text"])
+
+    async def test_a_token_in_the_evidence_never_reaches_discord(self) -> None:
+        token = "ghp_" + "a" * 36
+        for result_text in ("", "3 changes"):
+            record = tasks.create(self.home, type="watch", title="nightly diff", agent="watch")
+            tasks.append_event(self.home, record.id, "verify", verdict="done",
+                               evidence=[f"git push https://{token}@github.com"])
+            await self.gw.announce_task(record, RunResult(status="ok", result_text=result_text),
+                                        self.harness.main_persona)
+            self.assertNotIn(token, self.transport.sent[-1]["text"])
+
+    async def test_a_code_block_in_evidence_cut_short_is_closed_on_discord(self) -> None:
+        record = tasks.create(self.home, type="watch", title="nightly diff", agent="watch")
+        tasks.append_event(self.home, record.id, "verify", verdict="done",
+                           evidence=["```diff\n" + "+ line\n" * 400 + "```"])
+        await self.gw.announce_task(record, RunResult(status="ok"), self.harness.main_persona)
+        text = self.transport.sent[0]["text"]
+        self.assertLessEqual(len(text), 2000)
+        self.assertEqual(0, text.count("```") % 2, text[-60:])
+
+    async def test_a_long_result_is_marked_as_cut_on_discord_too(self) -> None:
+        record = tasks.create(self.home, type="watch", title="nightly diff", agent="watch")
+        run = RunResult(status="ok", result_text="```diff\n" + "+ line\n" * 100 + "```")
+        await self.gw.announce_task(record, run, self.harness.main_persona)
+        lines = self.transport.sent[0]["text"].splitlines()
+        self.assertEqual("> ```", lines[-1])
+        self.assertTrue(lines[-2].endswith("…"), lines[-2])
+
     async def test_a_result_for_a_conversation_replies_in_its_thread(self) -> None:
         self.state["threads"]["t-m0"] = {"origin": "mention"}
         record = tasks.create(self.home, type="watch", title="asked for", agent="watch")
@@ -272,6 +334,21 @@ class AnnounceTests(GatewayCase):
         await self.gw.post("hello", identity="keeper")
         await self.gw.post("hello", identity="nobody")
         self.assertEqual([("Keeper", ""), None], [s["as"] for s in self.transport.sent])
+
+    async def test_an_icon_url_broken_after_start_costs_the_avatar_not_the_message(self) -> None:
+        logged: list[str] = []
+        self.harness.log = logged.append
+        self.harness.personas["keeper"].icon_url = "icons/keeper.png"
+        await self.gw.post("hello", identity="keeper")
+        await self.gw.post("again", identity="keeper")
+        self.assertEqual([("Keeper", "")] * 2, [s["as"] for s in self.transport.sent])
+        self.assertEqual(1, len(logged))
+        self.assertIn("persona 'keeper'", logged[0])
+
+    async def test_icon_url_is_the_avatar_beside_a_local_portrait(self) -> None:
+        await self.gw.post("hello", identity="beacon")
+        self.assertEqual(("Beacon", "https://example.test/beacon-icon.png"),
+                         self.transport.sent[0]["as"])
 
 
 class VoiceTests(GatewayCase):

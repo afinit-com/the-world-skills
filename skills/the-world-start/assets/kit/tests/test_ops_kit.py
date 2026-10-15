@@ -1,0 +1,1773 @@
+"""The opt-in ops kit (issue #4): bin/ops-kit.py renders a launcher, a watchdog and a
+launchd / systemd unit. Nothing here registers a service; the unit files are only parsed.
+
+The launcher and watchdog are also run for real against a stub harness.py, because their
+failure modes (a second copy started, ANTHROPIC_API_KEY handed down, a deliberate `down`
+undone by the watchdog two minutes later) only show up in a running process. The bash
+scripts run on macOS and Linux; the PowerShell scripts and the scheduled task only on
+Windows (WindowsLauncherTest), where CI runs them on a throwaway VM.
+"""
+
+import configparser
+import gzip
+import importlib.util
+import io
+import json
+import os
+import plistlib
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import unittest
+import unittest.mock
+import xml.etree.ElementTree as ET
+from datetime import datetime, timedelta
+from pathlib import Path
+
+KIT = Path(__file__).resolve().parents[1]
+POSIX = os.name == "posix" and shutil.which("bash") and shutil.which("pgrep")
+WINDOWS = os.name == "nt"
+TASK_NS = {"t": "http://schemas.microsoft.com/windows/2004/02/mit/task"}
+# The first restart of a count: "(attempt 1; ..." in bash, "(attempt 1)" in PowerShell.
+FIRST_ATTEMPT = r"\(attempt 1[;)]"
+
+
+def _load(name: str):
+    spec = importlib.util.spec_from_file_location(name.replace("-", "_"), KIT / "bin" / f"{name}.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+ops_kit = _load("ops-kit")
+ops_notify = _load("ops-notify")
+ops_log = _load("ops-log")
+
+
+def _render(home: Path, os_name: str, **kw) -> dict:
+    return ops_kit.render(home, "my harness", os_name, home / ".venv" / "bin" / "python",
+                          "/opt/cli/bin:/usr/bin:/bin", **kw)
+
+
+class RenderTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.home = Path(self.tmp.name) / "a & b"  # XML- and shell-hostile on purpose
+        self.home.mkdir()
+
+    @unittest.skipUnless(POSIX, "POSIX symlink process-list limitation")
+    def test_arbitrary_symlink_launch_limitation_is_documented(self):
+        import re
+        alias = self.home.parent / "alias home"
+        alias.symlink_to(self.home, target_is_directory=True)
+        # A launcher rendered from the canonical home cannot enumerate arbitrary
+        # aliases later used by an operator. Preserve strict matching (shells must
+        # never become kill targets) and document the required launch spelling.
+        pattern = ops_kit.process_match(self.home)
+        self.assertIsNone(re.search(pattern, f"python {alias}/harness.py"))
+        self.assertIsNotNone(re.search(pattern, f"python {alias.resolve()}/harness.py"))
+        docs = (KIT / "docs/operations.md").read_text(encoding="utf-8")
+        self.assertIn("arbitrary symbolic-link aliases", docs)
+        self.assertIn("canonical absolute path", docs)
+
+    def test_launchers_route_writer_diagnostics_to_bounded_log(self):
+        for os_name in ("macos", "linux", "windows"):
+            files = _render(self.home, os_name)
+            suffix = ".ps1" if os_name == "windows" else ""
+            up = files["scripts/my-harness-up" + suffix][0]
+            self.assertIn("--err-file", up)
+            self.assertIn("ops-log.err", up)
+            # A writer that died points at its traceback, which is not in ops-log.err.
+            crash = "$HomeDir\\logs\\ops-log.crash" if suffix else "$HOME_DIR/logs/ops-log.crash"
+            self.assertIn("Why it died: " + crash, up)
+            watchdog = files["scripts/my-harness-watchdog" + suffix][0]
+            self.assertIn("--err-file", watchdog)
+            self.assertNotIn("--max-bytes", watchdog)
+
+    def test_macos_renders_scripts_and_a_launchd_plist(self):
+        files = _render(self.home, "macos")
+        self.assertEqual(sorted(files), [
+            "scripts/launchd/local.the-world.my-harness.watchdog.plist",
+            "scripts/my-harness-up", "scripts/my-harness-watchdog"])
+        plist = plistlib.loads(files["scripts/launchd/local.the-world.my-harness.watchdog.plist"][0]
+                               .encode("utf-8"))
+        self.assertEqual(plist["Label"], "local.the-world.my-harness.watchdog")
+        self.assertEqual(plist["StartInterval"], 120)
+        self.assertIs(plist["RunAtLoad"], True)
+        self.assertIs(plist["AbandonProcessGroup"], True)  # else the round's exit kills it
+        self.assertEqual(plist["ProgramArguments"],
+                         ["/bin/bash", str(self.home.resolve() / "scripts" / "my-harness-watchdog")])
+        self.assertIn("CAFFEINATE=1", files["scripts/my-harness-up"][0])
+
+    # The bash scripts and units are rendered only on the macOS or Linux machine that runs
+    # them (ops-kit.py check_host), so their paths are POSIX paths. On a Windows host the
+    # temp dir is C:\\..., and a systemd unit or a bash script for that path is nothing
+    # the kit produces: the unit's quoting doubles each backslash, and `bash` there is
+    # usually System32's WSL launcher, which fails without a distribution.
+    @unittest.skipUnless(os.name == "posix", "a systemd unit is rendered on Linux only")
+    def test_linux_renders_a_systemd_user_timer(self):
+        files = _render(self.home, "linux")
+        service = configparser.ConfigParser(interpolation=None)
+        service.read_string(files["scripts/systemd/my-harness-watchdog.service"][0])
+        self.assertEqual(service["Service"]["Type"], "oneshot")
+        self.assertEqual(service["Service"]["KillMode"], "process")  # else the cgroup is stopped
+        watchdog = str(self.home.resolve() / "scripts" / "my-harness-watchdog")
+        self.assertEqual(service["Service"]["ExecStart"], f'/bin/bash "{watchdog}"')
+        timer = configparser.ConfigParser(interpolation=None)
+        timer.read_string(files["scripts/systemd/my-harness-watchdog.timer"][0])
+        self.assertEqual(timer["Timer"]["OnUnitActiveSec"], "120s")
+        self.assertEqual(timer["Timer"]["Unit"], "my-harness-watchdog.service")
+        self.assertEqual(timer["Install"]["WantedBy"], "timers.target")
+        self.assertIn("CAFFEINATE=0", files["scripts/my-harness-up"][0])
+
+    def test_relative_process_patterns_match_readme_launches_only(self):
+        import re
+        for windows, commands in (
+            (False, ["python harness.py", "/opt/python3 ./harness.py"]),
+            (True, [r'"C:\Python\python.exe" harness.py', r'python.exe ".\harness.py"']),
+        ):
+            pattern = ops_kit.relative_process_match(windows=windows)
+            for command in commands:
+                self.assertRegex(command, pattern)
+            for command in ("python /other/harness.py", "python ops-log.py python harness.py",
+                            r'python.exe C:\other\harness.py', "uv run python harness.py"):
+                self.assertIsNone(re.search(pattern, command), command)
+
+    @unittest.skipIf(WINDOWS, "the POSIX pgrep pattern; Windows matches Win32_Process command lines")
+    def test_process_match_takes_only_an_interpreter_as_the_first_word(self):
+        import re
+        python = self.home / ".venv" / "bin" / "python"
+        harness = str(self.home.resolve() / "harness.py")
+        pattern = ops_kit.process_match(self.home, python)
+        relative = ops_kit.relative_process_match(python=python)
+        for command in (f"/usr/bin/python3 {harness}", f"python {harness} --once",
+                        # the venv in a home with a space in its path
+                        f"{python.parent.resolve()}/python {harness}"):
+            self.assertRegex(command, pattern)
+        for command in (f'/bin/sh -c sleep 20; echo {python} {harness}',
+                        f"zsh -c nohup /usr/bin/python3 {harness}",
+                        f"/opt/my tools/python {harness}"):
+            self.assertIsNone(re.search(pattern, command), command)
+        self.assertRegex(f"{python.parent.resolve()}/python harness.py", relative)
+        self.assertIsNone(re.search(relative, "zsh -c nohup .venv/bin/python harness.py"))
+
+    @unittest.skipUnless(Path("/var").resolve() == Path("/private/var"), "macOS /var link")
+    def test_process_match_sees_the_home_by_its_unresolved_path_too(self):
+        import re
+        with tempfile.TemporaryDirectory(dir="/var/tmp") as tmp:
+            home = Path(tmp)
+            pattern = ops_kit.process_match(home)
+            for spelling in (str(home), str(home.resolve())):
+                self.assertRegex(f"/usr/bin/python3 {spelling}/harness.py", pattern)
+
+    def test_systemd_quote_escapes_what_systemd_unescapes(self):
+        self.assertEqual(ops_kit.systemd_quote('a\\b "c" 100%'), '"a\\\\b \\"c\\" 100%%"')
+
+    def test_systemd_quote_keeps_dollar_paths_literal(self):
+        home = self.home / 'harness-${NOT_SET}-$HOME'
+        service = _render(home, "linux")["scripts/systemd/my-harness-watchdog.service"][0]
+        self.assertIn('harness-$${NOT_SET}-$$HOME', service)
+        self.assertNotIn('-${NOT_SET}', service)
+
+    def test_windows_renders_powershell_scripts_and_a_scheduled_task(self):
+        files = _render(self.home, "windows", user="WORKGROUP\\someone",
+                        now=datetime(2026, 10, 14, 9, 30, 5))
+        self.assertEqual(sorted(files), [
+            "scripts/my-harness-ops-common.ps1",
+            "scripts/my-harness-up.ps1", "scripts/my-harness-watchdog.ps1",
+            "scripts/windows/my-harness-watchdog.xml"])
+        up, watchdog = files["scripts/my-harness-up.ps1"][0], files["scripts/my-harness-watchdog.ps1"][0]
+        common = files["scripts/my-harness-ops-common.ps1"][0]
+        for function in ("Stamp", "Inner", "Enter-OpsLock"):
+            self.assertEqual(common.count("function " + function), 1)
+            self.assertNotIn("function " + function, up + watchdog)
+        for script in (up, watchdog, common):
+            self.assertTrue(script.startswith("\ufeff"), "PowerShell 5.1 would read it as ANSI")
+            self.assertNotRegex(script, r"\{\{[A-Z_]+\}\}")
+        self.assertIn("'ANTHROPIC_API_KEY'", up)
+        self.assertIn("$RunPath = '/opt/cli/bin:/usr/bin:/bin'", up)
+        self.assertIn("$KeepDays = ''", up)
+        self.assertIn("$Notify = @()", watchdog)
+        self.assertIn("& $UpCall resume", watchdog)  # never `up`: that clears the marker
+        # An unreadable process list fails the command (exit 4) instead of reading as empty.
+        self.assertIn("Win32_Process -Filter \"Name LIKE 'python%'\" -ErrorAction Stop", up)
+        self.assertNotRegex(up, r"Get-CimInstance[^\n]*SilentlyContinue")
+
+        raw = files["scripts/windows/my-harness-watchdog.xml"][0]
+        self.assertTrue(raw.startswith(b"\xff\xfe"), "schtasks /XML wants UTF-16 with a BOM")
+        task = ET.fromstring(raw.decode("utf-16").lstrip("\ufeff").replace(
+            'encoding="UTF-16"', ""))
+        logon = task.find("t:Triggers/t:LogonTrigger", TASK_NS)
+        self.assertEqual(logon.find("t:UserId", TASK_NS).text, "WORKGROUP\\someone")
+        self.assertEqual(logon.find("t:Repetition/t:Interval", TASK_NS).text, "PT2M")
+        timed = task.find("t:Triggers/t:TimeTrigger", TASK_NS)
+        self.assertEqual(timed.find("t:StartBoundary", TASK_NS).text, "2026-10-14T09:30:05")
+        principal = task.find("t:Principals/t:Principal", TASK_NS)
+        self.assertEqual(principal.find("t:LogonType", TASK_NS).text, "InteractiveToken")
+        self.assertEqual(principal.find("t:RunLevel", TASK_NS).text, "LeastPrivilege")
+        self.assertEqual(task.find("t:Settings/t:MultipleInstancesPolicy", TASK_NS).text, "IgnoreNew")
+        action = task.find("t:Actions/t:Exec", TASK_NS)
+        self.assertEqual(action.find("t:Command", TASK_NS).text,
+                         str(self.home / ".venv" / "bin" / "pythonw.exe"))
+        arguments = action.find("t:Arguments", TASK_NS).text
+        self.assertIn("-ExecutionPolicy Bypass -File", arguments)
+        self.assertIn(str(self.home.resolve() / "scripts" / "my-harness-watchdog.ps1"), arguments)
+
+    def test_launchers_read_env_keys_in_isolated_mode(self):
+        # Without -I, world/types.py shadows the standard `types` (InstalledHomeLauncherTest).
+        sh = _render(self.home, "linux")["scripts/my-harness-up"][0]
+        self.assertIn('"$PY" -I "$HOME_DIR/world/env.py" --keys', sh)
+        ps1 = _render(self.home, "windows", user="u")["scripts/my-harness-up.ps1"][0]
+        self.assertIn("& $Py -I (Join-Path $HomeDir 'world\\env.py') --keys", ps1)
+
+    def test_windows_refuses_a_start_beside_a_relative_launch_as_a_start_failure(self):
+        # A throw would end up as exit 4, "could not tell", in up.ps1's last catch.
+        ps1 = _render(self.home, "windows", user="u")["scripts/my-harness-up.ps1"][0]
+        refusal = ps1[ps1.index("if ($relative.Count) {"):]
+        refusal = refusal[:refusal.index("\n  }")]
+        self.assertNotIn("throw", refusal)
+        self.assertIn("return $false", refusal)
+
+    def test_windows_scripts_quote_hostile_values_for_powershell(self):
+        files = _render(self.home, "windows", user="u", notify=("OBS_SLACK_BOT_TOKEN", "OBS_SLACK_CHANNEL"),
+                        keep_days=30)
+        watchdog = files["scripts/my-harness-watchdog.ps1"][0]
+        self.assertIn("$Notify = @('--token-env', 'OBS_SLACK_BOT_TOKEN', '--channel-env', "
+                      "'OBS_SLACK_CHANNEL')", watchdog)
+        self.assertIn("$KeepDays = '30'", watchdog)
+        self.assertEqual(ops_kit.ps_quote("it's \u2019x"), "'it''s \u2019\u2019x'")
+
+    def test_windows_process_match_finds_only_this_harness(self):
+        import re
+        from pathlib import PureWindowsPath
+        home = PureWindowsPath("C:/Users/a b/my harness (1)")
+        pattern = ops_kit.windows_process_match(home)
+        harness = str(home / "harness.py")
+        venv = str(home / ".venv" / "Scripts" / "python.exe")
+        self.assertTrue(re.match(pattern, f'"{venv}" "{harness}"', re.I))
+        self.assertTrue(re.match(pattern, f'C:\\Python312\\python.exe  "{harness}" --once', re.I))
+        writer = f'"{venv}" "{home / "bin" / "ops-log.py"}" --file x --run -- "{venv}" "{harness}"'
+        self.assertFalse(re.match(pattern, writer, re.I), "the console writer is not the harness")
+        self.assertFalse(re.match(pattern, f'notepad.exe "{harness}"', re.I))
+        self.assertFalse(re.match(pattern, f'"{venv}" "{harness}.bak"', re.I))
+
+    def test_windows_process_match_skips_the_writer_in_a_home_without_spaces(self):
+        """CI's temp dir has no space, so nothing is quoted: the console writer's command
+        line then ended in `python.exe ...harness.py` and counted as a second harness."""
+        import re
+        from pathlib import PureWindowsPath
+        home = PureWindowsPath(r"C:\Users\runner\AppData\Local\Temp\tmp1\stub")
+        pattern = ops_kit.windows_process_match(home)
+        venv, harness = home / ".venv" / "Scripts" / "python.exe", home / "harness.py"
+        base = r"C:\hostedtoolcache\Python\3.12.10\x64\python.exe"
+        writer = f"{venv} {home}\\bin\\ops-log.py --file {home}\\logs\\console.out --run -- {venv} {harness}"
+        self.assertFalse(re.match(pattern, writer, re.I))
+        self.assertTrue(re.match(pattern, f"{venv} {harness}", re.I))
+        self.assertTrue(re.match(pattern, f'"{base}" {harness}', re.I))
+
+    def test_a_profile_for_another_os_is_refused(self):
+        with self.assertRaisesRegex(ops_kit.OpsKitError, "this machine is windows"):
+            ops_kit.check_host("linux", "windows")
+        ops_kit.check_host("windows", "windows")
+        with self.assertRaisesRegex(ops_kit.OpsKitError, "only"):
+            ops_kit.check_os("plan9")
+
+    def test_windows_run_path_puts_the_cli_first(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cli_dir, other = Path(tmp) / "cli", Path(tmp) / "other"
+            cli_dir.mkdir()
+            other.mkdir()
+            cli = cli_dir / ("claude.cmd" if WINDOWS else "claude")
+            cli.write_text("", encoding="utf-8")
+            cli.chmod(0o755)
+            path = os.pathsep.join([str(other), str(cli_dir)])
+            self.assertEqual(ops_kit.resolve_windows_run_path("claude", path),
+                             os.pathsep.join([str(cli_dir), str(other)]))
+            with self.assertRaisesRegex(ops_kit.OpsKitError, "codex"):
+                ops_kit.resolve_windows_run_path("codex", path)
+
+    @unittest.skipUnless(POSIX, "bash scripts are rendered and run on macOS and Linux only")
+    def test_scripts_are_valid_bash_and_keep_the_known_fixes(self):
+        files = _render(self.home, "macos", notify=("OBS_SLACK_BOT_TOKEN", "OBS_SLACK_CHANNEL"),
+                        keep_days=30)
+        for rel in ("scripts/my-harness-up", "scripts/my-harness-watchdog"):
+            content, mode = files[rel]
+            self.assertEqual(mode, 0o755)
+            path = Path(self.tmp.name) / Path(rel).name
+            path.write_text(content, encoding="utf-8", newline="\n")
+            check = subprocess.run(["bash", "-n", str(path)], capture_output=True, text=True)
+            self.assertEqual(check.returncode, 0, f"{rel}: {check.stderr}")
+        up = files["scripts/my-harness-up"][0]
+        self.assertIn("env -u ANTHROPIC_API_KEY", up)
+        self.assertIn("RUN_PATH=/opt/cli/bin:/usr/bin:/bin", up)
+        watchdog = files["scripts/my-harness-watchdog"][0]
+        self.assertIn("NOTIFY='--token-env OBS_SLACK_BOT_TOKEN --channel-env OBS_SLACK_CHANNEL'",
+                      watchdog)
+        self.assertIn("KEEP_DAYS=30", watchdog)
+
+    def test_defaults_neither_notify_nor_delete(self):
+        watchdog = _render(self.home, "linux")["scripts/my-harness-watchdog"][0]
+        self.assertIn("NOTIFY=  ", watchdog)
+        self.assertIn("KEEP_DAYS=  ", watchdog)
+
+    def test_next_steps_remove_the_watchdog_before_down(self):
+        for os_name, unregister, down in (
+                ("macos", "launchctl bootout", "my-harness-up down"),
+                ("linux", "systemctl --user disable --now", "my-harness-up down"),
+                ("windows", "schtasks /Delete", "my-harness-up.ps1 down")):
+            steps = "\n".join(ops_kit.next_steps(self.home, "my harness", os_name))
+            self.assertLess(steps.index(unregister), steps.rindex(down), os_name)
+
+    def test_existing_scripts_are_not_replaced_without_force(self):
+        files = _render(self.home, "linux")
+        ops_kit.write(self.home, files, force=False)
+        with self.assertRaisesRegex(ops_kit.OpsKitError, "--force"):
+            ops_kit.write(self.home, files, force=False)
+        ops_kit.write(self.home, files, force=True)
+
+    def test_notify_refused_while_slack_values_are_placeholders(self):
+        env = self.home / "harness.env"
+        env.write_text("OBS_SLACK_BOT_TOKEN=xoxb-...\nOBS_SLACK_CHANNEL=C0XXXXXXX     # x\n",
+                       encoding="utf-8")
+        keys = ("OBS_SLACK_BOT_TOKEN", "OBS_SLACK_CHANNEL")
+        with self.assertRaisesRegex(ops_kit.OpsKitError, "OBS_SLACK_BOT_TOKEN and OBS_SLACK_CHANNEL"):
+            ops_kit.check_notify_env(env, keys)
+        env.write_text("OBS_SLACK_BOT_TOKEN = xoxb-real\n export OBS_SLACK_CHANNEL = C123  # chan\n",
+                       encoding="utf-8")
+        ops_kit.check_notify_env(env, keys)
+
+
+class NotifyTest(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.empty_env = str(Path(tmp.name) / "harness.env")
+        Path(self.empty_env).write_text("", encoding="utf-8")
+
+    def test_missing_token_is_reported_not_posted(self):
+        called = []
+        err = io.StringIO()
+        with unittest.mock.patch.dict(os.environ, {"WORLD_ENV_FILE": self.empty_env}), \
+                unittest.mock.patch("sys.stderr", err):
+            code = ops_notify.main(["--token-env", "NOPE_TOKEN", "--channel-env", "NOPE_CHAN", "hi"],
+                                   opener=lambda *a, **k: called.append(a))
+        self.assertEqual(code, 1)
+        self.assertEqual(called, [])
+        self.assertIn("NOPE_TOKEN", err.getvalue())
+
+    def test_slack_refusal_is_a_failure(self):
+        class Resp(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        env = {"WORLD_ENV_FILE": self.empty_env, "T_TOKEN": "xoxb-1", "T_CHAN": "C1"}
+        with unittest.mock.patch.dict(os.environ, env), \
+                unittest.mock.patch("sys.stderr", io.StringIO()):
+            bad = ops_notify.main(["--token-env", "T_TOKEN", "--channel-env", "T_CHAN", "hi"],
+                                  opener=lambda req, timeout: Resp(b'{"ok": false, "error": "x"}'))
+            good = ops_notify.main(["--token-env", "T_TOKEN", "--channel-env", "T_CHAN", "hi"],
+                                   opener=lambda req, timeout: Resp(b'{"ok": true}'))
+        self.assertEqual((bad, good), (1, 0))
+
+    def test_harness_env_overrides_stale_shell_for_notifications(self):
+        Path(self.empty_env).write_text(
+            'export T_TOKEN = "file-token"\n T_CHAN = file-channel # channel\n', encoding="utf-8")
+        requests = []
+
+        def opener(req, timeout):
+            requests.append(req)
+            return io.BytesIO(b'{"ok": true}')
+
+        env = {"WORLD_ENV_FILE": self.empty_env, "T_TOKEN": "stale-token", "T_CHAN": "stale-channel"}
+        with unittest.mock.patch.dict(os.environ, env):
+            code = ops_notify.main(["--token-env", "T_TOKEN", "--channel-env", "T_CHAN", "hi"],
+                                   opener=opener)
+            self.assertEqual(os.environ["T_TOKEN"], "stale-token")
+        self.assertEqual(code, 0)
+        self.assertEqual(requests[0].get_header("Authorization"), "Bearer file-token")
+        self.assertEqual(json.loads(requests[0].data)["channel"], "file-channel")
+
+    def notify(self, *args, replies):
+        """ops_notify.main with Slack answering `replies` in order; (code, stdout, requests)."""
+        requests = []
+
+        def opener(req, timeout):
+            requests.append(json.loads(req.data))
+            return io.BytesIO(json.dumps(replies[len(requests) - 1]).encode())
+
+        out = io.StringIO()
+        env = {"WORLD_ENV_FILE": self.empty_env, "T_TOKEN": "xoxb-1", "T_CHAN": "C1"}
+        with unittest.mock.patch.dict(os.environ, env), unittest.mock.patch("sys.stdout", out), \
+                unittest.mock.patch("sys.stderr", io.StringIO()):
+            code = ops_notify.main(["--token-env", "T_TOKEN", "--channel-env", "T_CHAN", *args],
+                                   opener=opener)
+        return code, out.getvalue().strip(), requests
+
+    def test_a_new_message_prints_its_ts(self):
+        code, ts, requests = self.notify("down", replies=[{"ok": True, "ts": "111.1"}])
+        self.assertEqual((code, ts), (0, "111.1"))
+        self.assertNotIn("thread_ts", requests[0])
+
+    def test_a_reply_goes_into_the_thread_and_prints_the_thread(self):
+        code, ts, requests = self.notify("--thread-ts", "111.1", "again",
+                                         replies=[{"ok": True, "ts": "222.2"}])
+        self.assertEqual((code, ts), (0, "111.1"))
+        self.assertEqual(requests, [{"channel": "C1", "text": "again", "thread_ts": "111.1"}])
+
+    def test_a_refused_reply_becomes_a_new_message(self):
+        code, ts, requests = self.notify(
+            "--thread-ts", "111.1", "again",
+            replies=[{"ok": False, "error": "thread_not_found"}, {"ok": True, "ts": "333.3"}])
+        self.assertEqual((code, ts), (0, "333.3"))
+        self.assertEqual(requests[1], {"channel": "C1", "text": "again"})
+
+    def test_a_reply_to_a_deleted_message_becomes_a_new_message(self):
+        code, ts, requests = self.notify(
+            "--thread-ts", "111.1", "again",
+            replies=[{"ok": False, "error": "message_not_found"}, {"ok": True, "ts": "333.3"}])
+        self.assertEqual((code, ts), (0, "333.3"))
+        self.assertEqual(len(requests), 2)
+
+    def test_a_reply_refused_for_another_reason_is_a_failure_not_a_new_thread(self):
+        code, ts, requests = self.notify("--thread-ts", "111.1", "again",
+                                         replies=[{"ok": False, "error": "ratelimited"}])
+        self.assertEqual((code, ts), (1, ""))
+        self.assertEqual(len(requests), 1)
+
+    def test_a_reply_that_timed_out_is_a_failure_not_a_second_post(self):
+        # Slack may have taken it; posting it again as a new message would split the thread.
+        requests = []
+
+        def opener(req, timeout):
+            requests.append(json.loads(req.data))
+            raise TimeoutError("timed out")
+
+        env = {"WORLD_ENV_FILE": self.empty_env, "T_TOKEN": "xoxb-1", "T_CHAN": "C1"}
+        with unittest.mock.patch.dict(os.environ, env), \
+                unittest.mock.patch("sys.stdout", io.StringIO()) as out, \
+                unittest.mock.patch("sys.stderr", io.StringIO()):
+            code = ops_notify.main(["--token-env", "T_TOKEN", "--channel-env", "T_CHAN",
+                                    "--thread-ts", "111.1", "again"], opener=opener)
+        self.assertEqual((code, out.getvalue()), (1, ""))
+        self.assertEqual(len(requests), 1)
+
+    def test_request_carries_the_token_only_in_the_header(self):
+        req = ops_notify.build_request("xoxb-secret", "C1", "restarted")
+        self.assertEqual(req.get_header("Authorization"), "Bearer xoxb-secret")
+        self.assertNotIn(b"xoxb-secret", req.data)
+        self.assertEqual(json.loads(req.data), {"channel": "C1", "text": "restarted"})
+
+
+STUB_HARNESS = """\
+import json, os, signal, sys, time
+if os.environ.get("STUB_IGNORE_TERM"):
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)  # a run that will not finish in time
+with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "env-seen.json"), "w") as f:
+    json.dump({"api_key": os.environ.get("ANTHROPIC_API_KEY"),
+               "file_key": os.environ.get("STUB_FROM_FILE"), "path": os.environ["PATH"],
+               "lock_env": os.environ.get("WORLD_OPS_LOCK_HELD")}, f)
+print("stub harness up", flush=True)
+if os.environ.get("STUB_ORPHAN_S"):
+    # A child that inherits stdout and outlives the harness, as an agent CLI can: the
+    # console writer gets no EOF until it exits.
+    import subprocess
+    child = subprocess.Popen(["sleep", os.environ["STUB_ORPHAN_S"]])
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "orphan.pid"), "w") as f:
+        f.write(str(child.pid))
+    signal.signal(signal.SIGTERM, lambda *_: os._exit(0))
+for n in range(1200):
+    if os.environ.get("STUB_CHATTY"):
+        print(f"tick {n}", flush=True)
+    time.sleep(0.1)
+"""
+
+
+FAKE_NOTIFY = """\
+import json, os, sys
+here = os.path.dirname(os.path.abspath(__file__))
+args = sys.argv[1:]
+thread = args[args.index("--thread-ts") + 1] if "--thread-ts" in args else None
+path = os.path.join(here, "posts.jsonl")
+count = len(open(path).read().splitlines()) if os.path.exists(path) else 0
+with open(path, "a") as f:
+    f.write(json.dumps({"thread": thread, "text": args[-1]}) + "\\n")
+if os.path.exists(os.path.join(here, "notify-fail")):
+    raise SystemExit(1)
+if thread and not os.path.exists(os.path.join(here, "thread-gone")):
+    print(thread)
+else:
+    print(f"{count + 1}.0")  # a new message, numbered by post
+"""
+
+
+def _read_rolled(logs: Path, stem: str, ext: str) -> list[str]:
+    """Every line in <stem><ext> and its rolls, oldest roll first."""
+    lines = []
+    for gz in sorted(logs.glob(f"{stem}.*{ext}.gz"), key=lambda p: p.stat().st_mtime_ns):
+        with gzip.open(gz, "rt", encoding="utf-8") as f:
+            lines += f.read().splitlines()
+    current = logs / f"{stem}{ext}"
+    if current.exists():
+        lines += current.read_text(encoding="utf-8").splitlines()
+    return lines
+
+
+class ConsoleWriterTest(unittest.TestCase):
+    """bin/ops-log.py: the console log's only writer, which rolls the file itself."""
+
+    def test_no_line_is_lost_while_it_rolls_under_a_steady_append(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "console.out"
+            writer = subprocess.Popen(
+                [sys.executable, str(KIT / "bin" / "ops-log.py"), "--file", str(out),
+                 "--max-bytes", "2000"], stdin=subprocess.PIPE)
+            try:
+                for n in range(3000):
+                    writer.stdin.write(f"2026-01-01T00:00:00+00:00 line {n}\n".encode())
+                    if n % 100 == 0:
+                        writer.stdin.flush()
+                writer.stdin.close()
+                self.assertEqual(writer.wait(timeout=60), 0)
+            finally:
+                if writer.poll() is None:
+                    writer.kill()
+            rolls = list(Path(tmp).glob("console.*.out.gz"))
+            self.assertGreater(len(rolls), 10, "never rolled")
+            lines = _read_rolled(Path(tmp), "console", ".out")
+            self.assertEqual([int(line.rsplit(" ", 1)[1]) for line in lines], list(range(3000)))
+
+    def test_a_detached_writer_runs_the_command_and_keeps_every_line_across_rolls(self):
+        """--detach is how the Windows launcher starts a harness: the writer runs it as a
+        child and reads its output, and returns before it finishes."""
+        chatty = ("for n in range(3000): print(f'2026-01-01T00:00:00+00:00 line {n}', "
+                  "flush=(n % 100 == 0))")
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "console.out"
+            started = subprocess.run(
+                [sys.executable, str(KIT / "bin" / "ops-log.py"), "--file", str(out),
+                 "--max-bytes", "2000", "--detach", "--", sys.executable, "-c", chatty],
+                capture_output=True, text=True, timeout=60)
+            self.assertEqual(started.returncode, 0, started.stderr)
+            self.assertTrue(started.stdout.strip().isdigit(), started.stdout)
+            lines: list[str] = []
+            for _ in range(600):
+                lines = _read_rolled(Path(tmp), "console", ".out")
+                if len(lines) >= 3000 and ops_log.writer_pid(out) is None:
+                    break
+                time.sleep(0.1)
+            self.assertIsNone(ops_log.writer_pid(out), "the writer outlived its command")
+            self.assertGreater(len(list(Path(tmp).glob("console.*.out.gz"))), 10, "never rolled")
+            self.assertEqual([int(line.rsplit(" ", 1)[1]) for line in lines], list(range(3000)))
+
+    def test_stamps_only_lines_without_a_time(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "console.out"
+            body = b"2026-10-14T09:00:00+09:00 [h] already stamped\nTraceback (most recent call last):\n"
+            ops_log.main(["--file", str(out)], stdin=io.BytesIO(body))
+            first, second = out.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(first, "2026-10-14T09:00:00+09:00 [h] already stamped")
+        stamp, rest = second.split(" ", 1)
+        self.assertIsNotNone(datetime.fromisoformat(stamp).tzinfo)
+        self.assertEqual(rest, "Traceback (most recent call last):")
+
+    def test_the_watchdog_no_longer_copies_and_truncates(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            watchdog = _render(Path(tmp), "linux")["scripts/my-harness-watchdog"][0]
+        self.assertNotIn("gzip -c", watchdog)
+        self.assertNotIn(': >"$f"', watchdog)
+
+
+class NotificationRetryTests:
+    """The same delivery-failure scenarios run against bash and Windows PowerShell."""
+
+    def prepare_notification_retry(self):
+        (self.home / "bin" / "ops-notify.py").write_text(FAKE_NOTIFY, encoding="utf-8")
+        if WINDOWS:
+            files = ops_kit.render(self.home, "stub", "windows", self.python, self.run_path,
+                                   user=self.user, notify=("T_TOKEN", "T_CHAN"))
+        else:
+            files = ops_kit.render(self.home, "stub", "linux", self.home / ".venv/bin/python",
+                                   "/usr/bin:/bin", notify=("T_TOKEN", "T_CHAN"))
+        ops_kit.write(self.home, files, force=True)
+        # Only process checks succeed when the healthy marker is present. Record all
+        # actions so a recovery delivery retry cannot accidentally restart the harness.
+        if WINDOWS:
+            self.up.write_text(
+                "Add-Content -LiteralPath (Join-Path $PSScriptRoot 'actions') -Value $args[0]\n"
+                "if ($args[0] -eq 'healthy' -and "
+                "(Test-Path -LiteralPath (Join-Path $PSScriptRoot 'writerdead'))) { exit 1 }\n"
+                "if ((Test-Path -LiteralPath (Join-Path $PSScriptRoot 'healthy')) -and "
+                "($args[0] -in @('running', 'healthy', 'recycle'))) { exit 0 }\nexit 1\n")
+        else:
+            self.up.write_text(
+                '#!/bin/sh\ndir=$(dirname "$0")\necho "$1" >>"$dir/actions"\n'
+                'if [ "$1" = healthy ] && [ -f "$dir/writerdead" ]; then exit 1; fi\n'
+                'if [ -f "$dir/healthy" ]; then\n'
+                '  case "$1" in running|healthy|recycle) exit 0;; esac\nfi\nexit 1\n')
+        self.failed_delivery = self.home / "bin" / "notify-fail"
+        self.failed_delivery.touch()
+
+    def notification_round(self):
+        result = self.run_ps(self.watchdog) if WINDOWS else self.run_watchdog()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def notification_attempts(self):
+        path = self.home / "bin" / "posts.jsonl"
+        return [json.loads(line) for line in path.read_text().splitlines()]
+
+    def test_failed_failure_delivery_retries_after_backoff_then_deduplicates(self):
+        self.prepare_notification_retry()
+        self.notification_round()
+        self.assertFalse((self.state / "reported-failure").exists())
+        self.assertTrue((self.state / "incident").exists())
+        self.notification_round()
+        self.assertEqual(len(self.notification_attempts()), 1, "backoff was ignored")
+        self.failed_delivery.unlink()
+        (self.state / "next_try").write_text("0")
+        self.notification_round()
+        self.assertEqual(len(self.notification_attempts()), 2)
+        self.assertEqual((self.state / "reported-failure").read_text().strip(), "start-failed")
+        self.assertEqual((self.state / "incident").read_text().strip(), "2.0")
+        (self.state / "next_try").write_text("0")
+        self.notification_round()
+        self.assertEqual(len(self.notification_attempts()), 2, "successful delivery repeated")
+        log = (self.home / "logs/watchdog.log").read_text(encoding="utf-8")
+        self.assertEqual(log.count("could not start it (attempt"), 3)
+
+    def test_failed_recovery_delivery_stays_pending_without_restarting(self):
+        self.prepare_notification_retry()
+        self.state.mkdir(parents=True, exist_ok=True)
+        (self.state / "incident").write_text("111.1")
+        (self.state / "failures").write_text("2")
+        (self.state / "next_try").write_text(str(int(time.time()) + 960))
+        (self.home / "scripts/healthy").touch()
+        self.notification_round()
+        self.assertEqual((self.state / "incident").read_text().strip(), "111.1")
+        self.assertEqual((self.state / "recovery-failures").read_text().strip(), "1")
+        # The restart count resets the round it is found running, whatever Slack does.
+        self.assertFalse((self.state / "failures").exists())
+        self.assertFalse((self.state / "next_try").exists())
+        self.notification_round()
+        self.assertEqual(len(self.notification_attempts()), 1, "backoff was ignored")
+        (self.state / "recovery_next_try").write_text("0")
+        self.notification_round()
+        self.assertEqual((self.state / "recovery-failures").read_text().strip(), "2")
+        self.assertGreaterEqual(int((self.state / "recovery_next_try").read_text()),
+                                int(time.time()) + 55)
+        self.failed_delivery.unlink()
+        (self.state / "recovery_next_try").write_text("0")
+        self.notification_round()
+        attempts = self.notification_attempts()
+        self.assertEqual([p["thread"] for p in attempts], ["111.1"] * 3)
+        self.assertTrue(all("recovered" in p["text"] and "2 restart(s)" in p["text"]
+                            for p in attempts))
+        for name in ("incident", "failures", "next_try", "recovery-failures",
+                     "recovery_next_try", "recovery-pending"):
+            self.assertFalse((self.state / name).exists(), name)
+        self.notification_round()
+        self.assertEqual(len(self.notification_attempts()), 3)
+        actions = (self.home / "scripts/actions").read_text().splitlines()
+        self.assertEqual(actions, ["running", "healthy"] * 5)
+
+    def test_a_pending_recovery_never_delays_restarting_a_dead_harness(self):
+        self.prepare_notification_retry()
+        self.state.mkdir(parents=True, exist_ok=True)
+        (self.state / "incident").write_text("111.1")
+        (self.state / "failures").write_text("3")
+        (self.home / "scripts/healthy").touch()
+        for _ in range(3):
+            (self.state / "recovery_next_try").unlink(missing_ok=True)
+            self.notification_round()
+        self.assertGreater(int((self.state / "recovery_next_try").read_text()), int(time.time()))
+        # It dies while the recovery line is still waiting for Slack: the same round
+        # restarts it, as the first attempt of a fresh count, in the same thread.
+        (self.home / "scripts/healthy").unlink()
+        self.notification_round()
+        actions = (self.home / "scripts/actions").read_text().splitlines()
+        self.assertEqual(actions[-2:], ["running", "resume"])
+        last = self.notification_attempts()[-1]
+        self.assertEqual(last["thread"], "111.1")
+        self.assertRegex(last["text"], FIRST_ATTEMPT)
+        self.assertEqual((self.state / "incident").read_text().strip(), "111.1")
+        self.assertFalse((self.state / "recovery_next_try").exists())
+
+    def test_a_dead_writer_discards_the_previous_pending_recovery(self):
+        self.prepare_notification_retry()
+        self.state.mkdir(parents=True, exist_ok=True)
+        (self.state / "incident").write_text("111.1")
+        (self.state / "failures").write_text("3")
+        (self.home / "scripts/healthy").touch()
+        for _ in range(6):
+            (self.state / "recovery_next_try").write_text("0")
+            self.notification_round()
+        self.assertEqual((self.state / "recovery-failures").read_text().strip(), "6")
+        self.assertGreater(int((self.state / "recovery_next_try").read_text()),
+                           int(time.time()) + 900)
+        self.failed_delivery.unlink()
+        writerdead = self.home / "scripts/writerdead"
+        writerdead.touch()
+        self.notification_round()
+        actions = (self.home / "scripts/actions").read_text().splitlines()
+        self.assertEqual(actions[-3:], ["running", "healthy", "recycle"])
+        self.assertEqual((self.state / "failures").read_text().strip(), "1")
+        for name in ("recovery-pending", "recovery-failures", "recovery_next_try"):
+            self.assertFalse((self.state / name).exists(), name)
+        # The harness is healthy next round: its new recovery closes the same thread
+        # immediately, without inheriting the previous line's delivery deadline.
+        writerdead.unlink()
+        count = len(self.notification_attempts())
+        self.notification_round()
+        attempts = self.notification_attempts()
+        self.assertEqual(len(attempts), count + 1)
+        self.assertEqual(attempts[-1]["thread"], "111.1")
+        self.assertIn("recovered", attempts[-1]["text"])
+        self.assertIn("after 1 restart(s)", attempts[-1]["text"])
+        for name in ("incident", "failures", "next_try", "recovery-pending",
+                     "recovery-failures", "recovery_next_try"):
+            self.assertFalse((self.state / name).exists(), name)
+        self.notification_round()
+        self.assertEqual(len(self.notification_attempts()), count + 1)
+
+    def test_slack_that_keeps_failing_never_keeps_the_restart_count(self):
+        self.prepare_notification_retry()
+        healthy = self.home / "scripts/healthy"
+        for cycle in range(4):
+            healthy.unlink(missing_ok=True)
+            self.notification_round()
+            self.assertRegex(self.notification_attempts()[-1]["text"], FIRST_ATTEMPT, cycle)
+            healthy.touch()
+            self.notification_round()
+            self.assertFalse((self.state / "failures").exists(), cycle)
+            self.assertFalse((self.state / "next_try").exists(), cycle)
+            self.assertTrue((self.state / "incident").exists(), cycle)
+
+    def test_failed_dropping_delivery_backs_off_like_the_rest(self):
+        self.prepare_notification_retry()
+        (self.home / "scripts/healthy").touch()
+        dropping = self.home / "logs/.console.out.dropping"
+        dropping.parent.mkdir(parents=True, exist_ok=True)
+        dropping.write_text("disk full")
+
+        def dropping_attempts():
+            return [p for p in self.notification_attempts() if "dropping lines" in p["text"]]
+
+        self.notification_round()
+        self.notification_round()
+        self.assertEqual(len(dropping_attempts()), 1, "backoff was ignored")
+        (self.state / "dropping_next_try").write_text("0")
+        self.notification_round()
+        self.assertEqual(len(dropping_attempts()), 2)
+        self.assertEqual((self.state / "dropping-failures").read_text().strip(), "2")
+        self.assertFalse((self.state / "next_try").exists(), "it delayed the restart schedule")
+        self.failed_delivery.unlink()
+        (self.state / "dropping_next_try").write_text("0")
+        self.notification_round()
+        self.notification_round()
+        self.assertEqual(len(dropping_attempts()), 3)
+        self.assertTrue((self.state / "reported-dropping").exists())
+        dropping.unlink()
+        self.notification_round()
+        for name in ("reported-dropping", "dropping-failures", "dropping_next_try"):
+            self.assertFalse((self.state / name).exists(), name)
+
+
+@unittest.skipUnless(POSIX, "the launcher and watchdog are bash + pgrep (macOS, Linux)")
+class LauncherAndWatchdogTest(NotificationRetryTests, unittest.TestCase):
+    """Runs the rendered scripts against a stub harness in a real venv."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.home = Path(tmp.name).resolve() / "stub"
+        (self.home / "bin").mkdir(parents=True)
+        for script in ("ops-lock.py", "ops-log.py"):
+            shutil.copy2(KIT / "bin" / script, self.home / "bin" / script)
+        (self.home / "world" / "process").mkdir(parents=True)
+        shutil.copy2(KIT / "world" / "env.py", self.home / "world" / "env.py")
+        shutil.copy2(KIT / "world" / "process" / "runlog.py", self.home / "world" / "process")
+        subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(self.home / ".venv")],
+                       check=True)
+        (self.home / "harness.py").write_text(STUB_HARNESS, encoding="utf-8")
+        (self.home / "env").mkdir()
+        (self.home / "env" / "harness.env").write_text(" export STUB_FROM_FILE = from-file\n# NOT_A_KEY=x\n",
+                                                       encoding="utf-8")
+        files = ops_kit.render(self.home, "stub", "linux", self.home / ".venv" / "bin" / "python",
+                               "/usr/bin:/bin")
+        ops_kit.write(self.home, files, force=False)
+        self.up = self.home / "scripts" / "stub-up"
+        self.watchdog = self.home / "scripts" / "stub-watchdog"
+        self.state = self.home / "logs" / ".watchdog"
+        self.addCleanup(self.kill_all)
+        self.addCleanup(lambda: (self.home / "env" / "harness.env").chmod(0o644)
+                        if (self.home / "env" / "harness.env").exists() else None)
+
+    def writers(self) -> list[str]:
+        match = "ops-log\\.py --file " + ops_kit.ere_escape(str(self.home / "logs" / "console.out"))
+        return subprocess.run(["pgrep", "-f", match], capture_output=True, text=True).stdout.split()
+
+    def lock_is_free(self) -> bool:
+        probe = subprocess.run([sys.executable, str(KIT / "bin" / "ops-lock.py"),
+                                str(self.state / "lock"), "--wait-s", "0", "--", "true"],
+                               capture_output=True)
+        return probe.returncode == 0
+
+    def kill_orphan(self):
+        pid_file = self.home / "orphan.pid"
+        if pid_file.exists():
+            subprocess.run(["kill", "-9", pid_file.read_text().strip()], capture_output=True)
+
+    def kill_all(self):
+        self.kill_orphan()
+        for pid in self.writers():
+            subprocess.run(["kill", "-9", pid], capture_output=True)
+        for _ in range(50):
+            pids = self.pids()
+            if not pids:
+                return
+            subprocess.run(["kill", "-9", *pids], capture_output=True)
+            time.sleep(0.1)
+
+    def run_up(self, *args, env=None):
+        full_env = {**os.environ, "DOWN_WAIT_S": "20", **(env or {})}
+        full_env.pop("WORLD_OPS_LOCK_HELD", None)
+        return subprocess.run([str(self.up), *args], capture_output=True, text=True, env=full_env,
+                              timeout=120)
+
+    def run_watchdog(self):
+        return subprocess.run([str(self.watchdog)], capture_output=True, text=True, timeout=120)
+
+    def pids(self) -> list[str]:
+        match = ops_kit.process_match(self.home)
+        out = subprocess.run(["pgrep", "-f", match], capture_output=True, text=True).stdout
+        return out.split()
+
+    def wait_gone(self):
+        for _ in range(50):
+            if not self.pids():
+                return
+            time.sleep(0.1)
+
+    def test_unknown_process_state_backs_off_and_reports_only_transitions(self):
+        self.up.write_text("#!/bin/sh\nexit 4\n")
+        for round_number in (1, 2):
+            result = subprocess.run([str(self.watchdog)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 4, result.stdout + result.stderr)
+            self.assertEqual((self.state / "failures").read_text().strip(), str(round_number))
+            next_try = (self.state / "next_try").read_text()
+            subprocess.run([str(self.watchdog)], check=True, capture_output=True)
+            self.assertEqual((self.state / "next_try").read_text(), next_try)
+            (self.state / "next_try").write_text("0")
+        # Every round is logged; only the first of a run of the same failure is posted.
+        log = (self.home / "logs" / "watchdog.log").read_text()
+        self.assertEqual(log.count("stopped this round"), 2)
+        self.assertEqual(log.count("(posted already)"), 1)
+        self.up.write_text("#!/bin/sh\nexit 0\n")
+        subprocess.run([str(self.watchdog)], check=True, capture_output=True)
+        self.assertFalse((self.state / "failures").exists())
+        self.up.write_text("#!/bin/sh\nexit 4\n")
+        subprocess.run([str(self.watchdog)], capture_output=True)
+        log = (self.home / "logs" / "watchdog.log").read_text()
+        self.assertEqual(log.count("stopped this round"), 3)
+        self.assertEqual(log.count("(posted already)"), 1)
+
+    def test_pgrep_errors_refuse_every_process_decision(self):
+        shim = self.home / "shim"
+        shim.mkdir()
+        pgrep = shim / "pgrep"
+        pgrep.write_text("#!/bin/sh\nexit 2\n")
+        pgrep.chmod(0o755)
+        env = {"PATH": str(shim) + os.pathsep + os.environ["PATH"]}
+        for action in ("running", "healthy", "status", "up", "resume", "down", "recycle"):
+            with self.subTest(action=action):
+                (self.state / "down").unlink(missing_ok=True)
+                result = self.run_up(action, env=env)
+                self.assertEqual(result.returncode, 4, result.stdout + result.stderr)
+                self.assertEqual(self.pids(), [])
+
+    def test_a_shell_whose_command_names_the_harness_is_not_the_harness(self):
+        python = self.home / ".venv" / "bin" / "python"
+        shell = subprocess.Popen(["/bin/sh", "-c", f"sleep 20; echo {python} {self.home}/harness.py"])
+        try:
+            time.sleep(0.3)
+            self.assertEqual(self.run_up("running").returncode, 1)
+            started = self.run_up("up")
+            self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
+            self.assertNotIn("already running", started.stdout)
+            self.assertEqual(self.run_up("down").returncode, 0)
+            self.assertIsNone(shell.poll(), "down stopped the shell")
+        finally:
+            shell.kill()
+            shell.wait()
+
+    def test_every_watchdog_log_line_starts_with_the_time_as_the_docs_write_it(self):
+        self.assertEqual(self.run_up("up").returncode, 0)
+        subprocess.run(["kill", "-9", *self.pids()], check=True)
+        self.wait_gone()
+        self.run_watchdog()  # logs what `resume` printed, too
+        self.assertEqual(len(self.pids()), 1)
+        self.assertEqual(self.run_up("down").returncode, 0)
+        stamp = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}"
+        lines = (self.home / "logs" / "watchdog.log").read_text(encoding="utf-8").splitlines()
+        self.assertTrue(any("started (pid" in line for line in lines), lines)
+        for line in lines:
+            self.assertRegex(line, stamp + " ")
+        self.assertRegex((self.state / "down").read_text(), stamp + "$")
+
+    def test_why_the_watchdog_could_not_tell_is_in_its_log(self):
+        shim = self.home / "shim"
+        shim.mkdir()
+        pgrep = shim / "pgrep"
+        pgrep.write_text("#!/bin/sh\nexit 3\n")
+        pgrep.chmod(0o755)
+        env = {**os.environ, "PATH": str(shim) + os.pathsep + os.environ["PATH"]}
+        result = subprocess.run([str(self.watchdog)], capture_output=True, text=True, env=env,
+                                timeout=120)
+        self.assertEqual(result.returncode, 4, result.stdout + result.stderr)
+        log = (self.home / "logs" / "watchdog.log").read_text(encoding="utf-8")
+        self.assertIn("cannot list harness processes (pgrep exit 3)", log)
+
+    def test_relative_pgrep_error_refuses_start(self):
+        shim = self.home / "shim"
+        shim.mkdir()
+        pgrep = shim / "pgrep"
+        # The first query is absolute; the second query is the relative-launch guard.
+        pgrep.write_text("#!/bin/sh\nif [ -f '" + str(shim / "queried") + "' ]; then exit 3; fi\ntouch '" + str(shim / "queried") + "'\nexit 1\n")
+        pgrep.chmod(0o755)
+        result = self.run_up("up", env={"PATH": str(shim) + os.pathsep + os.environ["PATH"]})
+        self.assertEqual(result.returncode, 4, result.stdout + result.stderr)
+        self.assertEqual(self.pids(), [])
+
+    def test_relative_launch_in_a_confirmed_other_home_is_left_alone(self):
+        other = self.home.parent / "other"
+        other.mkdir()
+        (other / "harness.py").write_text(STUB_HARNESS, encoding="utf-8")
+        child = subprocess.Popen([sys.executable, "harness.py"], cwd=other,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            for _ in range(100):
+                if (other / "env-seen.json").exists():
+                    break
+                time.sleep(0.05)
+            self.assertTrue((other / "env-seen.json").exists())
+            result = self.run_up("up")
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(len(self.pids()), 1)
+            self.assertEqual(self.run_up("down").returncode, 0)
+            self.assertIsNone(child.poll())
+        finally:
+            child.terminate()
+            child.wait(timeout=10)
+
+    def test_relative_readme_launch_blocks_a_second_start(self):
+        commands = [[str(self.home / ".venv" / "bin" / "python"), "harness.py"]]
+        if shutil.which("uv"):
+            commands.append([shutil.which("uv"), "run", "python", "harness.py"])
+        for command in commands:
+            with self.subTest(command=command):
+                seen = self.home / "env-seen.json"
+                seen.unlink(missing_ok=True)
+                child = subprocess.Popen(command, cwd=self.home, stdout=subprocess.DEVNULL,
+                                         stderr=subprocess.DEVNULL, start_new_session=True)
+                try:
+                    for _ in range(100):
+                        if seen.exists():
+                            break
+                        time.sleep(0.05)
+                    self.assertTrue(seen.exists(), "the original harness did not start")
+                    for action in ("up", "resume"):
+                        result = self.run_up(action)
+                        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                        self.assertIn("relative", result.stderr)
+                        self.assertEqual(self.pids(), [], "a second harness started")
+                    self.assertIsNone(child.poll(), "the original was stopped")
+                finally:
+                    import signal
+                    os.killpg(child.pid, signal.SIGTERM)
+                    child.wait(timeout=10)
+                    self.kill_all()
+
+    def test_lifecycle(self):
+        # up, with a stale shell export of both kinds the launcher must not hand down
+        started = self.run_up("up", env={"ANTHROPIC_API_KEY": "sk-shell",
+                                         "STUB_FROM_FILE": "stale-shell-value"})
+        self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
+        self.assertEqual(len(self.pids()), 1)
+        seen = json.loads((self.home / "env-seen.json").read_text(encoding="utf-8"))
+        self.assertIsNone(seen["api_key"])
+        self.assertIsNone(seen["file_key"], "a harness.env key exported in the shell leaked in")
+        self.assertIsNone(seen["lock_env"], "the harness would bypass the ops lock")
+        self.assertEqual(seen["path"], "/usr/bin:/bin")
+        console = (self.home / "logs" / "console.out").read_text(encoding="utf-8")
+        self.assertRegex(console, r"^\d{4}-\d{2}-\d{2}T\S+ stub harness up$")
+
+        # a second up is a no-op, not a second copy
+        again = self.run_up("up")
+        self.assertIn("already running", again.stdout)
+        self.assertEqual(len(self.pids()), 1)
+        self.assertEqual(self.run_up("running").returncode, 0)
+
+        # down is deliberate: the watchdog leaves it down
+        self.assertEqual(self.run_up("down").returncode, 0)
+        self.assertEqual(self.pids(), [])
+        self.assertNotEqual(self.run_up("running").returncode, 0)
+        self.run_watchdog()
+        self.assertEqual(self.pids(), [], "the watchdog undid a deliberate down")
+
+        # a crash (no down marker) is restarted, then backed off
+        self.assertEqual(self.run_up("up").returncode, 0)
+        subprocess.run(["kill", "-9", *self.pids()], check=True)
+        self.wait_gone()
+        self.run_watchdog()
+        self.assertEqual(len(self.pids()), 1)
+        self.assertEqual((self.state / "failures").read_text().strip(), "1")
+        self.assertIn("restarted", (self.home / "logs" / "watchdog.log").read_text())
+        subprocess.run(["kill", "-9", *self.pids()], check=True)
+        self.wait_gone()
+        self.run_watchdog()
+        self.assertEqual(self.pids(), [], "retried inside the backoff window")
+
+        # the next round past the window restarts it, and a later round that finds it
+        # running resets the count
+        (self.state / "next_try").write_text("0\n")
+        self.run_watchdog()
+        self.assertEqual(len(self.pids()), 1)
+        self.assertEqual((self.state / "failures").read_text().strip(), "2")
+        self.run_watchdog()
+        self.assertFalse((self.state / "failures").exists())
+        self.assertEqual(self.run_up("down").returncode, 0)
+
+    def test_concurrent_ups_start_one_harness(self):
+        procs = [subprocess.Popen([str(self.up), "up"], stdout=subprocess.PIPE,
+                                  stderr=subprocess.STDOUT, text=True) for _ in range(6)]
+        outputs = [p.communicate(timeout=120)[0] for p in procs]
+        self.assertTrue(all(p.returncode == 0 for p in procs), outputs)
+        self.assertEqual(len(self.pids()), 1, outputs)
+        self.assertEqual(sum("started" in o for o in outputs), 1, outputs)
+
+    def test_a_watchdog_round_racing_a_down_leaves_it_down(self):
+        for _ in range(3):
+            self.assertEqual(self.run_up("up").returncode, 0)
+            down = subprocess.Popen([str(self.up), "down"], stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL)
+            rounds = [subprocess.Popen([str(self.watchdog)]) for _ in range(3)]
+            down.wait(timeout=120)
+            for r in rounds:
+                r.wait(timeout=120)
+            self.assertEqual(self.pids(), [], "a watchdog round brought a stopped harness back")
+            self.assertTrue((self.state / "down").exists())
+
+    def test_the_watchdog_path_neither_starts_nor_unmarks_a_downed_harness(self):
+        self.assertEqual(self.run_up("down").returncode, 0)
+        resumed = self.run_up("resume")
+        self.assertEqual(resumed.returncode, 3, resumed.stdout + resumed.stderr)
+        self.assertTrue((self.state / "down").exists())
+        self.assertEqual(self.pids(), [])
+
+    def test_up_after_a_timed_out_down_clears_the_marker(self):
+        self.assertEqual(self.run_up("up", env={"STUB_IGNORE_TERM": "1"}).returncode, 0)
+        down = self.run_up("down", env={"DOWN_WAIT_S": "1"})
+        self.assertEqual(down.returncode, 1, down.stdout + down.stderr)
+        self.assertIn("still finishing", down.stderr)
+        self.assertTrue((self.state / "down").exists())
+        self.assertEqual(len(self.pids()), 1)
+
+        up = self.run_up("up")
+        self.assertIn("already running", up.stdout)
+        self.assertFalse((self.state / "down").exists(), "the watchdog would never restart it")
+        subprocess.run(["kill", "-9", *self.pids()], check=True)
+        self.wait_gone()
+        self.run_watchdog()
+        self.assertEqual(len(self.pids()), 1, "the watchdog did not bring it back")
+
+    def test_nothing_started_in_the_background_holds_the_ops_lock(self):
+        self.assertEqual(self.run_up("up").returncode, 0)
+        self.assertEqual(len(self.writers()), 1)
+        self.assertTrue(self.lock_is_free(), "the harness or its writer inherited the lock")
+
+    @unittest.skipUnless(Path("/bin/bash").exists(), "no /bin/bash")
+    def test_under_bin_bash_too_nothing_in_the_background_holds_the_ops_lock(self):
+        """launchd runs the watchdog with /bin/bash, which on macOS is bash 3.2. It handed
+        the console writer a copy of fd 9 under another number, so the writer held the
+        ops lock and every later up, down and watchdog round timed out. A developer's PATH
+        usually finds a newer bash first, which hid it."""
+        shim = self.home / "shim"
+        shim.mkdir()
+        (shim / "bash").symlink_to("/bin/bash")
+        env = {"PATH": f"{shim}{os.pathsep}{os.environ['PATH']}"}
+        self.assertEqual(self.run_up("up", env=env).returncode, 0)
+        self.assertEqual(len(self.writers()), 1)
+        self.assertTrue(self.lock_is_free(), "the harness or its writer inherited the lock")
+        self.assertEqual(self.run_up("down", env=env).returncode, 0)
+
+    def test_down_waits_for_a_draining_writer_so_up_never_makes_two(self):
+        self.assertEqual(self.run_up("up", env={"STUB_ORPHAN_S": "3"}).returncode, 0)
+        down = self.run_up("down", env={"WRITER_WAIT_S": "20"})
+        self.assertEqual(down.returncode, 0, down.stdout + down.stderr)
+        self.assertEqual(self.writers(), [], "down returned before the writer drained")
+        self.assertEqual(self.run_up("up").returncode, 0)
+        self.assertEqual(len(self.writers()), 1)
+
+    def test_a_writer_that_will_not_drain_fails_loudly_and_blocks_a_second(self):
+        self.assertEqual(self.run_up("up", env={"STUB_ORPHAN_S": "60"}).returncode, 0)
+        down = self.run_up("down", env={"WRITER_WAIT_S": "1"})
+        self.assertEqual(down.returncode, 1)
+        self.assertIn("console writer", down.stderr)
+        up = self.run_up("up", env={"WRITER_WAIT_S": "1"})
+        self.assertEqual(up.returncode, 1, up.stdout + up.stderr)
+        self.assertIn("console writer", up.stderr)
+        self.assertEqual(self.pids(), [])
+        self.assertEqual(len(self.writers()), 1)
+        self.kill_orphan()  # the orphan exits, the writer gets EOF and drains
+        up = self.run_up("up", env={"WRITER_WAIT_S": "10"})
+        self.assertEqual(up.returncode, 0, up.stdout + up.stderr)
+        self.assertEqual(len(self.writers()), 1)
+
+    def test_a_killed_lock_holder_still_keeps_a_second_up_out(self):
+        # env/harness.env as a FIFO parks the first `up` inside its critical section
+        # (reading the env keys, before it starts the harness) for as long as we like.
+        env_file = self.home / "env" / "harness.env"
+        env_file.unlink()
+        os.mkfifo(env_file)
+        first = subprocess.Popen([str(self.up), "up"], stdout=subprocess.PIPE,
+                                 stderr=subprocess.STDOUT, text=True)
+        time.sleep(1.5)
+        first.kill()  # SIGKILL the ops-lock process; its child shell is mid-way
+        first.wait()
+        second = subprocess.Popen([str(self.up), "up"], stdout=subprocess.PIPE,
+                                  stderr=subprocess.STDOUT, text=True)
+        time.sleep(1.5)
+        self.assertIsNone(second.poll(), "the second up got the lock while the first ran")
+        with open(env_file, "w") as fifo:  # let the first one go on
+            fifo.write("STUB_FROM_FILE=x\n")
+        out = second.communicate(timeout=60)[0]
+        self.assertIn("already running", out)
+        self.assertEqual(len(self.pids()), 1)
+
+    def test_a_killed_writer_is_reported_and_the_watchdog_restarts_the_harness(self):
+        self.assertEqual(self.run_up("up").returncode, 0)
+        before = self.pids()
+        subprocess.run(["kill", "-9", *self.writers()], check=True)
+        time.sleep(0.5)
+        self.assertEqual(self.pids(), before, "the harness should still be alive")
+        self.assertNotEqual(self.run_up("healthy").returncode, 0)
+        self.assertIn("UNHEALTHY", self.run_up("status").stdout)
+        self.run_watchdog()
+        self.assertEqual(self.run_up("healthy").returncode, 0)
+        self.assertNotEqual(self.pids(), before)
+        self.assertEqual(len(self.writers()), 1)
+        self.assertIn("console writer had died", (self.home / "logs" / "watchdog.log").read_text())
+
+    def posts(self) -> list[dict]:
+        path = self.home / "bin" / "posts.jsonl"
+        if not path.exists():
+            return []
+        return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+    def test_an_incident_is_one_slack_thread_and_every_restart_is_in_it(self):
+        # Stands in for bin/ops-notify.py (its Slack calls are tested in NotifyTest): it
+        # records each post and prints the thread it went into, as the real one does.
+        (self.home / "bin" / "ops-notify.py").write_text(FAKE_NOTIFY, encoding="utf-8")
+        files = ops_kit.render(self.home, "stub", "linux", self.home / ".venv" / "bin" / "python",
+                               "/usr/bin:/bin", notify=("T_TOKEN", "T_CHAN"))
+        ops_kit.write(self.home, files, force=True)
+        incident = self.state / "incident"
+        log = self.home / "logs" / "watchdog.log"
+
+        def crash_and_round():
+            subprocess.run(["kill", "-9", *self.pids()], check=True)
+            self.wait_gone()
+            (self.state / "next_try").unlink(missing_ok=True)
+            self.run_watchdog()
+            self.assertEqual(len(self.pids()), 1)
+
+        self.assertEqual(self.run_up("up").returncode, 0)
+        # A crash loop: each round finds it dead again and restarts it.
+        for _ in range(3):
+            crash_and_round()
+        posts = self.posts()
+        self.assertEqual(len(posts), 3, "every restart is posted, not only the first")
+        self.assertIsNone(posts[0]["thread"])
+        self.assertEqual([p["thread"] for p in posts[1:]], ["1.0", "1.0"])
+        self.assertEqual([("attempt %d" % n) in p["text"] for n, p in enumerate(posts, 1)],
+                         [True] * 3)
+        self.assertEqual(incident.read_text().strip(), "1.0")
+        self.assertEqual(log.read_text(encoding="utf-8").count("restarted (attempt"), 3)
+
+        # The next round finds it running: the thread hears so, and the incident closes.
+        self.run_watchdog()
+        self.assertIn("recovered", self.posts()[-1]["text"])
+        self.assertEqual(self.posts()[-1]["thread"], "1.0")
+        self.assertFalse(incident.exists())
+
+        # The next outage is a new message, and a thread that no longer takes replies is
+        # replaced by the new message ops-notify falls back to.
+        crash_and_round()
+        self.assertIsNone(self.posts()[-1]["thread"])
+        self.assertEqual(incident.read_text().strip(), "5.0")
+        (self.home / "bin" / "thread-gone").touch()
+        crash_and_round()
+        self.assertEqual(self.posts()[-1]["thread"], "5.0")
+        self.assertEqual(incident.read_text().strip(), "6.0")
+
+    def test_a_failure_that_repeats_is_posted_once_and_logged_every_round(self):
+        (self.home / "bin" / "ops-notify.py").write_text(FAKE_NOTIFY, encoding="utf-8")
+        files = ops_kit.render(self.home, "stub", "linux", self.home / ".venv" / "bin" / "python",
+                               "/usr/bin:/bin", notify=("T_TOKEN", "T_CHAN"))
+        ops_kit.write(self.home, files, force=True)
+        (self.home / "harness.py").write_text("raise SystemExit(1)\n", encoding="utf-8")
+        for _ in range(3):
+            (self.state / "next_try").unlink(missing_ok=True)
+            self.run_watchdog()
+        posts = self.posts()
+        self.assertEqual(len(posts), 1)
+        self.assertIn("could not start it (attempt 1", posts[0]["text"])
+        log = (self.home / "logs" / "watchdog.log").read_text(encoding="utf-8")
+        for attempt in (1, 2, 3):
+            self.assertIn(f"could not start it (attempt {attempt};", log)
+
+    def test_a_writer_that_dies_at_start_points_at_its_traceback(self):
+        (self.home / "world" / "process" / "runlog.py").write_text(
+            "raise RuntimeError('writer broke')\n", encoding="utf-8")
+        result = self.run_up("up")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        crash = self.home / "logs" / "ops-log.crash"
+        self.assertIn(str(crash), result.stderr)
+        self.assertIn("writer broke", crash.read_text(encoding="utf-8"))
+
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root ignores file modes")
+    def test_a_write_failure_drops_lines_but_keeps_the_harness_alive(self):
+        self.assertEqual(self.run_up("up", env={"STUB_CHATTY": "1"}).returncode, 0)
+        console = self.home / "logs" / "console.out"
+        dropping = self.home / "logs" / ".console.out.dropping"
+        before = self.pids()
+        console.chmod(0o400)
+        try:
+            for _ in range(50):
+                if dropping.exists():
+                    break
+                time.sleep(0.1)
+            self.assertTrue(dropping.exists())
+            time.sleep(0.5)
+            self.assertEqual(self.pids(), before, "the harness died of its writer's failure")
+            self.assertEqual(len(self.writers()), 1)
+            self.assertIn("DROPPING", self.run_up("status").stdout)
+            self.run_watchdog()
+            self.assertIn("dropping lines", (self.home / "logs" / "watchdog.log").read_text())
+        finally:
+            console.chmod(0o644)
+        for _ in range(50):
+            if not dropping.exists():
+                break
+            time.sleep(0.1)
+        self.assertFalse(dropping.exists())
+        self.assertIn("were dropped", console.read_text(encoding="utf-8"))
+
+
+@unittest.skipUnless(POSIX, "the launcher and watchdog are bash + pgrep (macOS, Linux)")
+class InstalledHomeLauncherTest(unittest.TestCase):
+    """`up` in a home laid out by install-kit, with the whole world/ package. The stub
+    homes above copy only world/env.py, so they cannot see world/types.py shadow the
+    standard `types` module when the launcher runs world/env.py as a script."""
+
+    INSTALLER = KIT.parents[1] / "scripts" / "install-kit.py"
+
+    def interpreters(self) -> list[str]:
+        found = [sys.executable]
+        # Xcode's python3 on macOS, the distribution's on Linux: a different stdlib
+        # import order from uv's CPython, and both failed here before.
+        if Path("/usr/bin/python3").exists():
+            found.append("/usr/bin/python3")
+        return found
+
+    def test_up_starts_the_harness_in_an_installed_home(self):
+        for interpreter in self.interpreters():
+            with self.subTest(python=interpreter), tempfile.TemporaryDirectory() as tmp:
+                home = Path(tmp).resolve() / "installed home"
+                subprocess.run([sys.executable, str(self.INSTALLER), str(home),
+                                "--provider", "codex", "--channel", "slack"],
+                               check=True, capture_output=True, text=True)
+                self.assertTrue((home / "world" / "types.py").exists())
+                subprocess.run([interpreter, "-m", "venv", "--without-pip", str(home / ".venv")],
+                               check=True)
+                (home / "harness.py").write_text(STUB_HARNESS, encoding="utf-8")
+                (home / "env").mkdir(exist_ok=True)
+                (home / "env" / "harness.env").write_text("STUB_FROM_FILE=from-file\n",
+                                                          encoding="utf-8")
+                python = home / ".venv" / "bin" / "python"
+                files = ops_kit.render(home, "stub", "linux", python, "/usr/bin:/bin")
+                ops_kit.write(home, files, force=False)
+                up = home / "scripts" / "stub-up"
+                env = {k: v for k, v in os.environ.items() if k != "WORLD_OPS_LOCK_HELD"}
+                env["STUB_FROM_FILE"] = "stale-shell-value"
+                try:
+                    started = subprocess.run([str(up), "up"], capture_output=True, text=True,
+                                             env=env, timeout=120)
+                    self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
+                    seen = json.loads((home / "env-seen.json").read_text(encoding="utf-8"))
+                    self.assertIsNone(seen["file_key"])
+                finally:
+                    subprocess.run([str(up), "down"], capture_output=True, env=env, timeout=120)
+                    subprocess.run(["pkill", "-9", "-f", ops_kit.process_match(home, python)],
+                                   capture_output=True)
+
+
+class LockAndRollOverlapTest(unittest.TestCase):
+    @unittest.skipUnless(POSIX, "flock")
+    def test_the_lock_outlives_a_killed_ops_lock_process(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            lock = Path(tmp) / "lock"
+            holder = subprocess.Popen([sys.executable, str(KIT / "bin" / "ops-lock.py"),
+                                       str(lock), "--", "sleep", "3"])
+            try:
+                time.sleep(0.5)
+                holder.kill()
+                holder.wait()
+                busy = subprocess.run([sys.executable, str(KIT / "bin" / "ops-lock.py"), str(lock),
+                                       "--wait-s", "0", "--", "true"], capture_output=True)
+                self.assertEqual(busy.returncode, 75, "the lock died with the parent")
+                free = subprocess.run([sys.executable, str(KIT / "bin" / "ops-lock.py"), str(lock),
+                                       "--wait-s", "10", "--", "true"], capture_output=True)
+                self.assertEqual(free.returncode, 0)
+            finally:
+                subprocess.run(["pkill", "-f", "^sleep 3$"], capture_output=True)
+
+    def test_writers_rolling_one_file_keep_every_line_and_valid_gzips(self):
+        """An old console writer still draining while a new one starts. Without the roll
+        lock this loses about one line in eight here: one process renames and compresses
+        the file between another's open and its write."""
+        script = (
+            "import importlib.util, sys\n"
+            f"spec = importlib.util.spec_from_file_location('r', {str(KIT / 'world' / 'process' / 'runlog.py')!r})\n"
+            "r = importlib.util.module_from_spec(spec); spec.loader.exec_module(r)\n"
+            "from pathlib import Path\n"
+            "p = Path(sys.argv[1]); tag = sys.argv[2]; pad = 'x' * 400\n"
+            "for n in range(600):\n"
+            "    r.append(p, f'{tag} {n} {pad}\\n'.encode(), max_bytes=60000, log=lambda m: None)\n"
+            "    if n % 100 == 0: r.maybe_roll(p, max_bytes=60000, log=lambda m: None)\n"
+        )
+        tags = ("a", "b", "c", "d")
+        with tempfile.TemporaryDirectory() as tmp:
+            logs = Path(tmp)
+            path = logs / "console.out"
+            # a temp gzip left by a writer that died mid-compression
+            (logs / "console.2000-01-01.out.gz.99999.tmp").write_bytes(b"partial")
+            procs = [subprocess.Popen([sys.executable, "-c", script, str(path), tag]) for tag in tags]
+            for p in procs:
+                self.assertEqual(p.wait(timeout=120), 0)
+            self.assertEqual(list(logs.glob("*.tmp")), [])
+            lines = _read_rolled(logs, "console", ".out")  # raises on a corrupt gzip
+            for tag in tags:
+                mine = sorted(int(line.split()[1]) for line in lines if line.startswith(tag + " "))
+                self.assertEqual(mine, list(range(600)), tag)
+
+STUB_HARNESS_WINDOWS = """\
+import json, os, time
+with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "env-seen.json"), "w") as f:
+    json.dump({"api_key": os.environ.get("ANTHROPIC_API_KEY"),
+               "file_key": os.environ.get("STUB_FROM_FILE"), "path": os.environ["PATH"]}, f)
+print("stub harness up", flush=True)
+for n in range(3000):
+    time.sleep(0.1)
+"""
+PS = ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass"]
+
+
+@unittest.skipUnless(WINDOWS, "the PowerShell scripts and the scheduled task are Windows only")
+class WindowsLauncherTest(NotificationRetryTests, unittest.TestCase):
+    """Runs the rendered PowerShell scripts against a stub harness in a real venv, and
+    registers the rendered task with Task Scheduler. CI runs this on a throwaway
+    windows-latest VM; everything started or registered here is removed again."""
+
+    def setUp(self):
+        self.make_home("stub")
+        self.addCleanup(self.kill_all)
+
+    def make_home(self, dirname: str):
+        """A harness home in a fresh temp dir, its scripts rendered for it. A test may
+        call it again for a second home; kill_all cleans up whichever is current."""
+        tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(tmp.cleanup)
+        self.home = Path(tmp.name).resolve() / dirname
+        (self.home / "bin").mkdir(parents=True)
+        for script in ("ops-log.py", "ops-notify.py"):
+            shutil.copy2(KIT / "bin" / script, self.home / "bin" / script)
+        (self.home / "world" / "process").mkdir(parents=True)
+        shutil.copy2(KIT / "world" / "env.py", self.home / "world" / "env.py")
+        shutil.copy2(KIT / "world" / "process" / "runlog.py", self.home / "world" / "process")
+        subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(self.home / ".venv")],
+                       check=True)
+        self.python = self.home / ".venv" / "Scripts" / "python.exe"
+        (self.home / "harness.py").write_text(STUB_HARNESS_WINDOWS, encoding="utf-8")
+        (self.home / "env").mkdir()
+        (self.home / "env" / "harness.env").write_text(" export STUB_FROM_FILE = from-file\n# NOT_A_KEY=x\n",
+                                                       encoding="utf-8")
+        system32 = str(Path(os.environ.get("SYSTEMROOT", r"C:\Windows")) / "System32")
+        self.run_path = os.pathsep.join([str(self.home / "cli"), system32])
+        self.user = "\\".join(filter(None, (os.environ.get("USERDOMAIN"), os.environ["USERNAME"])))
+        files = ops_kit.render(self.home, "stub", "windows", self.python, self.run_path,
+                               user=self.user)
+        ops_kit.write(self.home, files, force=False)
+        self.up = self.home / "scripts" / "stub-up.ps1"
+        self.watchdog = self.home / "scripts" / "stub-watchdog.ps1"
+        self.state = self.home / "logs" / ".watchdog"
+
+    def processes(self) -> list[dict]:
+        script = ("[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "
+                  "@(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and "
+                  "$_.CommandLine.Contains($env:STUB_HOME) } | Select-Object ProcessId, "
+                  "ParentProcessId, Name, CommandLine) | ConvertTo-Json -Compress")
+        out = subprocess.run([*PS, "-Command", script], capture_output=True, text=True,
+                             encoding="utf-8", errors="replace",
+                             env={**os.environ, "STUB_HOME": str(self.home)}, timeout=60).stdout
+        found = json.loads(out) if out.strip() else []
+        return [found] if isinstance(found, dict) else found
+
+    @staticmethod
+    def roots(procs: list[dict]) -> list[int]:
+        """One pid per program: a venv's python.exe starts the real interpreter as its
+        child with the same command line, and the pair counts once."""
+        ids = {p["ProcessId"] for p in procs}
+        return [p["ProcessId"] for p in procs if p["ParentProcessId"] not in ids]
+
+    def pids(self) -> list[int]:
+        import re
+        pattern = ops_kit.windows_process_match(self.home)
+        return self.roots([p for p in self.processes() if re.match(pattern, p["CommandLine"], re.I)])
+
+    def writers(self) -> list[int]:
+        return self.roots([p for p in self.processes()
+                           if "ops-log.py" in p["CommandLine"] and "--run" in p["CommandLine"]])
+
+    def kill_all(self):
+        for _ in range(3):
+            procs = self.processes()
+            if not procs:
+                return
+            for p in procs:
+                subprocess.run(["taskkill", "/T", "/F", "/PID", str(p["ProcessId"])],
+                               capture_output=True)
+            time.sleep(1)
+
+    def run_ps(self, script: Path, *args, env=None):
+        full_env = {**os.environ, **(env or {})}
+        return subprocess.run([*PS, "-File", str(script), *args], capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", env=full_env, timeout=300)
+
+    def run_up(self, *args, env=None):
+        return self.run_ps(self.up, *args, env=env)
+
+    def wait_gone(self):
+        for _ in range(60):
+            if not self.pids():
+                return
+            time.sleep(0.5)
+
+    def test_relative_other_home_does_not_break_this_homes_running_status(self):
+        self.assertEqual(self.run_up("up").returncode, 0)
+        other = self.home.parent / "other"
+        other.mkdir()
+        (other / "harness.py").write_text(STUB_HARNESS_WINDOWS, encoding="utf-8")
+        child = subprocess.Popen([str(self.python), "harness.py"], cwd=other,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            for _ in range(100):
+                if (other / "env-seen.json").exists():
+                    break
+                time.sleep(0.05)
+            self.assertTrue((other / "env-seen.json").exists())
+            self.assertEqual(self.run_up("running").returncode, 0)
+            self.assertEqual(self.run_up("healthy").returncode, 0)
+            self.assertEqual(self.run_ps(self.watchdog).returncode, 0)
+            self.assertEqual(self.run_up("down").returncode, 0)
+            self.assertIsNone(child.poll(), "ops stopped an unidentified other home")
+        finally:
+            subprocess.run(["taskkill", "/PID", str(child.pid), "/T", "/F"], capture_output=True)
+            child.wait(timeout=10)
+
+    def test_relative_readme_launch_blocks_a_second_start(self):
+        child = subprocess.Popen([str(self.python), "harness.py"], cwd=self.home,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            for _ in range(100):
+                if (self.home / "env-seen.json").exists():
+                    break
+                time.sleep(0.05)
+            self.assertTrue((self.home / "env-seen.json").exists())
+            self.assertEqual(self.run_up("running").returncode, 1)
+            self.assertEqual(self.run_up("healthy").returncode, 1)
+            for number in (1, 2):
+                result = self.run_ps(self.watchdog)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual((self.state / "failures").read_text().strip(), str(number))
+                next_try = (self.state / "next_try").read_text()
+                self.assertEqual(self.run_ps(self.watchdog).returncode, 0)
+                self.assertEqual((self.state / "next_try").read_text(), next_try)
+                (self.state / "next_try").write_text("0")
+            # A refused start, as on macOS and Linux: not "could not tell" (exit 4).
+            log = (self.home / "logs" / "watchdog.log").read_text(encoding="utf-8")
+            self.assertEqual(log.count("could not start it"), 2)
+            self.assertEqual(log.count("(posted already)"), 1)
+            self.assertNotIn("stopped this round", log)
+            for action in ("up", "resume"):
+                result = self.run_up(action)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn("relative", result.stdout + result.stderr)
+                self.assertEqual(self.pids(), [])
+            self.assertIsNone(child.poll())
+        finally:
+            subprocess.run(["taskkill", "/PID", str(child.pid), "/T", "/F"], capture_output=True)
+            child.wait(timeout=10)
+
+    def test_scripts_parse_in_windows_powershell(self):
+        check = ("$errors = $null; [System.Management.Automation.Language.Parser]::ParseFile("
+                 "$env:PS_FILE, [ref]$null, [ref]$errors) | Out-Null; "
+                 "if ($errors) { $errors | ForEach-Object { $_.ToString() }; exit 1 }")
+        for script in (self.up, self.watchdog, self.home / "scripts" / "stub-ops-common.ps1"):
+            result = subprocess.run([*PS, "-Command", check], capture_output=True, text=True,
+                                    env={**os.environ, "PS_FILE": str(script)}, timeout=60)
+            self.assertEqual(result.returncode, 0, f"{script.name}: {result.stdout}{result.stderr}")
+
+    def test_lifecycle(self):
+        # up, with stale session values of both kinds the launcher must not hand down
+        started = self.run_up("up", env={"ANTHROPIC_API_KEY": "sk-shell",
+                                         "STUB_FROM_FILE": "stale-shell-value"})
+        self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
+        self.assertEqual(len(self.pids()), 1, self.processes())
+        self.assertEqual(len(self.writers()), 1)
+        seen = json.loads((self.home / "env-seen.json").read_text(encoding="utf-8"))
+        self.assertIsNone(seen["api_key"])
+        self.assertIsNone(seen["file_key"], "a harness.env key set in the session leaked in")
+        self.assertEqual(seen["path"], self.run_path)
+        console = (self.home / "logs" / "console.out").read_text(encoding="utf-8")
+        self.assertRegex(console, r"^\d{4}-\d{2}-\d{2}T\S+ stub harness up$")
+
+        # a second up is a no-op, not a second copy
+        again = self.run_up("up")
+        self.assertEqual(again.returncode, 0, again.stdout + again.stderr)
+        self.assertIn("already running", again.stdout)
+        self.assertEqual(len(self.pids()), 1, self.processes())
+        self.assertEqual(self.run_up("running").returncode, 0)
+        self.assertEqual(self.run_up("healthy").returncode, 0)
+        self.assertIn("console writer: running", self.run_up("status").stdout)
+
+        # a crash (no down marker) is restarted by one round, run exactly as the task
+        # runs it: pythonw.exe starting PowerShell without a window
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(self.pids()[0])], check=True,
+                       capture_output=True)
+        self.wait_gone()
+        self.assertNotEqual(self.run_up("running").returncode, 0)
+        self.run_task_action()
+        self.assertEqual(len(self.pids()), 1, (self.home / "logs" / "watchdog.log").read_text())
+        self.assertEqual((self.state / "failures").read_text().strip(), "1")
+        self.assertIn("restarted", (self.home / "logs" / "watchdog.log").read_text())
+
+        # the next round finds it running and resets the count
+        self.run_ps(self.watchdog)
+        self.assertFalse((self.state / "failures").exists())
+
+        # down is deliberate: the watchdog leaves it down, and so does resume
+        down = self.run_up("down")
+        self.assertEqual(down.returncode, 0, down.stdout + down.stderr)
+        self.assertEqual(self.pids(), [])
+        self.assertEqual(self.writers(), [], "down returned before the writer drained")
+        self.assertNotEqual(self.run_up("running").returncode, 0)
+        self.run_ps(self.watchdog)
+        self.assertEqual(self.pids(), [], "the watchdog undid a deliberate down")
+        self.assertEqual(self.run_up("resume").returncode, 3)
+        self.assertTrue((self.state / "down").exists())
+
+        # up clears the marker
+        self.assertEqual(self.run_up("up").returncode, 0)
+        self.assertFalse((self.state / "down").exists())
+        self.assertEqual(self.run_up("down").returncode, 0)
+
+    def test_an_incident_is_one_slack_thread_and_every_restart_is_in_it(self):
+        (self.home / "bin" / "ops-notify.py").write_text(FAKE_NOTIFY, encoding="utf-8")
+        files = ops_kit.render(self.home, "stub", "windows", self.python, self.run_path,
+                               user=self.user, notify=("T_TOKEN", "T_CHAN"))
+        ops_kit.write(self.home, files, force=True)
+        posts_file = self.home / "bin" / "posts.jsonl"
+        incident = self.state / "incident"
+
+        def posts():
+            if not posts_file.exists():
+                return []
+            return [json.loads(line) for line in posts_file.read_text().splitlines()]
+
+        def crash_and_round():
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(self.pids()[0])], check=True,
+                           capture_output=True)
+            self.wait_gone()
+            (self.state / "next_try").unlink(missing_ok=True)
+            round_ = self.run_ps(self.watchdog)
+            self.assertEqual(round_.returncode, 0, round_.stdout + round_.stderr)
+            self.assertEqual(len(self.pids()), 1, self.processes())
+
+        self.assertEqual(self.run_up("up").returncode, 0)
+        for _ in range(3):
+            crash_and_round()
+        self.assertEqual([p["thread"] for p in posts()], [None, "1.0", "1.0"])
+        self.assertEqual(incident.read_text(encoding="utf-8").strip(), "1.0")
+        self.run_ps(self.watchdog)
+        self.assertIn("recovered", posts()[-1]["text"])
+        self.assertEqual(posts()[-1]["thread"], "1.0")
+        self.assertFalse(incident.exists())
+        crash_and_round()
+        self.assertIsNone(posts()[-1]["thread"])
+        (self.home / "bin" / "thread-gone").touch()
+        crash_and_round()
+        self.assertEqual(posts()[-1]["thread"], "5.0")
+        self.assertEqual(incident.read_text(encoding="utf-8").strip(), "6.0")
+
+    def test_lifecycle_in_a_home_with_spaces_hangul_quotes_and_brackets(self):
+        self.kill_all()
+        self.make_home("a b 한글 'q' [x]")
+        started = self.run_up("up", env={"ANTHROPIC_API_KEY": "sk-shell"})
+        self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
+        self.assertEqual(len(self.pids()), 1, self.processes())
+        seen = json.loads((self.home / "env-seen.json").read_text(encoding="utf-8"))
+        self.assertIsNone(seen["api_key"])
+        again = self.run_up("up")
+        self.assertIn("already running", again.stdout, again.stderr)
+        self.assertIn("console writer: running", self.run_up("status").stdout)
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(self.pids()[0])], check=True,
+                       capture_output=True)
+        self.wait_gone()
+        round_ = self.run_ps(self.watchdog)  # runs the up script by a bracketed path
+        self.assertEqual(round_.returncode, 0, round_.stdout + round_.stderr)
+        self.assertEqual(len(self.pids()), 1, (self.home / "logs" / "watchdog.log").read_text(
+            encoding="utf-8"))
+        down = self.run_up("down")
+        self.assertEqual(down.returncode, 0, down.stdout + down.stderr)
+        self.assertEqual(self.pids(), [])
+        self.run_ps(self.watchdog)
+        self.assertEqual(self.pids(), [], "the watchdog undid a deliberate down")
+
+    def test_a_process_list_it_cannot_read_stops_every_command(self):
+        """An unreadable process list must not read as "not running": up would start a
+        second harness, down would report success with the harness still up."""
+        fail = {"WORLD_OPS_TEST_HOOK": "process-query-fails"}
+        up = self.run_up("up", env=fail)
+        self.assertEqual(up.returncode, 4, up.stdout + up.stderr)
+        self.assertIn("cannot list processes", up.stderr)
+        self.assertEqual(self.pids(), [])
+
+        self.assertEqual(self.run_up("up").returncode, 0)
+        down = self.run_up("down", env=fail)
+        self.assertEqual(down.returncode, 4, down.stdout + down.stderr)
+        self.assertEqual(len(self.pids()), 1, "down claimed nothing was running")
+        self.assertEqual(self.run_up("running", env=fail).returncode, 4)
+        self.assertEqual(self.run_up("up").returncode, 0)  # clears the marker down wrote
+
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(self.pids()[0])], check=True,
+                       capture_output=True)
+        self.wait_gone()
+        round_ = self.run_ps(self.watchdog, env=fail)
+        self.assertEqual(round_.returncode, 4, round_.stdout + round_.stderr)
+        self.assertEqual(self.pids(), [], "the watchdog acted on a list it could not read")
+        log = (self.home / "logs" / "watchdog.log").read_text(encoding="utf-8")
+        self.assertIn("stopped this round", log)
+        self.assertIn("cannot list processes", log)
+
+    def test_down_stops_nothing_when_its_marker_cannot_be_written(self):
+        self.assertEqual(self.run_up("up").returncode, 0)
+        marker = self.state / "down"
+        marker.mkdir(parents=True)  # a directory where the file goes: the write fails
+        (marker / "keep").write_text("x", encoding="utf-8")
+        down = self.run_up("down")
+        self.assertEqual(down.returncode, 4, down.stdout + down.stderr)
+        self.assertIn("cannot write the down marker", down.stderr)
+        self.assertEqual(len(self.pids()), 1, "stopped without a marker the watchdog respects")
+        shutil.rmtree(marker)
+        self.assertEqual(self.run_up("down").returncode, 0)
+
+    def test_up_starts_nothing_when_the_marker_cannot_be_cleared(self):
+        self.assertEqual(self.run_up("down").returncode, 0)
+        marker = self.state / "down"
+        with open(marker, "rb"):  # open without FILE_SHARE_DELETE: the delete fails
+            up = self.run_up("up")
+        self.assertEqual(up.returncode, 4, up.stdout + up.stderr)
+        self.assertIn("cannot clear the down marker", up.stderr)
+        self.assertEqual(self.pids(), [])
+        self.assertTrue(marker.exists())
+        up = self.run_up("up")
+        self.assertEqual(up.returncode, 0, up.stdout + up.stderr)
+        self.assertFalse(marker.exists())
+        self.assertEqual(self.run_up("down").returncode, 0)
+
+    def test_a_killed_lock_holder_frees_the_lock(self):
+        holder = subprocess.Popen([*PS, "-File", str(self.up), "up"],
+                                  env={**os.environ, "WORLD_OPS_TEST_HOOK": "hold-lock-120"},
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        lock = self.state / "lock"
+        try:
+            for _ in range(300):
+                try:
+                    with open(lock, "r+b"):
+                        pass
+                except PermissionError:
+                    break  # opened with no sharing: held
+                except FileNotFoundError:
+                    pass
+                time.sleep(0.1)
+            else:
+                self.fail("the holder never took the lock")
+        finally:
+            holder.kill()
+            holder.wait(timeout=60)
+        began = time.monotonic()
+        up = self.run_up("up", env={"LOCK_WAIT_S": "30"})
+        self.assertEqual(up.returncode, 0, up.stdout + up.stderr)
+        self.assertLess(time.monotonic() - began, 30, "waited out the lock instead of getting it")
+        self.assertEqual(len(self.pids()), 1, self.processes())
+        self.assertEqual(self.run_up("down").returncode, 0)
+
+    def run_task_action(self):
+        task = (self.home / "scripts" / "windows" / "stub-watchdog.xml").read_bytes().decode("utf-16")
+        root = ET.fromstring(task.lstrip("\ufeff").replace('encoding="UTF-16"', ""))
+        action = root.find("t:Actions/t:Exec", TASK_NS)
+        command = action.find("t:Command", TASK_NS).text
+        arguments = action.find("t:Arguments", TASK_NS).text
+        result = subprocess.run(f'"{command}" {arguments}', cwd=self.home, timeout=300)
+        self.assertEqual(result.returncode, 0)
+
+    def test_concurrent_ups_start_one_harness(self):
+        procs = [subprocess.Popen([*PS, "-File", str(self.up), "up"], stdout=subprocess.PIPE,
+                                  stderr=subprocess.STDOUT, text=True, encoding="utf-8",
+                                  errors="replace") for _ in range(4)]
+        outputs = [p.communicate(timeout=300)[0] for p in procs]
+        self.assertTrue(all(p.returncode == 0 for p in procs), outputs)
+        self.assertEqual(len(self.pids()), 1, (outputs, self.processes()))
+        self.assertEqual(sum("started" in o for o in outputs), 1, outputs)
+        self.assertEqual(self.run_up("down").returncode, 0)
+
+    def test_the_rendered_task_registers_and_is_removed(self):
+        name = f"the-world-test-{os.getpid()}-watchdog"
+        # Starts tomorrow, so the time trigger cannot fire a round while it is registered.
+        files = ops_kit.render(self.home, "stub", "windows", self.python, self.run_path,
+                               user=self.user, now=datetime.now() + timedelta(days=1))
+        xml = self.home / "task.xml"
+        xml.write_bytes(files["scripts/windows/stub-watchdog.xml"][0])
+        self.addCleanup(subprocess.run, ["schtasks", "/Delete", "/TN", name, "/F"],
+                        capture_output=True)
+        created = subprocess.run(["schtasks", "/Create", "/TN", name, "/XML", str(xml)],
+                                 capture_output=True, text=True, errors="replace")
+        self.assertEqual(created.returncode, 0, created.stdout + created.stderr)
+        query = subprocess.run(["schtasks", "/Query", "/TN", name, "/XML"], capture_output=True)
+        self.assertEqual(query.returncode, 0, query.stderr)
+        self.assertIn(b"stub-watchdog.ps1", query.stdout.replace(b"\x00", b""))
+        deleted = subprocess.run(["schtasks", "/Delete", "/TN", name, "/F"], capture_output=True,
+                                 text=True, errors="replace")
+        self.assertEqual(deleted.returncode, 0, deleted.stdout + deleted.stderr)
+        gone = subprocess.run(["schtasks", "/Query", "/TN", name], capture_output=True)
+        self.assertNotEqual(gone.returncode, 0)
+
+
+if __name__ == "__main__":
+    unittest.main()

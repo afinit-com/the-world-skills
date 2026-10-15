@@ -19,18 +19,21 @@ not quietly widen or narrow a harness. world/profile.py reads the same file at r
 Ownership is the whole point of the split below:
 
   kit-owned    world/ named world provider hook files, bin scripts, the few remaining
-               templates/ files (gitignore, AGENTS.md, codex pyproject, skill wrapper,
-               Slack manifest, the two guard templates)
+               templates/ files (gitignore, AGENTS.md, codex pyproject, skill and verify
+               wrappers, Slack manifest, the two guard templates, the opt-in ops templates)
                docs/philosophy.md docs/codex-compatibility.md docs/world-map.md
-               docs/integrations.md
+               docs/integrations.md docs/operations.md docs/verify.md
                Overwritten on every run — that is what makes a re-run an upgrade.
                Never fork these per-harness (see docs/philosophy.md).
+               Newly owned ops/verify files with differing content are copied to .bak
+               before replacement (numbered if needed), and named in the log.
 
   harness-own  pyproject.toml env/harness.env.example AGENTS.md README.md .gitignore
                Created if missing, otherwise left alone. Provider hook registries are
                merged because a project may already register unrelated hooks.
 
   yours        harness.py WORLD.md abilities/ tools/ slack-app/ env/harness.env logs/
+               scripts/ (bin/ops-kit.py renders into it only when asked)
                Never touched. /the-world-start writes these after this runs.
 
 ⚠️ A RE-RUN IS DESTRUCTIVE. Each kit-owned TREE is `rmtree`d before it is copied, so
@@ -72,12 +75,26 @@ PROVIDER_FILES = {
     "codex": [".codex/hooks/world-guard.py"],
 }
 KIT_FILES = [
-    # The two templates a harness still reads AFTER install: the wrapper skill body that
-    # bin/scaffold-world-skill.py fills in, and the Slack app manifest used when the
-    # harness is finally provisioned. The rest of templates/ is read from the kit during
-    # install and never from the target, so it is not copied.
+    # The templates a harness still reads AFTER install: the wrapper skill bodies that
+    # bin/scaffold-world-skill.py fills in (agent words, tool words, verify words), and the
+    # Slack app manifest used when the harness is finally provisioned. The rest of
+    # templates/ is read from the kit during install and never from the target, so it is
+    # not copied.
     "templates/skill-wrapper.md.tmpl",
+    "templates/skill-wrapper-tool.md.tmpl",
+    "templates/verify-wrapper.md.tmpl",
     "templates/slack-manifest.json.tmpl",
+    # Read by bin/ops-kit.py, only when the user opts into running the harness all the
+    # time (docs/operations.md).
+    "templates/ops/up.sh.tmpl",
+    "templates/ops/watchdog.sh.tmpl",
+    "templates/ops/ops-common.ps1.tmpl",
+    "templates/ops/up.ps1.tmpl",
+    "templates/ops/watchdog.ps1.tmpl",
+    "templates/ops/task.xml.tmpl",
+    "templates/ops/launchd.plist.tmpl",
+    "templates/ops/systemd.service.tmpl",
+    "templates/ops/systemd.timer.tmpl",
     "bin/smoke.py",
     "bin/codex-spike.py",
     "bin/scaffold-world-skill.py",
@@ -85,12 +102,27 @@ KIT_FILES = [
     "bin/discord-setup.py",
     "bin/slack-provision.py",
     "bin/slack-pair.py",
+    "bin/say-as-human.py",
+    "bin/ops-kit.py",
+    "bin/ops-notify.py",
+    "bin/ops-log.py",
+    "bin/ops-lock.py",
     "docs/philosophy.md",
     "docs/codex-compatibility.md",
     "docs/world-map.md",
     "docs/discord.md",
     "docs/integrations.md",
+    "docs/operations.md",
+    "docs/verify.md",
 ]
+# These individual paths became kit-owned after harnesses could already have used
+# them. Preserve differing content on upgrade; never overwrite an earlier backup.
+BACKUP_ON_REPLACE = {
+    rel for rel in KIT_FILES if rel.startswith(("templates/ops/", "bin/ops-"))
+} | {
+    "templates/skill-wrapper-tool.md.tmpl", "templates/verify-wrapper.md.tmpl",
+    "docs/operations.md", "docs/verify.md",
+}
 # harness-owned: only created when absent
 SEED_FILES = ["env/harness.env.example"]
 
@@ -413,6 +445,14 @@ def copy_kit(target: Path, trees: list[str], files: list[str], excluded: list[st
         src, dest = KIT / rel, target / rel
         verb = "replaced" if dest.exists() else "wrote   "
         dest.parent.mkdir(parents=True, exist_ok=True)
+        if rel in BACKUP_ON_REPLACE and dest.is_file() and dest.read_bytes() != src.read_bytes():
+            backup = dest.with_name(dest.name + ".bak")
+            n = 0
+            while backup.exists() or backup.is_symlink():
+                n += 1
+                backup = dest.with_name(f"{dest.name}.bak.{n}")
+            shutil.copy2(dest, backup)
+            log.append(f"backed up {rel} -> {backup.relative_to(target).as_posix()}")
         shutil.copy2(src, dest)
         log.append(f"{verb} {rel}")
 

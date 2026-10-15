@@ -93,9 +93,10 @@ reported alongside the question, but it doesn't replace the question.
 
 ## What must hold
 
-**Every worker's authority is declared in code, and narrow.** `write_scope` is required
-and is never empty; `tasks/{task}/work` is the ordinary lane. A worker that only reads
-gets no write path. A new worker never comes out wider than the ones already there.
+**Every worker's authority is declared in code, and narrow.** A worker that writes declares
+a `write_scope`; `tasks/{task}/work` is the ordinary lane. A worker that only reads leaves
+it empty, which writes nothing, and gets no write path. A new worker never comes out wider
+than the ones already there.
 
 **A promise in a prompt is not enforcement.** If a boundary matters, it lives in code or
 the capability is absent. Prefer a scoped tool over a wider Bash allowlist, and omit a
@@ -170,11 +171,32 @@ connected yet" stays there after it stops being true. Those go elsewhere:
 `WORLD.md`; fix every `[WARN] WORLD.md` line before you finish.
 
 The two creation words become real commands via
-`bin/scaffold-world-skill.py <word> agent|tool --universe ... --description ...`. Default
+`bin/scaffold-world-skill.py <word> agent|tool|verify --universe ... --description ...`. Default
 to `recruit` and `equip` when the user has no preference. Honor explicit naming choices.
+The tool word does not assume a tool: it splits the request into pieces, places each as a
+tool, code, prompt procedure, skill, knowledge, setting or world sentence, and builds only
+after the user confirms the proposal table.
+The scaffolder keeps a wrapper that exists, so a tool word scaffolded before this flow has
+no proposal table, and it and an older agent word still say "`write_scope` never empty".
+On resume, move such a `SKILL.md` aside (under `.claude/skills/<word>/` and
+`.agents/skills/<word>/`), re-run the scaffolder with the same flow, and carry over the
+user's own edits.
+Scaffold the word for checking the harness the same way, with `verify` as the flow; default
+to `verify`.
 
 **Exit 0 is not completion.** A worker that produces analysis (`writes_report=True`) is
 verified by a file landing in its task's `work/`, never by an exit code.
+
+**Verify past the dry run with `docs/verify.md`.** `harness.py --verify-plan` fills its six
+steps from this harness: local checks, tool boundaries tested through `world.tool_check`,
+process and connection, a real thread, what was left behind, and a report. Run it right
+after Slack is first connected, with the first real thread, and say which steps were not
+reached. In a browser, read before writing: send a new message only when the user allowed
+it in this conversation and only a request that leaves nothing outside the chat, and never
+press an approve or deny button. That click is the approver's. For Slack only, an authorized
+verifier without Slack MCP or a user token can use `bin/say-as-human.py init` and `send`
+(`--thread <ts>` for replies); see `docs/verify.md` for `--prefix`, the secret, and restart.
+These messages exercise conversation only; approval still needs the human's button click.
 
 **Report only what happened.** A dry run is not a Slack connection and not a real agent
 result. Name what is still unverified, including any check blocked on missing credentials.
@@ -267,6 +289,12 @@ survives restarts, and `on_done` runs only after a verified-complete run.
 `ScheduleTrigger(Schedule.daily(9, 0, "Asia/Seoul"))` is the wall-clock alternative. On a
 harness's first start it adopts the current occurrence as already done and waits for the
 next one, so a dry run is not a first real run and the report should say when that is.
+A scheduled or polled run is announced as a card whose headline is the task title: the
+`title=` given to `Signal` or `ScheduleTrigger`, else the prompt's first line. Give a
+worker whose prompt opens with an instruction to the model a `title=` a person can read.
+The card body is the start of the run's final message, with the completion evidence
+shrunk onto the status line, so a worker whose announcement is the result (a briefing,
+a digest) should end with that summary rather than "done".
 `Harness(provider=...)` takes `claude` or `codex`.
 
 `mutates=True` makes each task run in its own git worktree (the kit cuts it at spawn
@@ -292,10 +320,28 @@ approver, and nothing about the Slack plan: one app serves every persona, so the
 plan's app limit never matters. Say in one line that on a free plan messages vanish past 90
 days, and keep anything that must outlive that in a file rather than a thread. One Slack app serves every
 persona: it is the main persona, and the others post through it under their own name and
-`Persona.portrait` icon (an http(s) URL) with `chat:write.customize`, so a free plan's
-10-app limit never counts personas. Give a persona its own app (`bot_token_env`) only when
-the user wants it to have its own Slack profile. Real tokens go in `env/harness.env`, never
-a committed file.
+icon with `chat:write.customize`, so a free plan's 10-app limit never counts personas. Give
+a persona its own app (`bot_token_env`) only when the user wants it to have its own Slack
+profile. Real tokens go in `env/harness.env`, never a committed file.
+
+A persona has two picture fields, read by different places. `Persona.portrait` is a local
+image file inside the harness (PNG/JPEG/WebP, 2 MB or less) that the world map embeds;
+`Persona.icon_url` is a public http(s) image URL that Slack and Discord show beside the
+persona's messages. A harness written before `icon_url` existed may hold that URL in
+`portrait`: chat still uses it when `icon_url` is empty, and the world map draws a name card
+for it and prints a warning, so move it to `icon_url`.
+
+Say what a persona without its own app is, before the user finds out. Its messages go
+through `chat.postMessage` with `username` and `icon_url` (Slack also takes `icon_emoji`;
+the kit does not send it). It is not a Slack account: nobody can @-mention it, and clicking
+its name opens the main app's profile. A message's name and icon cannot be changed with
+`chat.update` once it is posted, so messages sent before the icon was set keep the main
+app's icon. The icon must be a public URL. A file uploaded to a Slack channel is not one,
+because it needs a workspace login. Use a custom emoji's image (`emoji.slack-edge.com`) or
+public image hosting, and only an image you made or have the right to use. An existing
+Slack app's avatar (`avatars.slack-edge.com`) also works; one stayed reachable right after
+its app was deleted, but nothing guarantees it stays that way, so prefer the other two for
+anything meant to last.
 
 People in a dedicated channel often just type, without an @-mention, and read the
 silence as a broken bot. Ask whether the harness's channel is its own. If it is, offer
@@ -310,8 +356,7 @@ app). Fill `team`: without it the CLI asks which workspace, and a shell with no 
 (yours, or the user's `!`) cannot answer. Slack accepts any script in the app name but only
 ASCII letters, digits, `.`, `_` and `-` in the bot user's name. When the display name is not
 ASCII, the main app's bot is named after the prefix (`@lighthouse`), and a persona with its
-own app `<prefix>-<key>`; set `bot_username` on the entry to choose another. A `Persona.portrait` must be a public https image URL. A file uploaded
-to a Slack channel is not one, because it needs a workspace login. Then have the user run
+own app `<prefix>-<key>`; set `bot_username` on the entry to choose another. Then have the user run
 `uv run python bin/slack-provision.py` in their own terminal, since the CLI may ask which
 workspace or whether to request admin approval. It needs `slack` installed and one
 `slack login`, creates and installs the app from the manifest template with no browser
@@ -351,6 +396,15 @@ Finish by telling the user the harness path, the project it works on, and the pr
 installed for. Give each worker's job, when it runs next in their time zone, and what it
 does not check. Say which checks actually passed, what remains unverified, and one next
 action. Also say that nothing runs unless `harness.py` is running: the kit sets up no
-service, so a reboot stops it until the user starts it again or asks you to register one.
+service, so a reboot stops it until the user starts it again. If a worker runs on a
+schedule or a poll, offer once to keep it running ("상시 실행을 원하면…"), and do nothing
+more unless they say yes. On yes, run `uv run python bin/ops-kit.py` on the machine the
+harness runs on, from the harness (`--notify --prefix <PREFIX>` once Slack is connected, if they want
+restarts announced there). It only writes `scripts/`. Show the commands it prints that register the
+watchdog and let the user run them; don't run them yourself. Fill the README's "Stopping it
+on purpose" rows from that output: with a watchdog, remove the watchdog before `down`.
+On Windows it writes PowerShell scripts and a Task Scheduler task to register with
+`schtasks`; there `down` stops a run in progress without waiting for it, so say that.
+`docs/operations.md` has the rest.
 The harness needs neither this plugin nor the kit to run. Re-running the installer is only
 for upgrades.

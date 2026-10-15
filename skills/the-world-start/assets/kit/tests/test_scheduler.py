@@ -296,6 +296,58 @@ class EnqueueTests(unittest.IsolatedAsyncioTestCase):
         )
 
 
+class TaskTitleTests(unittest.IsolatedAsyncioTestCase):
+    """The task title is the headline of its Slack card. It was always the prompt's first
+    line, so a scheduled briefing whose prompt opened with an instruction to the model
+    showed that instruction to people as the headline (issue #5)."""
+
+    async def _enqueue(self, trigger) -> "tasks.Task":
+        from world.process import orchestrator
+
+        harness, state = _harness("watch"), _state()
+        agent = harness.agents[0]
+        agent.trigger = trigger
+        if isinstance(trigger, ScheduleTrigger):
+            state["agents"]["watch"] = {"last_fired": 0}
+        self.assertTrue(await orchestrator._enqueue_due_agent(
+            harness, state, agent, time.time(), dry_run=False,
+            scheduler=_scheduler(harness, state),
+        ))
+        [record] = tasks.list_tasks(harness.home)
+        return record
+
+    async def test_a_signal_title_is_the_task_title_and_the_prompt_is_unchanged(self) -> None:
+        prompt = "아래 목록대로 report.md 절차에 따라 보고하라.\n- 항목 3건"
+        record = await self._enqueue(PollTrigger(lambda *_: Signal(prompt, title="📋 아침 보고")))
+        self.assertEqual("📋 아침 보고", record.title)
+        self.assertEqual(prompt, record.body.strip())
+
+    async def test_without_a_title_the_first_prompt_line_is_still_used(self) -> None:
+        record = await self._enqueue(PollTrigger(lambda *_: Signal("첫 줄\n둘째 줄")))
+        self.assertEqual("첫 줄", record.title)
+
+    async def test_a_blank_title_falls_back_rather_than_failing_validation(self) -> None:
+        record = await self._enqueue(PollTrigger(lambda *_: Signal("첫 줄", title="  ")))
+        self.assertEqual("첫 줄", record.title)
+
+    async def test_a_title_with_line_breaks_is_one_line_and_writes_no_keys(self) -> None:
+        # A poll builds titles from outside text (a PR title, a mail subject). task.md has
+        # one key per line, so "Daily\nstatus: done" wrote a status line of its own.
+        record = await self._enqueue(PollTrigger(
+            lambda *_: Signal("p", title="Daily\nstatus: done\r\nid: 20261001-dead"),
+        ))
+        self.assertEqual("Daily status: done id: 20261001-dead", record.title)
+        self.assertEqual("queued", record.status)
+        self.assertNotEqual("20261001-dead", record.id)
+
+    async def test_a_schedule_trigger_title_reaches_the_task(self) -> None:
+        record = await self._enqueue(ScheduleTrigger(
+            Schedule.daily(9, 0, "Asia/Seoul"), prompt="정기 실행", title="정기 보고",
+        ))
+        self.assertEqual("정기 보고", record.title)
+        self.assertEqual("정기 실행", record.body.strip())
+
+
 class ScheduledDryRunTests(unittest.IsolatedAsyncioTestCase):
     """`--once --dry-run` must say what a real start would do. A real start adopts the
     current occurrence as done (Harness._init_schedules) and waits for the next one; a

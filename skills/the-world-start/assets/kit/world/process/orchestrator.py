@@ -29,10 +29,13 @@ import asyncio
 import contextlib
 import inspect
 import json
+import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
+from . import runlog
 from . import task as tasks
 from . import worktrees
 from .state import record_report, save_state
@@ -46,11 +49,50 @@ BLOCKED_BACKOFF_SECONDS = 3600
 WORKTREE_SWEEP_INTERVAL_S = 3600
 
 
+# One thread writes the run log, off the event loop: an append takes an flock and may
+# roll (gzip up to run_log_max_bytes), and doing that inside a tick or a finished run held
+# up everything else on the loop, Slack's 3s ack included. A single worker keeps entries
+# in the order they were made and never runs two writes at once. Its queue is drained
+# before the interpreter exits (concurrent.futures joins its workers at shutdown), so an
+# entry made just before a stop is still written.
+_run_log_writer = ThreadPoolExecutor(max_workers=1, thread_name_prefix="run-log")
+
+
+def _reset_run_log_writer() -> None:
+    # fork keeps the executor's queue and thread set, but none of its worker threads.
+    global _run_log_writer
+    _run_log_writer = ThreadPoolExecutor(max_workers=1, thread_name_prefix="run-log")
+
+
+if hasattr(os, "register_at_fork"):  # Windows starts a fresh interpreter instead.
+    os.register_at_fork(after_in_child=_reset_run_log_writer)
+
+
 def append_run_log(harness: "Harness", entry: dict) -> None:
-    harness.logs_dir.mkdir(parents=True, exist_ok=True)
-    entry = {"ts": time.time(), **entry}
-    with harness.run_log_path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(entry) + "\n")
+    """Queue one run-log entry and return without waiting for the write."""
+    now = time.time()
+    entry = {"ts": now, "time": datetime.fromtimestamp(now).astimezone().isoformat(timespec="seconds"),
+             **entry}
+    # getattr: test stubs and harnesses built before the cap existed carry no settings.
+    _run_log_writer.submit(
+        _write_run_log, harness.run_log_path, (json.dumps(entry) + "\n").encode("utf-8"),
+        max_bytes=getattr(harness, "run_log_max_bytes", runlog.RUN_LOG_MAX_BYTES),
+        keep_days=getattr(harness, "run_log_keep_days", None),
+        log=getattr(harness, "log", print))
+
+
+def _write_run_log(path, data: bytes, *, max_bytes, keep_days, log) -> None:
+    # Nobody waits on this future, so a failure raised here would vanish: say it instead.
+    try:
+        runlog.append(path, data, max_bytes=max_bytes, keep_days=keep_days, log=log)
+    except OSError as exc:
+        log(f"⚠️  could not write {path.name} ({exc}); lost entry: "
+            f"{data.decode('utf-8', 'replace').strip()[:300]}")
+
+
+def flush_run_log() -> None:
+    """Block until every entry queued so far is written."""
+    _run_log_writer.submit(lambda: None).result()
 
 
 async def _run_tick_tasks(harness: "Harness", state: dict, listener, now: float, *,
@@ -114,7 +156,16 @@ def _due_signal(agent, agent_state: dict, now: float):
     def on_done(_result) -> None:
         agent_state["last_fired"] = now
 
-    return Signal(prompt=agent.trigger.prompt, on_done=on_done)
+    return Signal(prompt=agent.trigger.prompt, on_done=on_done, title=agent.trigger.title)
+
+
+def _signal_title(signal: Signal) -> str:
+    """The task's headline: the Signal's own title, else the prompt's first line — which
+    is what every task got before Signal.title existed, so an old harness reads the same.
+    One line either way: a poll builds its title from outside text (a PR title, a mail
+    subject), and a headline is not the place for that text's line breaks."""
+    first_line = (signal.prompt.splitlines() or [""])[0]
+    return (" ".join((signal.title or "").split()) or first_line)[:120]
 
 
 async def _enqueue_due_agent(harness: "Harness", state: dict, agent, now: float, *,
@@ -161,13 +212,13 @@ async def _enqueue_due_agent(harness: "Harness", state: dict, agent, now: float,
     if dry_run:
         # tasks/ is committed. A dry run that files one is not a dry run — the same rule
         # that keeps _due_signal read-only and stops save_state rewriting HEARTBEAT.md.
-        harness.log(f"[dry-run] would enqueue {agent.name}: {signal.prompt.splitlines()[0][:120]}")
+        harness.log(f"[dry-run] would enqueue {agent.name}: {_signal_title(signal)}")
         return False
 
     record = tasks.create(
         harness.home,
         type=getattr(agent, "task_type", "") or tasks.AGENT_RUN_TYPE,
-        title=signal.prompt.splitlines()[0][:120],
+        title=_signal_title(signal),
         slug=tasks.slugify(agent.name),
         agent=agent.name,
         body=signal.prompt,
