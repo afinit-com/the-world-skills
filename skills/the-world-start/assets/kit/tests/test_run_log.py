@@ -406,7 +406,15 @@ class RunLogOffTheLoopTest(unittest.TestCase):
         self.assertIsInstance(entry["ts"], float)
         stamp = datetime.fromisoformat(entry["time"])
         self.assertIsNotNone(stamp.tzinfo)
-        self.assertAlmostEqual(stamp.timestamp(), entry["ts"], places=5)
+        self.assertEqual(stamp.timestamp(), int(entry["ts"]))
+
+    def test_iso_time_is_in_seconds_like_the_other_logs(self):
+        """Harness.log, ops-log and the watchdog stamp in whole seconds; a run log line
+        with microseconds did not sort or grep against them."""
+        append_run_log(self.h, {"n": 1})
+        flush_run_log()
+        entry = json.loads(self.h.run_log_path.read_text())
+        self.assertRegex(entry["time"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d\d:\d\d$")
 
     def test_a_slow_write_does_not_hold_the_event_loop_and_keeps_order(self):
         real_append = runlog.append
