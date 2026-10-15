@@ -42,6 +42,7 @@ $OpsLog = Join-Path $HomeDir 'bin\ops-log.py'
 # counts. A venv's python.exe starts the real interpreter as its child with the same
 # arguments; Get-HarnessProcesses counts each such pair once.
 $Match = {{MATCH}}
+$RelativeMatch = {{RELATIVE_MATCH}}
 $Out = Join-Path $HomeDir 'logs\console.out'
 $State = Join-Path $HomeDir 'logs\.watchdog'
 $Lock = Join-Path $State 'lock'
@@ -123,6 +124,11 @@ function Get-HarnessProcesses {
     $all = @(Get-CimInstance -ClassName Win32_Process -Filter "Name LIKE 'python%'" -ErrorAction Stop)
   } catch {
     throw "cannot list processes (Get-CimInstance Win32_Process): $((Inner $_.Exception).Message)"
+  }
+  # Win32_Process does not expose cwd. Never adopt or stop an unidentified home.
+  $relative = @($all | Where-Object { $_.CommandLine -and $_.CommandLine -match $RelativeMatch })
+  if ($relative.Count -gt 0) {
+    throw "relative harness.py launch found (pid $(Join-Ids $relative)); stop it in its original terminal before using ops"
   }
   $found = @($all | Where-Object { $_.CommandLine -and $_.CommandLine -match $Match })
   $ids = @($found | ForEach-Object { [int]$_.ProcessId })
