@@ -337,6 +337,11 @@ class MentionMixin:
             body, identity=persona.key, blocks=blocks, thread_ts=record.thread or None,
             # The real run, not a lookup of the agent's most recent one.
             context=self._footer(run_fields(result)),
+            # The body is an excerpt of whatever the run wrote, so its links are the
+            # run's, not ones anybody chose to show; one Wikipedia link put a preview
+            # bigger than the card under it (found live). A conversation reply keeps
+            # previews: there the persona is answering someone and the link is the point.
+            unfurl=False,
         )
         if not ts:
             return ""

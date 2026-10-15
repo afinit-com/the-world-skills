@@ -8,3 +8,8 @@ class SlackVerificationDocsTests(unittest.TestCase):
         self.assertIn('redraw', text)
         self.assertIn('discard', text)
         self.assertIn('delete the as-human input messages', text)
+
+    def test_a_stale_approval_button_is_described_as_changing_nothing(self):
+        text = (Path(__file__).resolve().parents[1] / 'docs/verify.md').read_text()
+        self.assertIn('no preview under it', text)
+        self.assertIn('changes nothing', text)
