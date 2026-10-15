@@ -624,7 +624,8 @@ class PersonaFaceTests(unittest.TestCase):
 
         poster = PostingMixin()
         main = Persona(key="guide", display="Guide", portrait="https://x.test/guide.png")
-        poster.harness = SimpleNamespace(main_persona=main, personas={
+        self.logged: list[str] = []
+        poster.harness = SimpleNamespace(main_persona=main, log=self.logged.append, personas={
             "guide": main,
             "lumen": Persona(key="lumen", display="Lumen", portrait="https://x.test/lumen.png"),
             "ember": Persona(key="ember", display="Ember", portrait="art/ember.png"),
@@ -642,6 +643,16 @@ class PersonaFaceTests(unittest.TestCase):
         lumen = poster.harness.personas["lumen"]
         lumen.icon_url = "https://x.test/lumen-icon.png"
         self.assertEqual("https://x.test/lumen-icon.png", poster._face("lumen")["icon_url"])
+
+    def test_an_icon_url_broken_after_start_costs_the_icon_not_the_message(self) -> None:
+        # A harness that sets icon_url from a settings file after building the persona
+        # skips the constructor's check; every post by that persona used to fail instead.
+        poster = self._poster()
+        poster.harness.personas["lumen"].icon_url = "icons/lumen.png"
+        self.assertEqual({"username": "Lumen"}, poster._face("lumen"))
+        self.assertEqual({"username": "Lumen"}, poster._face("lumen"))
+        [line] = self.logged  # once, not on every post
+        self.assertIn("persona 'lumen': icon_url must be a public http", line)
 
     def test_a_persona_without_its_own_app_posts_under_its_name_and_icon(self) -> None:
         poster = self._poster()

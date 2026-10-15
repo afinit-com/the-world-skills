@@ -316,6 +316,16 @@ class AnnounceTests(GatewayCase):
         await self.gw.post("hello", identity="nobody")
         self.assertEqual([("Keeper", ""), None], [s["as"] for s in self.transport.sent])
 
+    async def test_an_icon_url_broken_after_start_costs_the_avatar_not_the_message(self) -> None:
+        logged: list[str] = []
+        self.harness.log = logged.append
+        self.harness.personas["keeper"].icon_url = "icons/keeper.png"
+        await self.gw.post("hello", identity="keeper")
+        await self.gw.post("again", identity="keeper")
+        self.assertEqual([("Keeper", "")] * 2, [s["as"] for s in self.transport.sent])
+        self.assertEqual(1, len(logged))
+        self.assertIn("persona 'keeper'", logged[0])
+
     async def test_icon_url_is_the_avatar_beside_a_local_portrait(self) -> None:
         await self.gw.post("hello", identity="beacon")
         self.assertEqual(("Beacon", "https://example.test/beacon-icon.png"),

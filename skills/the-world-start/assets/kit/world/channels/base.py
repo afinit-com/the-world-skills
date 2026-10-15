@@ -18,6 +18,27 @@ CARD_EVIDENCE_CHARS = 200
 CARD_BODY_CHARS = 1600
 
 
+# (persona key, icon_url) pairs already warned about: a broken icon is a standing
+# condition, so one line per process says it, not one per message.
+_BROKEN_ICONS_WARNED: set[tuple[str, str]] = set()
+
+
+def posting_icon(persona: Any, log: Callable[[str], None]) -> str:
+    """persona.chat_icon for a message about to go out, or "" when its icon_url is not a
+    URL. Persona refuses such a value when it is built, but a harness that sets icon_url
+    afterwards (from a settings file) skips that check, and then every post by that
+    persona raised: replies, cards and handoffs all gone over a picture. Say so once and
+    post without it."""
+    try:
+        return persona.chat_icon
+    except ValueError as exc:
+        key = (persona.key, persona.icon_url)
+        if key not in _BROKEN_ICONS_WARNED:
+            _BROKEN_ICONS_WARNED.add(key)
+            log(f"{exc} — posting without an icon until it is fixed")
+        return ""
+
+
 def _one_line(text: str, limit: int) -> str:
     flat = " ".join(text.split())
     return flat if len(flat) <= limit else flat[: limit - 1] + "…"
