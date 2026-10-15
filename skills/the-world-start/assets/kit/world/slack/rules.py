@@ -10,6 +10,7 @@ the matching enforcement still exists before assuming the loosening took effect.
 
 from __future__ import annotations
 
+import html
 import re
 
 APPROVAL_MARKER = "APPROVAL_REQUEST:"
@@ -87,8 +88,9 @@ def split_approval_request(reply: str) -> tuple[str, str | None]:
 # protected byte-for-byte so a `**` or `#` INSIDE a code sample is never rewritten.
 # Applied to model PROSE only (mention/relay replies), never to world's own structured
 # or HMAC-signed posts.
-_MD_FENCE = re.compile(r"```.*?```", re.DOTALL)
+_MD_FENCE = re.compile(r"```(?:.*?```|.*\Z)", re.DOTALL)
 _MD_INLINE = re.compile(r"`[^`\n]+`")
+_MD_LINK = re.compile(r"\[([^\]\n]+)\]\(<?(https?://[^\s<>]+?)>?\)")
 _MD_HEADER = re.compile(r"^[ \t]{0,3}#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$", re.MULTILINE)
 _MD_BOLD_STAR = re.compile(r"(?<!\*)\*\*(?!\s)(.+?)(?<!\s)\*\*(?!\*)", re.DOTALL)
 _MD_BOLD_US = re.compile(r"(?<![\w_])__(?!\s)(.+?)(?<!\s)__(?![\w_])", re.DOTALL)
@@ -106,6 +108,14 @@ def slack_mrkdwn(text: str) -> str:
         return f"\x00{len(spans) - 1}\x00"
 
     out = _MD_INLINE.sub(stash, _MD_FENCE.sub(stash, text))
+    def link(m: "re.Match") -> str:
+        # Slack has no escape for a label's pipe: use its visible fullwidth form.
+        label = re.sub(r"\x00(\d+)\x00", lambda code: spans[int(code[1])], m[1])
+        label = html.escape(html.unescape(label), quote=False).replace("|", "｜")
+        url = html.escape(html.unescape(m[2]), quote=False).replace("|", "%7C")
+        return f"<{url}|{label}>"
+
+    out = _MD_LINK.sub(link, out)
     out = _MD_HEADER.sub(r"*\1*", out)
     out = _MD_BOLD_STAR.sub(r"*\1*", out)
     out = _MD_BOLD_US.sub(r"*\1*", out)
