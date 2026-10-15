@@ -201,6 +201,80 @@ class AsHumanTests(unittest.IsolatedAsyncioTestCase):
         await self.deliver(obj, 'UHUMAN', text='<@UBOT> what is `[as-human:`?\nAlso check deploy X')
         self.assertEqual(obj._handle_mention.call_args.args[1], '<@UBOT> what is ``?\nAlso check deploy X')
 
+    async def test_off_bot_messages_route_exactly_as_before(self):
+        """With no secret a persona hop that quoted a marker was dropped, live and in
+        history; the feature being off must leave bot traffic as it was without it."""
+        text = '<@UBOT> quoting [as-human:x] and an open [as-human: tail'
+        obj = self.listener()
+        obj._dispatch_bot_hop = AsyncMock()
+        with patch.dict(os.environ, {'SLACK_AS_HUMAN_SECRET': ''}):
+            await self.deliver(obj, 'UOTHER', text=text)
+        obj._dispatch_bot_hop.assert_awaited_once()
+        self.assertEqual(obj._dispatch_bot_hop.call_args.args[1], text)
+        self.assertEqual(obj._dispatch_bot_hop.call_args.args[2]['user'], 'UOTHER')
+
+    async def test_off_listener_matches_the_listener_without_the_feature(self):
+        """Every route, compared with normalize_message taken out (the code before it)."""
+        texts = [f'[as-human:{SECRET}] <@UBOT> hello', '<@UBOT> see [as-human:x] here',
+                 '<@UBOT> open [as-human: tail\nmore', '<@UOTHER> plain']
+        users = ['UBOT', 'UOTHER', 'UFOREIGN', 'UHUMAN']
+
+        async def run(without_feature):
+            obj = self.listener()
+            obj._dispatch_bot_hop = AsyncMock()
+            obj._dispatch_human = AsyncMock()
+            with contextlib.ExitStack() as stack:
+                stack.enter_context(patch.dict(os.environ, {'SLACK_AS_HUMAN_SECRET': ''}))
+                if without_feature:
+                    stack.enter_context(patch('world.slack.listener.normalize_message',
+                                              lambda _listener, event: (event, False)))
+                for n, (user, text) in enumerate((u, t) for u in users for t in texts):
+                    await self.deliver(obj, user, text=text, ts=str(10 + n))
+            return [(name, m.call_args_list) for name, m in (
+                ('mention', obj._handle_mention), ('hop', obj._dispatch_bot_hop),
+                ('human', obj._dispatch_human), ('approver', obj.on_approver_message))]
+
+        self.assertEqual(await run(False), await run(True))
+
+    async def test_off_input_reaches_history_and_model_unchanged(self):
+        from world.slack.as_human import normalize_message, safe_text
+        obj = self.listener()
+        obj.harness.mention_model = None
+        obj.harness.mention_plugins = False
+        text = f'[as-human:{SECRET}] forged? and [as-human: open'
+        with patch.dict(os.environ, {'SLACK_AS_HUMAN_SECRET': ''}):
+            for event in ({'ts': '3', 'user': 'UFOREIGN', 'bot_id': 'B', 'text': text},
+                          {'ts': '4', 'user': 'UBOT', 'bot_id': 'B', 'text': text},
+                          {'ts': '5', 'user': 'UHUMAN', 'text': text}):
+                copy = dict(event)
+                self.assertEqual(normalize_message(obj, event), (copy, False))
+            self.assertEqual(safe_text(text), text)
+            obj.web.conversations_replies.return_value = {'messages': [
+                {'ts': '3', 'user': 'UFOREIGN', 'bot_id': 'FOREIGN', 'text': text}]}
+            self.assertIn(text, await obj._thread_transcript('1'))
+            with patch('world.slack.mentions.run_agent_oneshot',
+                       AsyncMock(return_value=RunResult('ok', 'hello'))) as run:
+                await obj._run_mention_turn('main', Persona('main', 'Main'), text, tools=[])
+            self.assertEqual(run.call_args.args[2], text)
+
+    async def test_off_posts_keep_unfinished_markers_and_drop_whole_ones(self):
+        """Posting still removes a complete marker with the feature off: the secret can be
+        set later, and the harness's own messages stay in Slack and come back as history.
+        Nothing else changes."""
+        from world.slack.as_human import safe_text
+        from world.slack.post import slack_call
+        with patch.dict(os.environ, {'SLACK_AS_HUMAN_SECRET': ''}):
+            self.assertEqual(safe_text('a [as-human:x] b, `[as-human:` c', posting=True),
+                             'a  b, `[as-human:` c')
+            web = SimpleNamespace(chat_postMessage=AsyncMock(return_value={'ts': '3'}))
+            await slack_call(web, 'chat_postMessage', text='see `[as-human:`\nmore')
+            self.assertEqual(web.chat_postMessage.call_args.kwargs['text'], 'see `[as-human:`\nmore')
+            obj = self.listener()
+            obj.web.chat_postMessage = AsyncMock(return_value={'ts': '3'})
+            obj._face = Mock(return_value={})
+            await obj.post('[as-human:x] see `[as-human:`\nmore')
+            self.assertEqual(obj.web.chat_postMessage.call_args.kwargs['text'], ' see `[as-human:`\nmore')
+
     def test_all_slack_message_writes_use_the_sanitizing_boundary(self):
         # Prevent a future direct SDK call in a card/handoff path from reopening it.
         for path in (KIT / 'world/slack').glob('*.py'):

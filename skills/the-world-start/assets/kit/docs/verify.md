@@ -127,7 +127,9 @@ For a harness using `OBS_SLACK_BOT_TOKEN`, pass `--prefix OBS` before `init` or 
 The matching key is `OBS_SLACK_AS_HUMAN_SECRET`; without a prefix it is
 `SLACK_AS_HUMAN_SECRET`. `init` keeps an existing value and the env file's permissions,
 prints no value, and creates a new env file with mode 600. An empty or missing secret
-turns this feature off. Clear the value in `env/harness.env` and restart to disable it.
+turns this feature off: messages, history and model input are then handled as if it did
+not exist, and harness posts only drop a complete marker. Clear the value in
+`env/harness.env` and restart to disable it.
 `send` prints the posted message ts and accepts `--channel` to override the configured
 channel; the receiver still accepts messages only in its own home channel.
 

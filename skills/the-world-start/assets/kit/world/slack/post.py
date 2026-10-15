@@ -28,7 +28,7 @@ BENIGN_SLACK_ERRORS = frozenset({"already_reacted", "no_reaction"})
 
 async def slack_call(web, method: str, **kwargs):
     """One outbound boundary for messages, cards, edits and progress indicators."""
-    return await getattr(web, method)(**safe_payload(kwargs))
+    return await getattr(web, method)(**safe_payload(kwargs, posting=True))
 
 
 class PostingMixin:
@@ -88,7 +88,7 @@ class PostingMixin:
         web = self._web_for(identity)
         if not web:
             return None
-        text = safe_text(text)
+        text = safe_text(text, posting=True)
         channel = channel or self.harness.slack.channel
         first_ts = None
         offsets = list(range(0, max(len(text), 1), SLACK_CHUNK))
