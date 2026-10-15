@@ -522,7 +522,7 @@ class SayAsHumanTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn('already configured', output.getvalue())
             self.assertIn('clear', output.getvalue())
             self.assertIn('unset', output.getvalue())
-            self.assertIn('--prefix OBS init', output.getvalue())
+            self.assertIn('uv run python bin/say-as-human.py --prefix OBS init', output.getvalue())
 
     async def test_short_secret_send_does_not_call_slack(self):
         module = self.module()

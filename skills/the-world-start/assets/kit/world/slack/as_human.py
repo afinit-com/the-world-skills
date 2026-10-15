@@ -24,7 +24,7 @@ def secret_env(slack) -> str:
 
 def secret_recovery(key: str) -> str:
     prefix = key.removesuffix("SLACK_AS_HUMAN_SECRET").removesuffix("_")
-    command = "bin/say-as-human.py" + (f" --prefix {prefix}" if prefix else "") + " init"
+    command = "uv run python bin/say-as-human.py" + (f" --prefix {prefix}" if prefix else "") + " init"
     return (f"clear {key} in env/harness.env and unset it in the shell, then run "
             f"{command} and restart the harness")
 
