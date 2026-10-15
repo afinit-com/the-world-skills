@@ -373,6 +373,11 @@ class SayAsHumanTests(unittest.IsolatedAsyncioTestCase):
         first, secret = self.init_file(module, 'KEEP=yes', key='OBS_SLACK_AS_HUMAN_SECRET')
         self.assertEqual(first, f'KEEP=yes\nOBS_SLACK_AS_HUMAN_SECRET={secret}\n')
 
+    async def test_init_appends_with_the_files_own_line_ending(self):
+        module = self.module()
+        first, secret = self.init_file(module, 'KEEP=yes\r\nLAST=1', key='OBS_SLACK_AS_HUMAN_SECRET')
+        self.assertEqual(first, f'KEEP=yes\r\nLAST=1\r\nOBS_SLACK_AS_HUMAN_SECRET={secret}\r\n')
+
     async def test_init_keeps_nonempty_first_value_over_later_empty_one(self):
         module = self.module()
         text = 'SLACK_AS_HUMAN_SECRET=keep-me\nSLACK_AS_HUMAN_SECRET=\n'

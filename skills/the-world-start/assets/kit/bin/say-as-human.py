@@ -50,10 +50,12 @@ def init_secret(key: str) -> None:
     else:
         path.parent.mkdir(parents=True, exist_ok=True)
         fd = os.open(path, os.O_RDWR | os.O_APPEND | os.O_CREAT, 0o600)
-        with os.fdopen(fd, 'a+', encoding='utf-8') as stream:
+        # newline='': write the file's own line ending, not the platform's.
+        with os.fdopen(fd, 'a+', encoding='utf-8', newline='') as stream:
             stream.seek(0)
             text = stream.read()
-            stream.write(('' if not text or text.endswith('\n') else '\n') + f'{key}={secret}\n')
+            eol = '\r\n' if '\r\n' in text else '\n'
+            stream.write(('' if not text or text.endswith('\n') else eol) + f'{key}={secret}{eol}')
     print('as-human secret initialized; restart the harness to load it')
 
 
