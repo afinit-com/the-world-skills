@@ -95,6 +95,11 @@ class RenderTest(unittest.TestCase):
     def test_systemd_quote_escapes_what_systemd_unescapes(self):
         self.assertEqual(ops_kit.systemd_quote('a\\b "c" 100%'), '"a\\\\b \\"c\\" 100%%"')
 
+    def test_systemd_quote_keeps_dollar_paths_literal(self):
+        home = self.home / 'harness-${NOT_SET}-$HOME'
+        service = _render(home, "linux")["scripts/systemd/my-harness-watchdog.service"][0]
+        self.assertIn('harness-$${NOT_SET}-$$HOME/scripts/', service)
+
     def test_windows_renders_powershell_scripts_and_a_scheduled_task(self):
         files = _render(self.home, "windows", user="WORKGROUP\\someone",
                         now=datetime(2026, 10, 14, 9, 30, 5))

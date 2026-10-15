@@ -108,7 +108,7 @@ def ps_quote(text: str) -> str:
 
 
 def systemd_quote(text: str) -> str:
-    return '"' + text.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%") + '"'
+    return '"' + text.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%").replace("$", "$$") + '"'
 
 
 def fill(template: str, values: dict[str, str]) -> str:
