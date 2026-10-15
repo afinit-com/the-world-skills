@@ -122,9 +122,11 @@ def _due_signal(agent, agent_state: dict, now: float):
 
 def _signal_title(signal: Signal) -> str:
     """The task's headline: the Signal's own title, else the prompt's first line — which
-    is what every task got before Signal.title existed, so an old harness reads the same."""
+    is what every task got before Signal.title existed, so an old harness reads the same.
+    One line either way: a poll builds its title from outside text (a PR title, a mail
+    subject), and a headline is not the place for that text's line breaks."""
     first_line = (signal.prompt.splitlines() or [""])[0]
-    return ((signal.title or "").strip() or first_line)[:120]
+    return (" ".join((signal.title or "").split()) or first_line)[:120]
 
 
 async def _enqueue_due_agent(harness: "Harness", state: dict, agent, now: float, *,

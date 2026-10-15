@@ -45,6 +45,17 @@ class RecordTests(unittest.TestCase):
             _make(home, origin=tasks.Origin(kind="nobody"))
         self.assertEqual([], list(tasks.tasks_dir(home).iterdir()))
 
+    def test_a_line_break_in_a_value_cannot_write_header_keys(self) -> None:
+        """The header is one key per line and a repeated key keeps its last value, so a
+        title carrying "\nid: …" or "\n---\n" rewrote the record when it was read back."""
+        home = _home()
+        made = _make(home, title="Daily\nid: 20261001-dead\u2028type: x\n---\nbody")
+        got = tasks.read(home, made.id)
+        self.assertEqual(made.id, got.id)
+        self.assertEqual("migration", got.type)
+        self.assertEqual("Daily id: 20261001-dead type: x --- body", got.title)
+        self.assertEqual(made.title, got.title)
+
     def test_roundtrip_preserves_unicode_lists_and_nested_groups(self) -> None:
         home = _home()
         made = _make(

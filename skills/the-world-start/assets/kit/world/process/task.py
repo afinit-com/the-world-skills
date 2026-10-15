@@ -326,6 +326,14 @@ def _split(text: str) -> tuple[dict, str]:
     return meta, body.lstrip("\n")
 
 
+def _header_value(value: str) -> str:
+    """A header value on one line. The header is one key per line and _split keeps a
+    repeated key's last value, so a value with a line break in it wrote keys of its own:
+    a title of "Daily\nid: …" came back with another task's id. Every boundary
+    str.splitlines() honours, since that is what _split reads the header with."""
+    return " ".join(value.splitlines())
+
+
 def _render(task: Task) -> str:
     flat = {
         "id": task.id, "type": task.type, "title": task.title, "status": task.status,
@@ -343,7 +351,7 @@ def _render(task: Task) -> str:
         "lease_until": task.lease_until, "thread": task.thread, "slug": task.slug,
         "created": task.created, "updated": task.updated,
     }
-    lines = [f"{key}: {flat[key]}" for key in _ORDER]
+    lines = [f"{key}: {_header_value(flat[key])}" for key in _ORDER]
     return "---\n" + "\n".join(lines) + "\n---\n\n" + task.body.strip() + "\n"
 
 
@@ -493,7 +501,8 @@ def _fill_task_dir(home: Path, task_id: str, *, type: str, title: str, slug: str
     task = Task(
         id=task_id,
         type=type,
-        title=title,
+        # As task.md will hold it, so the record handed back reads the same as one re-read.
+        title=_header_value(title),
         slug=slug,
         origin=origin,
         # An explicit retry_budget wins over the type's default: passing both used to
