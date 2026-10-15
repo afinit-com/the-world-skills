@@ -30,6 +30,7 @@ import contextlib
 import inspect
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
@@ -47,13 +48,38 @@ BLOCKED_BACKOFF_SECONDS = 3600
 WORKTREE_SWEEP_INTERVAL_S = 3600
 
 
+# One thread writes the run log, off the event loop: an append takes an flock and may
+# roll (gzip up to run_log_max_bytes), and doing that inside a tick or a finished run held
+# up everything else on the loop, Slack's 3s ack included. A single worker keeps entries
+# in the order they were made and never runs two writes at once. Its queue is drained
+# before the interpreter exits (concurrent.futures joins its workers at shutdown), so an
+# entry made just before a stop is still written.
+_run_log_writer = ThreadPoolExecutor(max_workers=1, thread_name_prefix="run-log")
+
+
 def append_run_log(harness: "Harness", entry: dict) -> None:
+    """Queue one run-log entry and return without waiting for the write."""
     entry = {"ts": time.time(), **entry}
     # getattr: test stubs and harnesses built before the cap existed carry no settings.
-    runlog.append(harness.run_log_path, (json.dumps(entry) + "\n").encode("utf-8"),
-                  max_bytes=getattr(harness, "run_log_max_bytes", runlog.RUN_LOG_MAX_BYTES),
-                  keep_days=getattr(harness, "run_log_keep_days", None),
-                  log=getattr(harness, "log", print))
+    _run_log_writer.submit(
+        _write_run_log, harness.run_log_path, (json.dumps(entry) + "\n").encode("utf-8"),
+        max_bytes=getattr(harness, "run_log_max_bytes", runlog.RUN_LOG_MAX_BYTES),
+        keep_days=getattr(harness, "run_log_keep_days", None),
+        log=getattr(harness, "log", print))
+
+
+def _write_run_log(path, data: bytes, *, max_bytes, keep_days, log) -> None:
+    # Nobody waits on this future, so a failure raised here would vanish: say it instead.
+    try:
+        runlog.append(path, data, max_bytes=max_bytes, keep_days=keep_days, log=log)
+    except OSError as exc:
+        log(f"⚠️  could not write {path.name} ({exc}); lost entry: "
+            f"{data.decode('utf-8', 'replace').strip()[:300]}")
+
+
+def flush_run_log() -> None:
+    """Block until every entry queued so far is written."""
+    _run_log_writer.submit(lambda: None).result()
 
 
 async def _run_tick_tasks(harness: "Harness", state: dict, listener, now: float, *,

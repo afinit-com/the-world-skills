@@ -5,6 +5,7 @@
     python bin/ops-log.py --file logs/console.out --check     # exit 0 if a writer is alive
     python bin/ops-log.py --file logs/watchdog.log --roll-only [--keep-days N]
     python bin/ops-log.py --file logs/console.out --detach -- <harness command...>
+    ... --err-file logs/ops-log.err   # its own warnings go there instead of stderr
 
 scripts/<name>-up pipes the harness's stdout and stderr through this. Each line is
 written as it arrives, prefixed with an ISO time and UTC offset unless it already starts
@@ -23,9 +24,16 @@ of rolling the same file, and `--check` tells the launcher whether one is alive 
 trusting a pid file.
 
 It never stops reading. A line it cannot write (disk full, the file made read-only) is
-dropped, counted in `.<name>.dropping` beside the log and reported on stderr; once writes
+dropped, counted in `.<name>.dropping` beside the log and reported once; once writes
 work again, the log gets one line saying how many were lost. Stopping would close the
 pipe, and the harness would die of EPIPE at whatever line it printed next.
+
+Its own warnings (a line it had to drop, a roll that failed) go to stderr, or with
+`--err-file` to that file, opened for each warning and closed again under the same lock
+and rolling as the log itself (at ERR_MAX_BYTES). A launcher that redirected stderr to a
+file instead held it open for the writer's whole life, and an open file can neither be
+rolled from outside nor, on Windows, renamed. An unexpected traceback still goes to
+stderr.
 
 `--roll-only` rolls a file whose writers take turns under the ops lock (the watchdog's
 own log) and exits.
@@ -34,7 +42,8 @@ own log) and exits.
 shell pipe between two background processes is not to be had from PowerShell 5.1. It
 starts a writer in the background (no window, its own process group, out of the
 caller's job when the job allows it, so it outlives the scheduled task that started it),
-prints the writer's pid and returns. That writer (`--run`) takes the writer lock, then
+prints the writer's pid and returns. Its stderr is `ops-log.crash` beside the log, for a
+traceback; its warnings go to `--err-file` when given. That writer (`--run`) takes the writer lock, then
 starts COMMAND with its stdout and stderr on a pipe it reads, so the harness is the
 writer's child and the same rules hold: the writer exits on EOF, and a harness whose
 writer died gets EPIPE at its next line.
@@ -58,6 +67,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 STAMPED = re.compile(rb"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}")
+# The warnings file rolls early: a few lines a day is normal, a megabyte is a loop.
+ERR_MAX_BYTES = 1024 * 1024
 
 
 def _runlog():
@@ -130,9 +141,10 @@ def detach(argv: list[str], err_file: Path) -> int:
 
 class Dropping:
     """Count the lines that could not be written, in `.<name>.dropping` (best effort:
-    on a full disk that file cannot be written either, so stderr says it too)."""
+    on a full disk that file cannot be written either, so `log` says it too)."""
 
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, log=None):
+        self.log = log or (lambda msg: print(f"ops-log: {msg}", file=sys.stderr, flush=True))
         self.name = path.name
         self.state = path.with_name(f".{path.name}.dropping")
         self.count = 0
@@ -141,8 +153,7 @@ class Dropping:
     def failed(self, exc: OSError) -> None:
         if not self.count:
             self.since = datetime.now().astimezone().isoformat(timespec="seconds")
-            print(f"ops-log: cannot write {self.name} ({exc}); dropping lines until it can",
-                  file=sys.stderr, flush=True)
+            self.log(f"cannot write {self.name} ({exc}); dropping lines until it can")
         self.count += 1
         try:
             self.state.write_text(f"{self.count} line(s) dropped since {self.since}: {exc}\n",
@@ -159,8 +170,7 @@ class Dropping:
 
     def cleared(self) -> None:
         if self.count:
-            print(f"ops-log: writing {self.name} again after dropping {self.count} line(s)",
-                  file=sys.stderr, flush=True)
+            self.log(f"writing {self.name} again after dropping {self.count} line(s)")
             self.count = 0
             self.state.unlink(missing_ok=True)
 
@@ -170,6 +180,8 @@ def main(argv: list[str] | None = None, stdin=None) -> int:
     ap.add_argument("--file", required=True, type=Path)
     ap.add_argument("--max-bytes", type=int, default=None)
     ap.add_argument("--keep-days", type=int, default=None)
+    ap.add_argument("--err-file", type=Path, default=None,
+                    help="write this writer's warnings to this file instead of stderr")
     ap.add_argument("--roll-only", action="store_true")
     ap.add_argument("--check", action="store_true",
                     help="print the live writer's pid and exit 0, or exit 1 if there is none")
@@ -188,8 +200,18 @@ def main(argv: list[str] | None = None, stdin=None) -> int:
     runlog = _runlog()
     max_bytes = args.max_bytes if args.max_bytes is not None else runlog.RUN_LOG_MAX_BYTES
 
-    def log(msg: str) -> None:
+    def to_stderr(msg: str) -> None:
         print(f"ops-log: {msg}", file=sys.stderr, flush=True)
+
+    def log(msg: str) -> None:
+        if args.err_file is None:
+            to_stderr(msg)
+            return
+        try:
+            runlog.append(args.err_file, stamp(f"ops-log: {msg}\n".encode()),
+                          max_bytes=ERR_MAX_BYTES, keep_days=args.keep_days, log=to_stderr)
+        except OSError as exc:
+            to_stderr(f"{msg} (and could not write {args.err_file.name}: {exc})")
 
     args.file.parent.mkdir(parents=True, exist_ok=True)
     if args.check:
@@ -206,7 +228,9 @@ def main(argv: list[str] | None = None, stdin=None) -> int:
             rest += ["--max-bytes", str(args.max_bytes)]
         if args.keep_days is not None:
             rest += ["--keep-days", str(args.keep_days)]
-        print(detach([*rest, "--", *command], args.file.parent / "ops-log.err"), flush=True)
+        if args.err_file is not None:
+            rest += ["--err-file", str(args.err_file.resolve())]
+        print(detach([*rest, "--", *command], args.file.parent / "ops-log.crash"), flush=True)
         return 0
     writer_lock = hold_writer_lock(args.file, wait_s=2, runlog=runlog)
     if writer_lock is None:
@@ -229,7 +253,7 @@ def _write(args, runlog, max_bytes: int, log, command: list[str], stdin) -> int:
                                  stderr=subprocess.STDOUT, close_fds=True)
         stdin = child.stdout
     stdin = stdin or sys.stdin.buffer
-    dropping = Dropping(args.file)
+    dropping = Dropping(args.file, log)
     for line in iter(stdin.readline, b""):
         data = stamp(line)
         try:
