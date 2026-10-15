@@ -59,7 +59,6 @@ from ..channels.base import posting_icon, task_card_lines
 from ..context import reset_current_asker, set_current_asker
 from ..env import redact
 from ..process import approval_scope
-from ..process import task as tasks
 from ..process.spawn import run_agent_oneshot
 from ..process.state import pending_approvals_snippet, record_result_usage
 from ..slack.approvals import MAX_PENDING_APPROVALS
