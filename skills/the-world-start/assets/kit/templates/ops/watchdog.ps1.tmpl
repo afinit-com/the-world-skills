@@ -9,7 +9,7 @@
 # The console log is not touched here; its writer rolls it (bin/ops-log.py).
 #
 # One outage is one incident: it opens the first round that finds the harness down (or
-# cannot tell) and closes the first round that finds it running again. With Slack on, an
+# cannot tell) and closes once its recovery notification is delivered. With Slack on, an
 # incident is one message, and every later line about it is a reply in that thread.
 #
 # Windows PowerShell 5.1 or later. Rendered by bin/ops-kit.py from the kit's
@@ -61,7 +61,7 @@ function Read-Number([string]$Path) {
 # new one when the old thread no longer takes replies; its complaints (stderr) are logged.
 function Send-Note([string]$Text) {
   Write-Log $Text
-  if (-not $Notify.Count) { return }
+  if (-not $Notify.Count) { return $true }
   $thread = @()
   if (Test-Path -LiteralPath $Incident) {
     $ts = [System.IO.File]::ReadAllText($Incident).Trim()
@@ -79,10 +79,11 @@ function Send-Note([string]$Text) {
   }
   if ($code -ne 0) {
     Write-Log "WARNING: Slack notification failed (see the line above); the event is only in this log"
-    return
+    return $false
   }
   $ts = ($printed -join '').Trim()
   if ($ts -and (Test-Path -LiteralPath $Incident)) { [System.IO.File]::WriteAllText($Incident, $ts, $Utf8) }
+  return $true
 }
 
 function Open-Incident {
@@ -97,8 +98,11 @@ function Send-State([string]$Key, [string]$Text) {
   $previous = ''
   if (Test-Path -LiteralPath $path) { $previous = [System.IO.File]::ReadAllText($path) }
   if ($previous -ne $Key) {
-    Send-Note $Text
-    [System.IO.File]::WriteAllText($path, $Key, $Utf8)
+    if (Send-Note $Text) {
+      [System.IO.File]::WriteAllText($path, $Key, $Utf8)
+    } else {
+      Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+    }
   } else {
     Write-Log "$Text (posted already)"
   }
@@ -108,14 +112,18 @@ function Send-State([string]$Key, [string]$Text) {
 # round shows up as one reply per restart, not as one reassuring message.
 function Send-Restart([string]$Key, [string]$Text) {
   Open-Incident
-  Send-Note $Text
-  [System.IO.File]::WriteAllText((Join-Path $State 'reported-failure'), $Key, $Utf8)
+  $path = Join-Path $State 'reported-failure'
+  if (Send-Note $Text) {
+    [System.IO.File]::WriteAllText($path, $Key, $Utf8)
+  } else {
+    Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+  }
 }
 
-function Set-Retry {
+function Set-Retry([string]$Counter = 'failures') {
   if ($script:RetryScheduled) { return }
   $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
-  $failuresFile = Join-Path $State 'failures'
+  $failuresFile = Join-Path $State $Counter
   $failures = (Read-Number $failuresFile) + 1
   $delay = $BackoffMinS
   $i = 1
@@ -158,8 +166,9 @@ function Invoke-Round {
   $reported = Join-Path $State 'reported-dropping'
   if (Test-Path -LiteralPath $dropping) {
     if (-not (Test-Path -LiteralPath $reported)) {
-      Send-Note "the console writer is dropping lines: $([System.IO.File]::ReadAllText($dropping).Trim())"
-      [System.IO.File]::WriteAllText($reported, '', $Utf8)
+      if (Send-Note "the console writer is dropping lines: $([System.IO.File]::ReadAllText($dropping).Trim())") {
+        [System.IO.File]::WriteAllText($reported, '', $Utf8)
+      }
     }
   } else {
     Remove-Item -LiteralPath $reported -Force -ErrorAction SilentlyContinue
@@ -191,8 +200,15 @@ function Invoke-Round {
     if ((Test-Path -LiteralPath $Incident) -or (Test-Path -LiteralPath $failuresFile)) {
       $again = "running again after $(Read-Number $failuresFile) restart(s)"
       if (Test-Path -LiteralPath $Incident) {
-        Send-Note "recovered: $again; this incident is closed"
-        Remove-Item -LiteralPath $Incident -Force -ErrorAction SilentlyContinue
+        # Keep failed recovery delivery pending, with a separate backoff count.
+        $recoveryFile = Join-Path $State 'recovery-failures'
+        if ((Test-Path -LiteralPath $recoveryFile) -and
+            [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() -lt (Read-Number $nextTryFile)) { return }
+        if (-not (Send-Note "recovered: $again; this incident is closed")) {
+          Set-Retry 'recovery-failures'
+          return
+        }
+        Remove-Item -LiteralPath $Incident, $recoveryFile -Force -ErrorAction SilentlyContinue
       } else {
         Write-Log $again
       }
@@ -200,6 +216,9 @@ function Invoke-Round {
     }
     return
   }
+
+  # A new failure resumes the same incident, rather than a pending recovery.
+  Remove-Item -LiteralPath (Join-Path $State 'recovery-failures') -Force -ErrorAction SilentlyContinue
 
   # Stopped on purpose. Read under the lock, so a `down` either finished before this
   # round (marker present) or starts after it.

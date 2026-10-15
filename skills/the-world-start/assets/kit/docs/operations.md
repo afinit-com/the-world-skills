@@ -76,7 +76,12 @@ Each of these was a bug in a hand-built launcher first.
   "recovered" and closes the incident (`logs/.watchdog/incident` holds the thread while
   it is open). The next outage starts a new message. A restart that worked is posted
   every time, so a crash loop shows up as a run of replies; a failure that repeats
-  unchanged is posted once and logged every round. If the thread no longer takes
+  unchanged is posted once and logged every round. Only successful delivery marks a
+  failure as posted; failed delivery is retried on the next backoff attempt. A failed
+  recovery notification keeps the incident open: `logs/.watchdog/recovery-failures`
+  records pending recovery retries, using the same exponential backoff without
+  increasing the restart count or restarting a healthy harness. Successful recovery
+  delivery clears the incident and retry state. If the thread no longer takes
   replies (its message was deleted), the line is posted as a new message, which becomes
   the thread. `--notify` is refused unless `env/harness.env` already holds the bot
   token and the channel.
