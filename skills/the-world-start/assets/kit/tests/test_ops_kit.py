@@ -134,6 +134,7 @@ class RenderTest(unittest.TestCase):
                             r'python.exe C:\other\harness.py', "uv run python harness.py"):
                 self.assertIsNone(re.search(pattern, command), command)
 
+    @unittest.skipIf(WINDOWS, "the POSIX pgrep pattern; Windows matches Win32_Process command lines")
     def test_process_match_takes_only_an_interpreter_as_the_first_word(self):
         import re
         python = self.home / ".venv" / "bin" / "python"

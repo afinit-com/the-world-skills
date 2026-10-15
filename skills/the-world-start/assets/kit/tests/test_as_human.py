@@ -16,6 +16,8 @@ from world.slack.listener import SlackListener
 
 KIT = Path(__file__).resolve().parents[1]
 SECRET = 'verification-secret-unique'
+# Windows chmod only toggles read-only, so file modes are checked on POSIX alone.
+POSIX_MODES = os.name != 'nt'
 
 
 class AsHumanTests(unittest.IsolatedAsyncioTestCase):
@@ -331,7 +333,8 @@ class SayAsHumanTests(unittest.IsolatedAsyncioTestCase):
                 first = path.read_text()
                 module.init_secret('SLACK_AS_HUMAN_SECRET')
             self.assertEqual(first, path.read_text())
-            self.assertEqual(0o640, path.stat().st_mode & 0o777)
+            if POSIX_MODES:
+                self.assertEqual(0o640, path.stat().st_mode & 0o777)
             self.assertIn('KEEP=yes', first)
             secret = module.parse_env_file(path)['SLACK_AS_HUMAN_SECRET']
             self.assertTrue(secret)
@@ -350,7 +353,8 @@ class SayAsHumanTests(unittest.IsolatedAsyncioTestCase):
                 first = path.read_bytes().decode()
                 module.init_secret(key)
             self.assertEqual(first, path.read_bytes().decode())
-            self.assertEqual(mode, path.stat().st_mode & 0o777)
+            if POSIX_MODES:
+                self.assertEqual(mode, path.stat().st_mode & 0o777)
             secret = module.parse_env_file(path)[key]
             self.assertTrue(secret)
             self.assertNotIn(secret, output.getvalue())
@@ -395,7 +399,8 @@ class SayAsHumanTests(unittest.IsolatedAsyncioTestCase):
             with patch.object(module, 'env_path', return_value=path), \
                     patch.dict(os.environ, {}, clear=True), contextlib.redirect_stdout(io.StringIO()):
                 module.init_secret('OBS_SLACK_AS_HUMAN_SECRET')
-                self.assertEqual(0o600, path.stat().st_mode & 0o777)
+                if POSIX_MODES:
+                    self.assertEqual(0o600, path.stat().st_mode & 0o777)
                 path.write_text('OBS_SLACK_AS_HUMAN_SECRET="keep-me" # retained\n')
                 before = path.read_bytes()
                 module.init_secret('OBS_SLACK_AS_HUMAN_SECRET')
