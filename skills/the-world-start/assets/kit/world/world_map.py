@@ -9,13 +9,13 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .types import MentionTrigger, PollTrigger, ScheduleTrigger
+from .types import MentionTrigger, PollTrigger, ScheduleTrigger, is_http_url
 
 
 def _portrait(home: Path, filename: str, key: str = "") -> str:
     if not filename:
         return ""
-    if filename.startswith(("https://", "http://")):
+    if is_http_url(filename):
         # A URL is a chat icon put in the map's field (harnesses older than icon_url
         # did this). The map embeds local files only, so it draws the name card.
         print(f"[world-map] {key}: portrait is a URL, so the map shows a name card. "

@@ -380,11 +380,13 @@ class AnnounceCardBodyTests(unittest.IsolatedAsyncioTestCase):
     the card showed that evidence INSTEAD of what the agent wrote — a scheduled report
     arrived as "<agent> 실행 완료 · work/ 산출물 <file>" with the report itself hidden."""
 
-    async def _card(self, result_text: str, evidence: str = EVIDENCE) -> str:
+    async def _card(self, result_text: str, evidence: str = EVIDENCE, *,
+                    title: str = "📋 아침 보고", origin=None) -> str:
         from world.process import task as tasks
 
         home = Path(tempfile.mkdtemp())
-        record = tasks.create(home, type="agent-run", title="📋 아침 보고", agent="watch")
+        record = tasks.create(home, type="agent-run", title=title, agent="watch",
+                              origin=origin)
         tasks.append_event(home, record.id, "verify", verdict="done",
                            evidence=[evidence])
         posted: list[str] = []
@@ -425,6 +427,38 @@ class AnnounceCardBodyTests(unittest.IsolatedAsyncioTestCase):
         head, status, *rest = body.splitlines()
         self.assertTrue(status.endswith("…"), status)
         self.assertEqual(["> " + "가" * 300], rest)
+
+    async def test_the_result_is_slack_mrkdwn_not_github_markdown(self) -> None:
+        body = await self._card("## 요약\n**완료** 4건\n`**그대로**`")
+        self.assertEqual(["> *요약*", "> *완료* 4건", "> `**그대로**`"], body.splitlines()[2:])
+
+    async def test_broadcast_mentions_in_the_card_do_not_notify_the_channel(self) -> None:
+        # A poll run that summarised outside text (a PR body) could carry these through,
+        # and Slack notifies the whole channel for them even inside a bot's quote.
+        body = await self._card("PR 본문: <!channel> 확인 <!here|here> <!everyone>",
+                                evidence="실행 완료 <!here>", title="배포 <!channel>")
+        self.assertNotIn("<!", body)
+        self.assertIn("&lt;!channel>", body.splitlines()[0])
+        self.assertIn("&lt;!here|here>", body)
+
+    async def test_an_operator_replay_card_with_long_evidence_stays_inside_one_section(self) -> None:
+        from world.process import task as tasks
+
+        body = await self._card("", evidence=("x" * 99 + "\n") * 40, title="t" * 120,
+                                origin=tasks.Origin(kind="operator", by="U01", replay=True))
+        self.assertTrue(body.startswith("♻️ *운영자 재처리 요청*\n"), body[:40])
+        self.assertLessEqual(len(body), 3000)
+
+    async def test_a_result_cut_to_fit_says_so(self) -> None:
+        # A briefing cut mid-number ("실패 5" of "실패 57") read as the whole of it.
+        body = await self._card("가" * 400)
+        last = body.splitlines()[-1]
+        self.assertEqual("> " + "가" * 299 + "…", last)
+
+    async def test_a_code_block_cut_in_the_middle_is_closed(self) -> None:
+        body = await self._card("```python\n" + "x=1\n" * 200 + "```")
+        self.assertEqual(0, body.count("```") % 2, body[-40:])
+        self.assertEqual("> ```", body.splitlines()[-1])
 
     async def test_long_evidence_alone_stays_inside_one_slack_section(self) -> None:
         body = await self._card("", evidence=("x" * 99 + "\n") * 40)
@@ -558,6 +592,18 @@ class PersonaChatIconTests(unittest.TestCase):
                          Persona("a", "A", portrait="https://x.test/p.png", icon_url=None).chat_icon)
         self.assertEqual("", Persona("a", "A", icon_url=None).icon_url)
 
+    def test_a_url_with_surrounding_space_or_a_capital_scheme_is_still_a_url(self) -> None:
+        # Pasted from a settings file or a browser bar: " HTTPS://…\n" is the same URL.
+        from world.types import Persona
+
+        self.assertEqual("HTTPS://x.test/i.png",
+                         Persona("a", "A", icon_url=" HTTPS://x.test/i.png\n").chat_icon)
+        self.assertEqual("Https://x.test/p.png",
+                         Persona("a", "A", portrait=" Https://x.test/p.png").chat_icon)
+        persona = Persona("a", "A")
+        persona.icon_url = "https://x.test/late.png \n"
+        self.assertEqual("https://x.test/late.png", persona.chat_icon)
+
     def test_an_icon_url_that_is_not_a_url_is_refused_whatever_the_portrait(self) -> None:
         from world.types import Persona
 
@@ -578,7 +624,8 @@ class PersonaFaceTests(unittest.TestCase):
 
         poster = PostingMixin()
         main = Persona(key="guide", display="Guide", portrait="https://x.test/guide.png")
-        poster.harness = SimpleNamespace(main_persona=main, personas={
+        self.logged: list[str] = []
+        poster.harness = SimpleNamespace(main_persona=main, log=self.logged.append, personas={
             "guide": main,
             "lumen": Persona(key="lumen", display="Lumen", portrait="https://x.test/lumen.png"),
             "ember": Persona(key="ember", display="Ember", portrait="art/ember.png"),
@@ -596,6 +643,16 @@ class PersonaFaceTests(unittest.TestCase):
         lumen = poster.harness.personas["lumen"]
         lumen.icon_url = "https://x.test/lumen-icon.png"
         self.assertEqual("https://x.test/lumen-icon.png", poster._face("lumen")["icon_url"])
+
+    def test_an_icon_url_broken_after_start_costs_the_icon_not_the_message(self) -> None:
+        # A harness that sets icon_url from a settings file after building the persona
+        # skips the constructor's check; every post by that persona used to fail instead.
+        poster = self._poster()
+        poster.harness.personas["lumen"].icon_url = "icons/lumen.png"
+        self.assertEqual({"username": "Lumen"}, poster._face("lumen"))
+        self.assertEqual({"username": "Lumen"}, poster._face("lumen"))
+        [line] = self.logged  # once, not on every post
+        self.assertIn("persona 'lumen': icon_url must be a public http", line)
 
     def test_a_persona_without_its_own_app_posts_under_its_name_and_icon(self) -> None:
         poster = self._poster()

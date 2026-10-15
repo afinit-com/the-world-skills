@@ -96,6 +96,16 @@ class WorldMapTests(unittest.TestCase):
         self.assertIn("scout", err.getvalue())
         self.assertIn("icon_url", err.getvalue())
 
+    def test_a_url_portrait_in_capitals_or_with_spaces_is_still_a_url(self):
+        # Read as a file path, these went looking for home/"HTTPS:/…" and raised.
+        for portrait in ("HTTPS://x.test/scout.png", " https://x.test/scout.png\n"):
+            with self.subTest(portrait=portrait):
+                self.scout.portrait = portrait
+                with patch("sys.stderr", new_callable=io.StringIO) as err:
+                    data = world_map_data(self.harness)
+                self.assertEqual("", data["characters"][1]["portrait"])
+                self.assertIn("icon_url", err.getvalue())
+
     def test_local_portrait_and_icon_url_together_export(self):
         (self.home / "portraits").mkdir()
         (self.home / "portraits" / "scout.png").write_bytes(b"example image bytes")

@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING
 
 from slack_sdk.web.async_client import AsyncWebClient
 
+from ..channels.base import posting_icon
+
 if TYPE_CHECKING:
     from ..harness import Harness
 
@@ -44,13 +46,14 @@ class PostingMixin:
         persona = self.harness.personas.get(identity or "")
         if persona is None or persona.token:
             return {}
+        icon = posting_icon(persona, self.harness.log)
         if persona.key == self.harness.main_persona.key:
             # The main persona IS the app: its name stays the app's (that is what people
             # @-mention), only its picture follows Persona.chat_icon.
-            return {"icon_url": persona.chat_icon} if persona.chat_icon else {}
+            return {"icon_url": icon} if icon else {}
         face = {"username": persona.display}
-        if persona.chat_icon:
-            face["icon_url"] = persona.chat_icon
+        if icon:
+            face["icon_url"] = icon
         return face
 
     async def post(

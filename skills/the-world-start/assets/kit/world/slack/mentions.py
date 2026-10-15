@@ -129,6 +129,14 @@ def _agent_of(rel_path: str) -> str:
     return parts[1] if len(parts) > 2 and parts[0] == "findings" else ""
 
 
+def _defuse_broadcasts(text: str) -> str:
+    """Show `<!channel>`, `<!here>`, `<!everyone>` (and any other `<!…>` command) as
+    text instead of notifying the channel. A task card carries a run's result and a
+    title nobody reviewed before it posted; a poll that summarised outside text (a PR
+    body) could otherwise page everyone. Discord has its allowed_mentions for this."""
+    return text.replace("<!", "&lt;!")
+
+
 class MentionTurn(NamedTuple):
     """One mention turn, after its APPROVAL_REQUEST marker has been split off."""
 
@@ -310,7 +318,9 @@ class MentionMixin:
             # human pushed a past notice back through the pipeline on purpose.
             head = f"♻️ *운영자 재처리 요청*\n{head}"
 
-        body = "\n".join([head, *task_card_lines(self.harness.home, record, result)])
+        body = _defuse_broadcasts("\n".join(
+            [head, *task_card_lines(self.harness.home, record, result, render=slack_mrkdwn)]
+        ))
 
         primary = result.artifacts[0] if (result and result.artifacts) else ""
         blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": body}}]

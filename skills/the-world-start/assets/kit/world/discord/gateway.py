@@ -55,7 +55,7 @@ import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, AsyncContextManager, Awaitable, Callable, Protocol
 
-from ..channels.base import task_card_lines
+from ..channels.base import posting_icon, task_card_lines
 from ..context import reset_current_asker, set_current_asker
 from ..env import redact
 from ..process import approval_scope
@@ -297,7 +297,7 @@ class DiscordGateway:
         persona = self.harness.personas.get(identity)
         if persona is None or persona.key == self.harness.main_persona.key:
             return None
-        return persona.display, persona.chat_icon
+        return persona.display, posting_icon(persona, self.harness.log)
 
     async def notify_thread(self, thread_ts: str, text: str, *, channel: str | None = None) -> None:
         await self.post(text, thread_ts=thread_ts)

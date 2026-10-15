@@ -114,14 +114,26 @@ def _claim_task_dir(home: Path, now: datetime.datetime | None = None) -> str:
     tasks of one day share an id often enough to matter (about 7% of days with 100
     tasks), and creating the directory with exist_ok wrote the second task over the
     first: one of them was gone without a word. mkdir without exist_ok is atomic, so
-    another process filing a task at the same moment cannot take the same one either."""
+    another process filing a task at the same moment cannot take the same one either.
+
+    On Windows a directory removed a moment ago (a create that failed and cleaned up)
+    stays "delete pending" for a while, and mkdir on it is a PermissionError, so that
+    is taken too. Only once in a row, though: a second id refused the same way says
+    the tasks directory itself is not writable, and that is the error to raise."""
     root = tasks_dir(home)
     root.mkdir(parents=True, exist_ok=True)
+    denied = False
     for _ in range(1000):
         task_id = new_task_id(now)
         try:
             (root / task_id).mkdir()
         except FileExistsError:
+            denied = False
+            continue
+        except PermissionError:
+            if denied:
+                raise
+            denied = True
             continue
         return task_id
     raise TaskError(f"no free task id left for {task_id[:8]} after 1000 tries")
@@ -326,6 +338,14 @@ def _split(text: str) -> tuple[dict, str]:
     return meta, body.lstrip("\n")
 
 
+def _header_value(value: str) -> str:
+    """A header value on one line. The header is one key per line and _split keeps a
+    repeated key's last value, so a value with a line break in it wrote keys of its own:
+    a title of "Daily\nid: …" came back with another task's id. Every boundary
+    str.splitlines() honours, since that is what _split reads the header with."""
+    return " ".join(value.splitlines())
+
+
 def _render(task: Task) -> str:
     flat = {
         "id": task.id, "type": task.type, "title": task.title, "status": task.status,
@@ -343,7 +363,7 @@ def _render(task: Task) -> str:
         "lease_until": task.lease_until, "thread": task.thread, "slug": task.slug,
         "created": task.created, "updated": task.updated,
     }
-    lines = [f"{key}: {flat[key]}" for key in _ORDER]
+    lines = [f"{key}: {_header_value(flat[key])}" for key in _ORDER]
     return "---\n" + "\n".join(lines) + "\n---\n\n" + task.body.strip() + "\n"
 
 
@@ -493,7 +513,8 @@ def _fill_task_dir(home: Path, task_id: str, *, type: str, title: str, slug: str
     task = Task(
         id=task_id,
         type=type,
-        title=title,
+        # As task.md will hold it, so the record handed back reads the same as one re-read.
+        title=_header_value(title),
         slug=slug,
         origin=origin,
         # An explicit retry_budget wins over the type's default: passing both used to
