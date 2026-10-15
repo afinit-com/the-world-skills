@@ -119,6 +119,32 @@ class RenderTest(unittest.TestCase):
                             r'python.exe C:\other\harness.py', "uv run python harness.py"):
                 self.assertIsNone(re.search(pattern, command), command)
 
+    def test_process_match_takes_only_an_interpreter_as_the_first_word(self):
+        import re
+        python = self.home / ".venv" / "bin" / "python"
+        harness = str(self.home.resolve() / "harness.py")
+        pattern = ops_kit.process_match(self.home, python)
+        relative = ops_kit.relative_process_match(python=python)
+        for command in (f"/usr/bin/python3 {harness}", f"python {harness} --once",
+                        # the venv in a home with a space in its path
+                        f"{python.parent.resolve()}/python {harness}"):
+            self.assertRegex(command, pattern)
+        for command in (f'/bin/sh -c sleep 20; echo {python} {harness}',
+                        f"zsh -c nohup /usr/bin/python3 {harness}",
+                        f"/opt/my tools/python {harness}"):
+            self.assertIsNone(re.search(pattern, command), command)
+        self.assertRegex(f"{python.parent.resolve()}/python harness.py", relative)
+        self.assertIsNone(re.search(relative, "zsh -c nohup .venv/bin/python harness.py"))
+
+    @unittest.skipUnless(Path("/var").resolve() == Path("/private/var"), "macOS /var link")
+    def test_process_match_sees_the_home_by_its_unresolved_path_too(self):
+        import re
+        with tempfile.TemporaryDirectory(dir="/var/tmp") as tmp:
+            home = Path(tmp)
+            pattern = ops_kit.process_match(home)
+            for spelling in (str(home), str(home.resolve())):
+                self.assertRegex(f"/usr/bin/python3 {spelling}/harness.py", pattern)
+
     def test_systemd_quote_escapes_what_systemd_unescapes(self):
         self.assertEqual(ops_kit.systemd_quote('a\\b "c" 100%'), '"a\\\\b \\"c\\" 100%%"')
 
@@ -620,6 +646,21 @@ class LauncherAndWatchdogTest(unittest.TestCase):
                 self.assertEqual(result.returncode, 4, result.stdout + result.stderr)
                 self.assertEqual(self.pids(), [])
 
+    def test_a_shell_whose_command_names_the_harness_is_not_the_harness(self):
+        python = self.home / ".venv" / "bin" / "python"
+        shell = subprocess.Popen(["/bin/sh", "-c", f"sleep 20; echo {python} {self.home}/harness.py"])
+        try:
+            time.sleep(0.3)
+            self.assertEqual(self.run_up("running").returncode, 1)
+            started = self.run_up("up")
+            self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
+            self.assertNotIn("already running", started.stdout)
+            self.assertEqual(self.run_up("down").returncode, 0)
+            self.assertIsNone(shell.poll(), "down stopped the shell")
+        finally:
+            shell.kill()
+            shell.wait()
+
     def test_why_the_watchdog_could_not_tell_is_in_its_log(self):
         shim = self.home / "shim"
         shim.mkdir()
@@ -1014,7 +1055,7 @@ class InstalledHomeLauncherTest(unittest.TestCase):
                     self.assertIsNone(seen["file_key"])
                 finally:
                     subprocess.run([str(up), "down"], capture_output=True, env=env, timeout=120)
-                    subprocess.run(["pkill", "-9", "-f", ops_kit.process_match(home)],
+                    subprocess.run(["pkill", "-9", "-f", ops_kit.process_match(home, python)],
                                    capture_output=True)
 
 

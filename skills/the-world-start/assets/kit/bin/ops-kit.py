@@ -69,13 +69,42 @@ def ere_escape(text: str) -> str:
     return re.sub(r"([.\[\]()*+?{}|^$\\])", r"\\\1", text)
 
 
-def process_match(home: Path) -> str:
+def path_spellings(path: Path) -> list[str]:
+    """The ways a process list may show this absolute path: as given, resolved, and on
+    macOS without the /private that /var and /tmp resolve into, so a harness started by
+    `/var/folders/…/harness.py` is not missed because the scripts say `/private/var/…`."""
+    resolved = path.resolve()
+    spellings = [str(resolved)]
+    if str(resolved).startswith("/private/"):
+        alias = Path(str(resolved)[len("/private"):])
+        if alias.resolve() == resolved:
+            spellings.append(str(alias))
+    if path.is_absolute() and str(path) not in spellings:
+        spellings.append(str(path))
+    return spellings
+
+
+def _ere_any(texts: list[str]) -> str:
+    return "(" + "|".join(ere_escape(t) for t in texts) + ")"
+
+
+def _interpreter(python: Path | None) -> str:
+    """The first word of the command line: an interpreter's path, which has no space in
+    it unless it is this harness's own venv (a home with a space in its path). Anything
+    longer would let a shell's `sh -c '… python <home>/harness.py'` count as the harness."""
+    own = f"{_ere_any([d + '/' for d in path_spellings(python.parent)])}|" if python else ""
+    return f"^({own}[^ ]*/)?[Pp]ython[0-9.]*"
+
+
+def process_match(home: Path, python: Path | None = None) -> str:
     """pgrep -f pattern for this harness's process: a python interpreter whose first
     argument is exactly this harness.py. Not anchored on the venv's python: a macOS
     framework build re-executes `.venv/bin/python` as `…/Python.app/Contents/MacOS/Python`,
     so that path never appears in the process list. An editor or a pager open on the file
-    does not match, and neither does another harness's harness.py."""
-    return f"^(.*/)?[Pp]ython[0-9.]* {ere_escape(str(home / 'harness.py'))}( |$)"
+    does not match, nor does a shell whose command carries it, nor another harness's
+    harness.py."""
+    harness = _ere_any([s + "/harness.py" for s in path_spellings(home)])
+    return f"{_interpreter(python)} {harness}( |$)"
 
 
 def dotnet_regex_escape(text: str) -> str:
@@ -99,7 +128,7 @@ def windows_process_match(home: Path) -> str:
             rf'\s+"?{harness}"?(?:\s|$)')
 
 
-def relative_process_match(*, windows: bool = False) -> str:
+def relative_process_match(*, windows: bool = False, python: Path | None = None) -> str:
     """A README-style launch whose home cannot be established from its command line.
     Refuse to start while one exists, rather than adopt or stop another home's process.
     `uv run python harness.py` has a Python child with exactly this command line too.
@@ -108,7 +137,7 @@ def relative_process_match(*, windows: bool = False) -> str:
         exe = r'pythonw?[0-9.]*(?:\.exe)?'
         return (rf'^(?:"(?:[^"]*\\)?{exe}"|(?:[^"\s]*\\)?{exe})'
                 r'\s+"?(?:\.[\\/])?harness\.py"?(?:\s|$)')
-    return r'^(.*/)?[Pp]ython[0-9.]* (\./)?harness\.py( |$)'
+    return _interpreter(python) + r' (\./)?harness\.py( |$)'
 
 
 def ps_quote(text: str) -> str:
@@ -170,7 +199,7 @@ def render(home: Path, name: str, os_name: str, python: Path, run_path: str, *,
     session's user and the current time."""
     check_os(os_name)
     name = slug(name)
-    home = home.resolve()
+    given, home = home, home.resolve()
     if os_name == "windows":
         return _render_windows(home, name, python, run_path, notify=notify,
                                keep_days=keep_days, templates=templates, user=user, now=now)
@@ -185,8 +214,8 @@ def render(home: Path, name: str, os_name: str, python: Path, run_path: str, *,
         "PYTHON": q(str(python)),
         "UP": q(str(up)),
         "WATCHDOG": q(str(watchdog)),
-        "MATCH": q(process_match(home)),
-        "RELATIVE_MATCH": q(relative_process_match()),
+        "MATCH": q(process_match(given, python)),
+        "RELATIVE_MATCH": q(relative_process_match(python=python)),
         "RUN_PATH": q(run_path),
         "CAFFEINATE": "1" if os_name == "macos" else "0",
         "INTERVAL_S": str(INTERVAL_S),
