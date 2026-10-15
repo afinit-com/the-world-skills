@@ -31,6 +31,39 @@ class RecordTests(unittest.TestCase):
         self.assertNotEqual(first.id, second.id)
         self.assertEqual({"first", "second"}, {t.slug for t in tasks.list_tasks(home)})
 
+    def test_a_directory_still_being_deleted_is_skipped_like_a_taken_one(self) -> None:
+        """On Windows a directory removed a moment ago stays "delete pending", and making
+        it again is ERROR_ACCESS_DENIED, a PermissionError, not FileExistsError."""
+        home = _home()
+        draws = iter(["abcd", "beef"])
+        real_mkdir = Path.mkdir
+
+        def mkdir(path, *args, **kwargs):
+            if path.name.endswith("-abcd"):
+                raise PermissionError(13, "Access is denied", str(path))
+            return real_mkdir(path, *args, **kwargs)
+
+        with patch.object(tasks.secrets, "token_hex", side_effect=lambda _n: next(draws)), \
+                patch.object(Path, "mkdir", mkdir):
+            made = _make(home)
+        self.assertTrue(made.id.endswith("-beef"), made.id)
+
+    def test_a_tasks_directory_that_refuses_every_id_is_an_error_not_a_loop(self) -> None:
+        home = _home()
+        tries = []
+        real_mkdir = Path.mkdir
+
+        def mkdir(path, *args, **kwargs):
+            if path.parent.name == "tasks":
+                tries.append(path.name)
+                raise PermissionError(13, "Permission denied", str(path))
+            return real_mkdir(path, *args, **kwargs)
+
+        with patch.object(Path, "mkdir", mkdir):
+            with self.assertRaises(PermissionError):
+                _make(home)
+        self.assertEqual(2, len(tries))
+
     def test_a_task_that_cannot_be_written_in_full_leaves_no_directory_behind(self) -> None:
         home = _home()
         with patch.object(tasks, "append_event", side_effect=OSError("disk full")):

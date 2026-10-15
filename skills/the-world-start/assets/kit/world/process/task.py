@@ -114,14 +114,26 @@ def _claim_task_dir(home: Path, now: datetime.datetime | None = None) -> str:
     tasks of one day share an id often enough to matter (about 7% of days with 100
     tasks), and creating the directory with exist_ok wrote the second task over the
     first: one of them was gone without a word. mkdir without exist_ok is atomic, so
-    another process filing a task at the same moment cannot take the same one either."""
+    another process filing a task at the same moment cannot take the same one either.
+
+    On Windows a directory removed a moment ago (a create that failed and cleaned up)
+    stays "delete pending" for a while, and mkdir on it is a PermissionError, so that
+    is taken too. Only once in a row, though: a second id refused the same way says
+    the tasks directory itself is not writable, and that is the error to raise."""
     root = tasks_dir(home)
     root.mkdir(parents=True, exist_ok=True)
+    denied = False
     for _ in range(1000):
         task_id = new_task_id(now)
         try:
             (root / task_id).mkdir()
         except FileExistsError:
+            denied = False
+            continue
+        except PermissionError:
+            if denied:
+                raise
+            denied = True
             continue
         return task_id
     raise TaskError(f"no free task id left for {task_id[:8]} after 1000 tries")
