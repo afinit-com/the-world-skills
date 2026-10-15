@@ -141,6 +141,7 @@ class RunLogRollTest(unittest.TestCase):
         foreign = self.logs / "harness.notes.jsonl.gz"
         for p in (old, recent, foreign):
             p.write_bytes(b"")
+        self._write("yesterday\n", _at(-1))
         runlog.maybe_roll(self.path, keep_days=30, now=_at(0), log=self.messages.append)
         self.assertFalse(old.exists())
         self.assertTrue(recent.exists())
@@ -221,6 +222,93 @@ class RunLogRollTest(unittest.TestCase):
         self.assertEqual(len(lines), 1)
         self.assertEqual(json.loads(lines[0])["agent"], "x")
         self.assertEqual(len(list(h.logs_dir.glob("harness.*.jsonl.gz"))), 1)
+
+
+class RollCostTest(unittest.TestCase):
+    """Issue #8: every append used to glob the directory (recover, prune) and retry a
+    failing roll, with a warning, on every line."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.logs = Path(self.tmp.name)
+        self.path = self.logs / "console.out"
+        self.messages: list[str] = []
+
+    def test_an_append_that_rolls_nothing_scans_nothing(self):
+        runlog.append(self.path, b"first\n", keep_days=30, log=self.messages.append)
+        with mock.patch.object(runlog, "recover", wraps=runlog.recover) as recover, \
+                mock.patch.object(runlog, "prune", wraps=runlog.prune) as prune:
+            for n in range(5):
+                runlog.append(self.path, f"{n}\n".encode(), keep_days=30,
+                              log=self.messages.append)
+        self.assertEqual(recover.call_count, 0)
+        self.assertEqual(prune.call_count, 0)
+
+    def test_the_first_append_in_a_process_finishes_an_interrupted_roll(self):
+        day = datetime.fromtimestamp(_at(-1)).date().isoformat()
+        plain = self.logs / f"console.{day}.out"
+        plain.write_text("kept\n", encoding="utf-8")
+        runlog.append(self.path, b"next\n", log=self.messages.append)
+        self.assertFalse(plain.exists())
+        with gzip.open(self.logs / f"console.{day}.out.gz", "rt", encoding="utf-8") as f:
+            self.assertEqual(f.read(), "kept\n")
+
+    def test_a_failing_roll_backs_off_and_warns_once(self):
+        """Windows: someone follows the console log, so every rename fails. One warning
+        and one attempt per ROLL_RETRY_S, not one of each per line."""
+        clock = [time.time()]
+        real_replace = os.replace
+        attempts = []
+
+        def refuse(src, dst):
+            if Path(src) == self.path:
+                attempts.append(clock[0])
+                raise PermissionError("in use by another process")
+            return real_replace(src, dst)
+
+        with mock.patch.object(runlog.time, "time", side_effect=lambda: clock[0]), \
+                mock.patch.object(runlog.os, "replace", side_effect=refuse):
+            for n in range(5):
+                runlog.append(self.path, f"{n}\n".encode(), max_bytes=1, log=self.messages.append)
+            self.assertEqual(len(attempts), 1)
+            clock[0] += runlog.ROLL_RETRY_S + 1
+            for n in range(5, 8):
+                runlog.append(self.path, f"{n}\n".encode(), max_bytes=1, log=self.messages.append)
+            self.assertEqual(len(attempts), 2)
+        warnings = [m for m in self.messages if "could not roll" in m]
+        self.assertEqual(len(warnings), 1, self.messages)
+        self.assertEqual(self.path.read_text(encoding="utf-8").split(),
+                         [str(n) for n in range(8)])
+
+        clock[0] += runlog.ROLL_RETRY_S + 1
+        with mock.patch.object(runlog.time, "time", side_effect=lambda: clock[0]):
+            runlog.append(self.path, b"8\n", max_bytes=1, log=self.messages.append)
+        self.assertEqual(self.path.read_bytes(), b"8\n")
+        self.assertEqual(len(list(self.logs.glob("console.*.out.gz"))), 1)
+
+    def test_a_warning_comes_back_after_the_roll_has_worked_once(self):
+        clock = [time.time()]
+        fail = [True]
+        real_replace = os.replace
+
+        def flaky(src, dst):
+            if fail[0] and Path(src) == self.path:
+                raise PermissionError("in use by another process")
+            return real_replace(src, dst)
+
+        with mock.patch.object(runlog.time, "time", side_effect=lambda: clock[0]), \
+                mock.patch.object(runlog.os, "replace", side_effect=flaky):
+            runlog.append(self.path, b"a\n", max_bytes=1, log=self.messages.append)
+            runlog.append(self.path, b"b\n", max_bytes=1, log=self.messages.append)
+            fail[0] = False
+            clock[0] += runlog.ROLL_RETRY_S + 1
+            runlog.append(self.path, b"c\n", max_bytes=1, log=self.messages.append)
+            fail[0] = True
+            clock[0] += 1
+            runlog.append(self.path, b"d\n", max_bytes=1, log=self.messages.append)
+        warnings = [m for m in self.messages if "could not roll" in m]
+        self.assertEqual(len(warnings), 2, self.messages)
 
 
 if __name__ == "__main__":
