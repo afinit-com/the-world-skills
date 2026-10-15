@@ -171,7 +171,7 @@ connected yet" stays there after it stops being true. Those go elsewhere:
 `WORLD.md`; fix every `[WARN] WORLD.md` line before you finish.
 
 The two creation words become real commands via
-`bin/scaffold-world-skill.py <word> agent|tool --universe ... --description ...`. Default
+`bin/scaffold-world-skill.py <word> agent|tool|verify --universe ... --description ...`. Default
 to `recruit` and `equip` when the user has no preference. Honor explicit naming choices.
 The tool word does not assume a tool: it splits the request into pieces, places each as a
 tool, code, prompt procedure, skill, knowledge, setting or world sentence, and builds only

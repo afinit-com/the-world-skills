@@ -444,6 +444,8 @@ class LegacyWrapperTests(unittest.TestCase):
         skill = " ".join((KIT.parents[1] / "SKILL.md").read_text(encoding="utf-8").split())
         self.assertNotIn("is never empty", skill)
         self.assertIn("re-run the scaffolder with the same flow", skill)
+        # Review of PR #6: the usage line said `agent|tool` while the flow takes `verify`.
+        self.assertIn("bin/scaffold-world-skill.py <word> agent|tool|verify", skill)
 
 
 if __name__ == "__main__":
