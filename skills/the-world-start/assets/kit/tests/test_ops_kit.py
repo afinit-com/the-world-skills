@@ -179,6 +179,14 @@ class RenderTest(unittest.TestCase):
         ps1 = _render(self.home, "windows", user="u")["scripts/my-harness-up.ps1"][0]
         self.assertIn("& $Py -I (Join-Path $HomeDir 'world\\env.py') --keys", ps1)
 
+    def test_windows_refuses_a_start_beside_a_relative_launch_as_a_start_failure(self):
+        # A throw would end up as exit 4, "could not tell", in up.ps1's last catch.
+        ps1 = _render(self.home, "windows", user="u")["scripts/my-harness-up.ps1"][0]
+        refusal = ps1[ps1.index("if ($relative.Count) {"):]
+        refusal = refusal[:refusal.index("\n  }")]
+        self.assertNotIn("throw", refusal)
+        self.assertIn("return $false", refusal)
+
     def test_windows_scripts_quote_hostile_values_for_powershell(self):
         files = _render(self.home, "windows", user="u", notify=("OBS_SLACK_BOT_TOKEN", "OBS_SLACK_CHANNEL"),
                         keep_days=30)
@@ -1196,18 +1204,20 @@ class WindowsLauncherTest(unittest.TestCase):
             self.assertEqual(self.run_up("healthy").returncode, 1)
             for number in (1, 2):
                 result = self.run_ps(self.watchdog)
-                self.assertEqual(result.returncode, 4, result.stdout + result.stderr)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertEqual((self.state / "failures").read_text().strip(), str(number))
                 next_try = (self.state / "next_try").read_text()
                 self.assertEqual(self.run_ps(self.watchdog).returncode, 0)
                 self.assertEqual((self.state / "next_try").read_text(), next_try)
                 (self.state / "next_try").write_text("0")
+            # A refused start, as on macOS and Linux: not "could not tell" (exit 4).
             log = (self.home / "logs" / "watchdog.log").read_text(encoding="utf-8")
-            self.assertEqual(log.count("stopped this round"), 2)
+            self.assertEqual(log.count("could not start it"), 2)
             self.assertEqual(log.count("(posted already)"), 1)
+            self.assertNotIn("stopped this round", log)
             for action in ("up", "resume"):
                 result = self.run_up(action)
-                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
                 self.assertIn("relative", result.stdout + result.stderr)
                 self.assertEqual(self.pids(), [])
             self.assertIsNone(child.poll())
