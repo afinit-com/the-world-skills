@@ -330,6 +330,66 @@ class RollCostTest(unittest.TestCase):
         self.assertCountEqual((plain + self.path.read_bytes()).splitlines(),
                               [b"first", b"second", b"third", b"fourth"])
 
+    def test_compression_backoff_does_not_hold_a_new_day_in_the_old_file(self):
+        """A size roll whose compression failed at 23:59:30 backed off every roll for
+        ROLL_RETRY_S, so the first write after midnight did not roll by date: the
+        23:59:50 line ended up in the next day's archive. a35a937 rolled it into
+        console.<yesterday>.out, as it still must be."""
+        before = _at(0, hour=0) - 30
+        yesterday = datetime.fromtimestamp(before).date().isoformat()
+        clock = [before]
+        real_compress = runlog._compress
+        failures = [OSError("disk full")]
+
+        def compress_once(plain):
+            if failures:
+                raise failures.pop()
+            return real_compress(plain)
+
+        with mock.patch.object(runlog.time, "time", side_effect=lambda: clock[0]), \
+                mock.patch.object(runlog, "_compress", side_effect=compress_once):
+            runlog.append(self.path, b"23:59:00\n", max_bytes=None, log=self.messages.append)
+            os.utime(self.path, (before, before))
+            runlog.append(self.path, b"23:59:30\n", max_bytes=1, log=self.messages.append)
+            clock[0] = before + 20
+            runlog.append(self.path, b"23:59:50\n", max_bytes=None, log=self.messages.append)
+            os.utime(self.path, (clock[0], clock[0]))
+            clock[0] = before + 30 + 120
+            runlog.append(self.path, b"00:02\n", max_bytes=None, log=self.messages.append)
+        self.assertEqual(self.path.read_bytes(), b"00:02\n")
+        with gzip.open(self.logs / f"console.{yesterday}.out.gz") as f:
+            self.assertEqual(f.read(), b"23:59:30\n23:59:50\n")
+        archived = []
+        for gz in self.logs.glob("console.*.gz"):
+            with gzip.open(gz) as f:
+                archived += f.read().splitlines()
+        archived += b"".join(p.read_bytes() for p in self.logs.glob("console.*.out")).splitlines()
+        self.assertCountEqual(archived, [b"23:59:00", b"23:59:30", b"23:59:50"])
+
+    def test_a_failed_rename_still_backs_off_a_date_roll(self):
+        """Windows: the rename itself fails while the log is followed. Crossing midnight
+        must not turn that into one failed rename per line (as before a35a937 too)."""
+        before = _at(0, hour=0) - 30
+        clock = [before]
+        self.path.write_bytes(b"old\n")
+        real_replace = os.replace
+
+        def refuse(src, dst):
+            if Path(src) == self.path:
+                raise PermissionError("in use by another process")
+            return real_replace(src, dst)
+
+        with mock.patch.object(runlog.time, "time", side_effect=lambda: clock[0]), \
+                mock.patch.object(runlog.os, "replace", side_effect=refuse) as rename:
+            runlog.append(self.path, b"23:59:30\n", max_bytes=1, log=self.messages.append)
+            calls = rename.call_count
+            os.utime(self.path, (before, before))
+            clock[0] = before + 120
+            runlog.append(self.path, b"00:01:30\n", max_bytes=None, log=self.messages.append)
+            runlog.append(self.path, b"00:01:31\n", max_bytes=None, log=self.messages.append)
+            self.assertEqual(rename.call_count, calls)
+        self.assertEqual(len(self.messages), 1, self.messages)
+
     def test_a_failing_roll_backs_off_and_warns_once(self):
         """Windows: someone follows the console log, so every rename fails. One warning
         and one attempt per ROLL_RETRY_S, not one of each per line."""

@@ -225,7 +225,11 @@ class _RollState:
     def __init__(self) -> None:
         self.recover_due = True  # first write in this process, or a roll left work behind
         self.scan_at = 0.0  # periodically find interrupted rolls from other processes
-        self.retry_at = 0.0  # no current-file roll before this, after one failed
+        self.retry_at = 0.0  # no current-file roll before this, after a rename failed
+        # No size roll before this, after a roll's compression failed. A date roll still
+        # goes ahead: its rename works, and holding it would file the old day's last lines
+        # under the new day.
+        self.size_retry_at = 0.0
         self.recovery_retry_at = 0.0  # an old archive must not block a fresh roll
         self.warned: set[str] = set()  # failure kinds, independent of dated filenames
 
@@ -298,13 +302,13 @@ def _maybe_roll(path: Path, *, max_bytes: int | None, keep_days: int | None,
             stamp = last_day.isoformat()
         elif max_bytes is not None and st.st_size >= max_bytes:
             stamp = datetime.fromtimestamp(now).strftime("%Y-%m-%d-%H%M%S")
-        if stamp and now >= state.retry_at:
+        if stamp and now >= state.retry_at and (last_day < today or now >= state.size_retry_at):
             try:
                 rolled = roll(path, stamp)
             except CompressError as exc:
                 # The current file is fresh already; only the compression is left over.
                 state.recover_due = True
-                state.failed(now)
+                state.size_retry_at = now + ROLL_RETRY_S
                 state.recovery_retry_at = now + ROLL_RETRY_S
                 state.warn(log, "compression", f"⚠️  rolled {path.name} but {exc}; "
                                               f"retrying after {ROLL_RETRY_S}s")
