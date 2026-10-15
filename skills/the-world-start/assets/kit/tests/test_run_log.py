@@ -10,10 +10,12 @@ import io
 import json
 import os
 import re
+import stat
 import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -69,11 +71,43 @@ class RunLogRollTest(unittest.TestCase):
         rolled = runlog.maybe_roll(self.path, now=_at(0), log=self.messages.append)
         day = datetime.fromtimestamp(yesterday).date().isoformat()
         self.assertEqual(rolled, self.logs / f"harness.{day}.jsonl.gz")
-        self.assertFalse(self.path.exists())
+        self.assertEqual(self.path.read_bytes(), b"")
         with gzip.open(rolled, "rt", encoding="utf-8") as f:
             self.assertEqual(f.read(), '{"a": 1}\n')
         visible = sorted(p.name for p in self.logs.iterdir() if not p.name.startswith("."))
-        self.assertEqual(visible, [rolled.name])
+        self.assertEqual(visible, sorted([self.path.name, rolled.name]))
+
+    @unittest.skipUnless(os.name == "posix", "POSIX permission bits")
+    def test_roll_preserves_modes_before_writing_any_content(self):
+        for mode in (0o600, 0o640):
+            with self.subTest(mode=oct(mode)):
+                self._write("private\n", _at(-1))
+                self.path.chmod(mode)
+                previous = os.umask(0o022)
+                self.addCleanup(os.umask, previous)
+                real_copy = runlog.shutil.copyfileobj
+
+                def check_mode(src, dst):
+                    tmp = next(self.logs.glob("*.tmp"))
+                    self.assertEqual(stat.S_IMODE(tmp.stat().st_mode), mode)
+                    return real_copy(src, dst)
+
+                with mock.patch.object(runlog.shutil, "copyfileobj", side_effect=check_mode):
+                    runlog.append(self.path, b"next\n", max_bytes=1)
+                gz = max(self.logs.glob("*.gz"), key=lambda p: p.stat().st_mtime_ns)
+                self.assertEqual(stat.S_IMODE(gz.stat().st_mode), mode)
+                self.assertEqual(stat.S_IMODE(self.path.stat().st_mode), mode)
+
+    @unittest.skipUnless(os.name == "posix", "POSIX permission bits")
+    def test_failed_compression_and_recovery_preserve_modes(self):
+        self._write("private\n", _at(-1))
+        self.path.chmod(0o600)
+        with mock.patch.object(runlog.shutil, "copyfileobj", side_effect=OSError("disk full")):
+            runlog.append(self.path, b"after failure\n", max_bytes=1, log=self.messages.append)
+        self.assertEqual(stat.S_IMODE(self.path.stat().st_mode), 0o600)
+        runlog.append(self.path, b"after recovery\n", max_bytes=None, log=self.messages.append)
+        for gz in self.logs.glob("*.gz"):
+            self.assertEqual(stat.S_IMODE(gz.stat().st_mode), 0o600)
 
     def test_same_day_under_cap_is_left_alone(self):
         self._write('{"a": 1}\n', _at(0, hour=9))

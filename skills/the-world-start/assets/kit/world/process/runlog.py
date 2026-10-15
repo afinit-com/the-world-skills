@@ -42,6 +42,7 @@ import contextlib
 import gzip
 import os
 import shutil
+import stat
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -132,8 +133,14 @@ def _compress(plain: Path) -> Path:
     crash leaves either no .gz or a complete one, and the plain file until the end."""
     target = plain.with_name(plain.name + ".gz")
     tmp = plain.with_name(f"{plain.name}.gz.{os.getpid()}.tmp")
-    with plain.open("rb") as src, gzip.open(tmp, "wb") as dst:
-        shutil.copyfileobj(src, dst)
+    mode = stat.S_IMODE(plain.stat().st_mode)
+    # Set the mode before gzip writes even its header; the umask must never broaden a
+    # private log during compression, including recovery after an interrupted roll.
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+    with os.fdopen(fd, "wb") as raw:
+        tmp.chmod(mode)
+        with plain.open("rb") as src, gzip.GzipFile(fileobj=raw, mode="wb") as dst:
+            shutil.copyfileobj(src, dst)
     os.replace(tmp, target)
     plain.unlink()
     return target
@@ -148,8 +155,14 @@ def roll(path: Path, stamp: str) -> Path:
     """
     target = _rolled_path(path, stamp)
     plain = target.with_suffix("")  # harness.<stamp>.jsonl
+    mode = stat.S_IMODE(path.stat().st_mode)
     os.replace(path, plain)
     try:
+        # Leave an empty current log with the old permissions even if compression
+        # fails, or the caller only rolls now and appends in a later process.
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+        os.close(fd)
+        path.chmod(mode)
         return _compress(plain)
     except OSError as exc:
         raise CompressError(plain, exc) from exc
