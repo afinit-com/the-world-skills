@@ -498,6 +498,31 @@ class LauncherAndWatchdogTest(unittest.TestCase):
                 return
             time.sleep(0.1)
 
+    def test_pgrep_errors_refuse_every_process_decision(self):
+        shim = self.home / "shim"
+        shim.mkdir()
+        pgrep = shim / "pgrep"
+        pgrep.write_text("#!/bin/sh\nexit 2\n")
+        pgrep.chmod(0o755)
+        env = {"PATH": str(shim) + os.pathsep + os.environ["PATH"]}
+        for action in ("running", "healthy", "status", "up", "resume", "down", "recycle"):
+            with self.subTest(action=action):
+                (self.state / "down").unlink(missing_ok=True)
+                result = self.run_up(action, env=env)
+                self.assertEqual(result.returncode, 4, result.stdout + result.stderr)
+                self.assertEqual(self.pids(), [])
+
+    def test_relative_pgrep_error_refuses_start(self):
+        shim = self.home / "shim"
+        shim.mkdir()
+        pgrep = shim / "pgrep"
+        # The first query is absolute; the second query is the relative-launch guard.
+        pgrep.write_text("#!/bin/sh\nif [ -f '" + str(shim / "queried") + "' ]; then exit 3; fi\ntouch '" + str(shim / "queried") + "'\nexit 1\n")
+        pgrep.chmod(0o755)
+        result = self.run_up("up", env={"PATH": str(shim) + os.pathsep + os.environ["PATH"]})
+        self.assertEqual(result.returncode, 4, result.stdout + result.stderr)
+        self.assertEqual(self.pids(), [])
+
     def test_relative_launch_in_a_confirmed_other_home_is_left_alone(self):
         other = self.home.parent / "other"
         other.mkdir()
