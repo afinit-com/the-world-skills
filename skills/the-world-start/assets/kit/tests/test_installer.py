@@ -35,6 +35,35 @@ class InstallerOwnershipTests(unittest.TestCase):
             self.assertNotEqual("# stale kit copy\n", (target / "world" / "toolkit.py").read_text())
             self.assertEqual(pyproject, (target / "pyproject.toml").read_text())
 
+    def test_new_kit_files_back_up_conflicting_harness_content(self) -> None:
+        paths = ("docs/verify.md", "docs/operations.md", "bin/ops-kit.py",
+                 "templates/ops/up.ps1.tmpl")
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "harness"
+            for rel in paths:
+                dest = target / rel
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_text("original harness content\n")
+            command = [sys.executable, str(INSTALLER), str(target), "--provider", "codex"]
+            first = subprocess.run(command, check=True, capture_output=True, text=True).stdout
+            for rel in paths:
+                dest = target / rel
+                backup = dest.with_name(dest.name + ".bak")
+                self.assertEqual(backup.read_text(), "original harness content\n")
+                self.assertEqual(dest.read_bytes(), (KIT / rel).read_bytes())
+                self.assertIn(rel + ".bak", first)
+                dest.write_text("another edit\n")
+            second = subprocess.run(command, check=True, capture_output=True, text=True).stdout
+            for rel in paths:
+                dest = target / rel
+                self.assertEqual(dest.with_name(dest.name + ".bak").read_text(),
+                                 "original harness content\n")
+                self.assertEqual(dest.with_name(dest.name + ".bak.1").read_text(), "another edit\n")
+                self.assertIn(rel + ".bak.1", second)
+            third = subprocess.run(command, check=True, capture_output=True, text=True).stdout
+            self.assertNotIn("backed up", third)
+            self.assertEqual(len(list(target.rglob("*.bak*"))), 2 * len(paths))
+
     def test_installed_kit_can_render_the_character_demo(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "harness"
