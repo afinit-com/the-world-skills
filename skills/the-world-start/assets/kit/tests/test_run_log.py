@@ -7,6 +7,7 @@ timestamp to every line, and logs/harness.jsonl grew forever.
 import asyncio
 import contextlib
 import gzip
+import importlib.util
 import io
 import json
 import os
@@ -23,11 +24,21 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
+try:
+    import fcntl
+except ImportError:  # Windows
+    fcntl = None
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from world import Harness, Persona  # noqa: E402
 from world.process import runlog  # noqa: E402
 from world.process.orchestrator import append_run_log, flush_run_log  # noqa: E402
+
+_spec = importlib.util.spec_from_file_location(
+    "ops_log", Path(__file__).resolve().parents[1] / "bin" / "ops-log.py")
+ops_log = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(ops_log)
 
 
 def _at(day_offset: int, hour: int = 12) -> float:
@@ -392,6 +403,94 @@ class RunLogOffTheLoopTest(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stderr)
         lines = self.h.run_log_path.read_text(encoding="utf-8").splitlines()
         self.assertEqual([json.loads(line)["n"] for line in lines], [0, 1, 2])
+
+
+def _fds_open_on(path: Path) -> list[int] | None:
+    """This process's fds open on `path`, or None where that cannot be listed."""
+    target = os.path.realpath(path)
+    if Path("/proc/self/fd").is_dir():
+        names = lambda fd: os.readlink(f"/proc/self/fd/{fd}")  # noqa: E731
+    elif hasattr(fcntl, "F_GETPATH"):
+        names = lambda fd: fcntl.fcntl(fd, fcntl.F_GETPATH, bytes(1024)).rstrip(b"\0").decode()  # noqa: E731
+    else:
+        return None
+    found = []
+    for fd in range(3, 1024):
+        try:
+            if os.path.realpath(names(fd)) == target:
+                found.append(fd)
+        except OSError:
+            continue
+    return found
+
+
+class OpsLogErrFileTest(unittest.TestCase):
+    """Issue #8: the launchers sent ops-log's stderr to logs/ops-log.err, which the writer
+    then held open for its whole life, so nothing could roll it (and on Windows nothing
+    could rename it). --err-file opens it per warning instead."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.logs = Path(self.tmp.name)
+        self.console = self.logs / "console.out"
+        self.console.mkdir()  # every append fails, so the writer warns
+        self.err = self.logs / "ops-log.err"
+
+    def test_a_warning_goes_to_the_err_file_which_is_closed_again(self):
+        r, w = os.pipe()
+        stdin = os.fdopen(r, "rb")
+        writer = threading.Thread(target=ops_log.main, kwargs=dict(
+            argv=["--file", str(self.console), "--err-file", str(self.err)], stdin=stdin))
+        stderr = io.StringIO()
+        # signal.signal only works on the main thread; the writer runs on another here.
+        with contextlib.redirect_stderr(stderr), mock.patch.object(ops_log.signal, "signal"):
+            writer.start()
+            try:
+                os.write(w, b"a line\n")
+                for _ in range(100):
+                    if self.err.exists() and "cannot write" in self.err.read_text("utf-8"):
+                        break
+                    time.sleep(0.05)
+                self.assertIn("cannot write console.out", self.err.read_text("utf-8"))
+                self.assertTrue(writer.is_alive())
+                self.assertEqual(_fds_open_on(self.err) or [], [])
+                moved = self.err.with_name("ops-log.err.moved")
+                os.replace(self.err, moved)  # Windows refuses this while a handle is open
+                os.replace(moved, self.err)
+            finally:
+                os.close(w)
+                writer.join(timeout=30)
+                stdin.close()
+        self.assertNotIn("cannot write", stderr.getvalue())
+        stamp, rest = self.err.read_text("utf-8").splitlines()[0].split(" ", 1)
+        self.assertIsNotNone(datetime.fromisoformat(stamp).tzinfo)
+        self.assertTrue(rest.startswith("ops-log: cannot write console.out"), rest)
+
+    def test_the_err_file_rolls_at_its_cap(self):
+        with mock.patch.object(ops_log, "ERR_MAX_BYTES", 1):
+            for _ in range(2):
+                ops_log.main(["--file", str(self.console), "--err-file", str(self.err)],
+                             stdin=io.BytesIO(b"x\n"))
+        self.assertEqual(len(list(self.logs.glob("ops-log.*.err.gz"))), 1)
+        self.assertEqual(len(self.err.read_text("utf-8").splitlines()), 1)
+
+    def test_without_err_file_warnings_stay_on_stderr(self):
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            ops_log.main(["--file", str(self.console)], stdin=io.BytesIO(b"x\n"))
+        self.assertIn("ops-log: cannot write console.out", stderr.getvalue())
+        self.assertFalse(self.err.exists())
+
+    def test_detach_keeps_tracebacks_apart_and_passes_err_file_on(self):
+        with mock.patch.object(ops_log, "detach", return_value=123) as detach, \
+                contextlib.redirect_stdout(io.StringIO()):
+            ops_log.main(["--file", str(self.logs / "c.out"), "--err-file", str(self.err),
+                          "--detach", "--", "harness"])
+        argv, crash = detach.call_args.args
+        self.assertEqual(crash, self.logs / "ops-log.crash")
+        self.assertEqual(argv[argv.index("--err-file") + 1], str(self.err.resolve()))
+        self.assertEqual(argv[-2:], ["--", "harness"])
 
 
 if __name__ == "__main__":
