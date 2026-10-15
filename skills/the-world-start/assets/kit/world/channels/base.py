@@ -91,11 +91,12 @@ def _quote(text: str, quote_code: bool) -> list[str]:
     lines = []
     in_code = False
     for line in text.splitlines():
-        fence = "```" in line
+        fence = line.count("```") % 2
         # Slack treats quote prefixes inside fences as literal code. Keep the whole
         # block outside the quote, including both fences; Discord keeps its nesting.
+        # A line that opens and closes ``` itself is not a block and stays quoted.
         lines.append(line if not quote_code and (in_code or fence) else f"> {line}")
-        if line.count("```") % 2:
+        if fence:
             in_code = not in_code
     return lines
 

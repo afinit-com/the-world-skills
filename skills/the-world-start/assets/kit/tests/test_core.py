@@ -437,6 +437,13 @@ class AnnounceCardBodyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("> <https://example.com/a?x=1&amp;notify=true&amp;region=kr|알림>",
                          body.splitlines()[-1])
 
+    async def test_an_inline_code_fence_stays_in_the_quote(self) -> None:
+        # A line that opens and closes ``` is not a block: leaving it unquoted broke the
+        # quote bar in the middle of the card.
+        body = await self._card("see ```inline``` here\nnext line\n```\ncode\n```")
+        self.assertEqual(["> see ```inline``` here", "> next line", "```", "code", "```"],
+                         body.splitlines()[2:])
+
     async def test_broadcast_mentions_in_the_card_do_not_notify_the_channel(self) -> None:
         # A poll run that summarised outside text (a PR body) could carry these through,
         # and Slack notifies the whole channel for them even inside a bot's quote.
