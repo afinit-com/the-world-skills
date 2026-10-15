@@ -7,7 +7,8 @@ Only scripts/<name>-watchdog calls this, and only when bin/ops-kit.py rendered i
 --notify. It is operator tooling, not an agent capability: no agent can reach it, and it
 posts exactly the text it is given. Standard library only (urllib), so it works with the
 harness's interpreter whatever the venv holds. The token comes from env/harness.env
-through the same loader the harness uses and is never printed. A failure exits non-zero
+using the harness value parser and is never printed. File values outrank shell exports,
+just as they do under the ops launcher. A failure exits non-zero
 with the reason, which the watchdog writes to logs/watchdog.log.
 """
 
@@ -16,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import urllib.error
 import urllib.request
@@ -43,10 +45,18 @@ def main(argv: list[str] | None = None, opener=urllib.request.urlopen) -> int:
     args = ap.parse_args(argv)
 
     sys.path.insert(0, str(ROOT))
-    from world.env import load_harness_env
+    from world.env import env_path, parse_value
 
-    load_harness_env()
-    token, channel = os.environ.get(args.token_env), os.environ.get(args.channel_env)
+    # The launcher gives the file precedence too. Read into a local mapping so even
+    # repeated calls cannot inherit a stale export or change the caller's environment.
+    values = dict(os.environ)
+    path = env_path()
+    if path.is_file():
+        for line in path.read_text(encoding="utf-8").splitlines():
+            m = re.match(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$", line)
+            if m:
+                values[m.group(1)] = parse_value(m.group(2))
+    token, channel = values.get(args.token_env), values.get(args.channel_env)
     missing = [n for n, v in ((args.token_env, token), (args.channel_env, channel)) if not v]
     if missing:
         print(f"ops-notify: {', '.join(missing)} not set in env/harness.env; not posted",

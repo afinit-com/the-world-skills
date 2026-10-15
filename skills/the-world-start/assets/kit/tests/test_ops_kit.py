@@ -283,6 +283,24 @@ class NotifyTest(unittest.TestCase):
                                    opener=lambda req, timeout: Resp(b'{"ok": true}'))
         self.assertEqual((bad, good), (1, 0))
 
+    def test_harness_env_overrides_stale_shell_for_notifications(self):
+        Path(self.empty_env).write_text(
+            'export T_TOKEN="file-token"\nT_CHAN=file-channel # channel\n', encoding="utf-8")
+        requests = []
+
+        def opener(req, timeout):
+            requests.append(req)
+            return io.BytesIO(b'{"ok": true}')
+
+        env = {"WORLD_ENV_FILE": self.empty_env, "T_TOKEN": "stale-token", "T_CHAN": "stale-channel"}
+        with unittest.mock.patch.dict(os.environ, env):
+            code = ops_notify.main(["--token-env", "T_TOKEN", "--channel-env", "T_CHAN", "hi"],
+                                   opener=opener)
+            self.assertEqual(os.environ["T_TOKEN"], "stale-token")
+        self.assertEqual(code, 0)
+        self.assertEqual(requests[0].get_header("Authorization"), "Bearer file-token")
+        self.assertEqual(json.loads(requests[0].data)["channel"], "file-channel")
+
     def test_request_carries_the_token_only_in_the_header(self):
         req = ops_notify.build_request("xoxb-secret", "C1", "restarted")
         self.assertEqual(req.get_header("Authorization"), "Bearer xoxb-secret")
