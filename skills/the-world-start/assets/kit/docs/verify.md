@@ -113,9 +113,10 @@ take screenshots; a claim about a thread cites what was on the screen.
 - An approval card says what the proposal in the thread says, and after a person approved,
   the tool ran once.
 - A repeated ask got a "대기 중인 승인 요청: 기존 승인 카드" link with no preview under it,
-  not a second card. A button with no open ask behind it (an answered card, an old preview)
+  not a second card. A button with no open ask behind it (an answered card, a forged value)
   changes nothing: the clicker alone sees "이미 처리됐거나 더는 유효하지 않습니다", the
-  card text stays as it was, and the tool does not run again.
+  card text stays as it was, and the tool does not run again. Buttons inside a link
+  preview send Slack no click at all, so pressing one shows nothing.
 
 **Bot-token conversation checks (Slack only).** When Slack MCP and a user token are
 unavailable, an authorized verifier can use the harness's own bot token. Initialize the
