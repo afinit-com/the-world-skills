@@ -3,10 +3,12 @@ the harness process itself keeps them for its in-process tools."""
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import io
 import json
 import os
+import secrets
 import subprocess
 import sys
 import tempfile
@@ -304,6 +306,100 @@ class RedactTests(unittest.TestCase):
             self.assertNotIn(secret, out)
         self.assertIn("auth failed", out)
         self.assertIn("[redacted]", out)
+
+    def test_masks_provider_cloud_and_discord_keys_and_credentials_in_urls(self):
+        # Shapes a report or a fetch log carries, which a file-mode card can show.
+        # Random test data in the Discord bot token's shape: base64 of an 18-digit ID,
+        # 6 characters, then 27.
+        snowflake = str(secrets.randbelow(9 * 10**17) + 10**17).encode()
+        discord = ".".join((base64.urlsafe_b64encode(snowflake).decode().rstrip("="),
+                            secrets.token_urlsafe(6)[:6], secrets.token_urlsafe(27)[:27]))
+        aws = "AKIA" + secrets.token_hex(8).upper()
+        text = (f"anthropic sk-ant-api03-{'a' * 40} openai sk-proj-{'b' * 30} "
+                f"aws {aws} discord {discord} "
+                "GET https://api.example.com/v1?token=abc123&page=2 login password=hunter2")
+        out = world_env.redact_file(text)
+        for secret in ("a" * 40, "b" * 30, aws[5:], discord[5:],
+                       "abc123", "hunter2"):
+            self.assertNotIn(secret, out)
+        # The name of what was masked stays, so the log still reads.
+        self.assertIn("?token=[redacted]&page=2", out)
+        self.assertIn("password=[redacted]", out)
+
+    def test_masks_every_anthropic_key_kind(self):
+        # Claude Code's own OAuth token and admin keys, not only API keys.
+        for kind in ("api03", "oat01", "admin01"):
+            key = "sk-" + f"ant-{kind}-" + secrets.token_urlsafe(40)
+            with self.subTest(kind=kind):
+                out = world_env.redact_file(f"login {key}.")
+                self.assertNotIn(key[5:], out)
+                self.assertEqual("login sk-an…[redacted].", out)
+
+    def test_masks_the_values_of_token_and_key_variables(self):
+        with patch.dict(os.environ, {"WEATHER_API_KEY": "wk-1234567890", "BOT_TOKEN": "tk-abcdefgh"}):
+            out = world_env.redact_file("key wk-1234567890 token tk-abcdefgh")
+        self.assertEqual("key [redacted] token [redacted]", out)
+
+    def test_result_redaction_preserves_main_behavior(self):
+        texts = ("Open briefing/report.md", "Example token=placeholder is documentation",
+                 "sk-" + "this-is-a-normal-document-title", "password=hunter2, retry=3")
+        with patch.dict(os.environ, {"DEMO_KEY": "briefing"}, clear=True):
+            for text in texts:
+                self.assertEqual(text, world_env.redact(text))
+
+    def test_file_redaction_keeps_normal_text_and_separators(self):
+        for value in ("briefing", "/srv/app", "https://example.com"):
+            with patch.dict(os.environ, {"DEMO_KEY": value}, clear=True):
+                for text in ("Open briefing/report.md", "Path /srv/app/reports.md",
+                             "URL https://example.com/path", "sk-" + "this-is-a-normal-document-title",
+                             "Example token=placeholder is documentation"):
+                    self.assertEqual(text, world_env.redact_file(text))
+                self.assertEqual("[redacted]", world_env.redact_file(value))
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual("password=[redacted], retry=3",
+                             world_env.redact_file("password=hunter2, retry=3"))
+            self.assertEqual("password=[redacted].", world_env.redact_file("password=hunter2."))
+            self.assertEqual("?token=[redacted]#section",
+                             world_env.redact_file("?token=abc#section"))
+
+    def test_file_redaction_keeps_documentation_references_readable(self):
+        with patch.dict(os.environ, {}, clear=True):
+            for text in ("api_key=${API_KEY}", "token=$TOKEN", "token=YOUR_TOKEN",
+                         "api_key=your-api-key", "token=xxx", "password=XXXXXXXX"):
+                with self.subTest(text=text):
+                    self.assertEqual(text, world_env.redact_file(text))
+            # A real value that merely starts with $ or x is still masked.
+            for text in ("password=$ecret123", "token=xA9fQ2"):
+                with self.subTest(text=text):
+                    self.assertEqual(text.split("=")[0] + "=[redacted]", world_env.redact_file(text))
+
+    def test_file_redaction_masks_everything_result_redaction_masks(self):
+        # A file excerpt must never show a secret its result card would hide.
+        snowflake = str(secrets.randbelow(9 * 10**17) + 10**17).encode()
+        discord = ".".join((base64.urlsafe_b64encode(snowflake).decode().rstrip("="),
+                            secrets.token_urlsafe(6)[:6], secrets.token_urlsafe(27)[:27]))
+        value = "hunter2hunter2"
+        texts = (f"Use {value}.", f"SIGNING_SECRET:{value}", f"https://hooks.x/{value}/run",
+                 f"secret {value}-rotated", f"ok {value} ok", f"{SECRET}.", f"({SECRET})")
+        with patch.dict(os.environ, {"SLACK_SIGNING_SECRET": value}, clear=True):
+            for text in texts:
+                with self.subTest(text=text):
+                    result = world_env.redact(text)
+                    out = world_env.redact_file(text)
+                    self.assertNotIn(value, out)
+                    for kept in (value, SECRET[5:]):
+                        if kept not in result:
+                            self.assertNotIn(kept, out)
+        with patch.dict(os.environ, {"GH_TOKEN": value}, clear=True):
+            self.assertEqual("Use [redacted].", world_env.redact_file(f"Use {value}."))
+            self.assertEqual("GH_TOKEN:[redacted]", world_env.redact_file(f"GH_TOKEN:{value}"))
+            self.assertEqual("https://api.x/[redacted]", world_env.redact_file(f"https://api.x/{value}"))
+        with patch.dict(os.environ, {}, clear=True):
+            out = world_env.redact_file(f"Token was {discord}.")
+            self.assertNotIn(discord[5:], out)
+            self.assertTrue(out.endswith("[redacted]."))
+            # A token redact() already shortened keeps that form under a name.
+            self.assertEqual(f"token={SECRET[:5]}…[redacted]", world_env.redact_file(f"token={SECRET}"))
 
     def test_leaves_ordinary_text_alone(self):
         text = "rate limit (429) while reading C0123 / U0456 — retry later"

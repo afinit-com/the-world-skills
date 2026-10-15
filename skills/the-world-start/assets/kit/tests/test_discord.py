@@ -31,7 +31,7 @@ from world.discord.gateway import (
 from world.harness import Harness
 from world.process import task as tasks
 from world.toolkit import result, tool
-from world.types import DiscordConfig, Persona, RunResult
+from world.types import Agent, DiscordConfig, MentionTrigger, Persona, RunResult
 
 CHANNEL = "100"
 APPROVER = "555"
@@ -235,6 +235,50 @@ class MentionTests(GatewayCase):
 
 
 class AnnounceTests(GatewayCase):
+    async def test_file_mode_uses_the_same_discord_rendering_as_the_final_message(self) -> None:
+        agent = Agent("watch", MentionTrigger(), announce="file", writes_report=True)
+        self.harness.register(agent)
+        record = tasks.create(self.home, type="watch", title="nightly diff", agent="watch")
+        tasks.append_event(self.home, record.id, "verify", verdict="done", evidence=["checked"])
+        path = tasks.task_work_dir(self.home, record.id) / "report.md"
+        token = "ghp_" + "a" * 36
+        text = "**Summary** @everyone @here\n" + token + "\n```diff\n" + "+ line\n" * 100
+        path.write_text(text + "\n```\n## Hidden\nMore")
+        run = RunResult(status="ok", result_text="Saved report",
+                        artifacts=(str(path.relative_to(self.home)),))
+        await self.gw.announce_task(record, run, self.harness.main_persona)
+        file_body = self.transport.sent[-1]["text"]
+        from world.channels import base
+        if not base._SAFE_DIR_OPEN or not all(getattr(os, name, 0) for name in
+                ("O_DIRECTORY", "O_NOFOLLOW", "O_NONBLOCK")):
+            agent.announce = "result"
+            await self.gw.announce_task(record, run, self.harness.main_persona)
+            self.assertEqual(file_body, self.transport.sent[-1]["text"])
+            self.assertIn("> Saved report", file_body)
+            return
+        agent.announce = "result"
+        await self.gw.announce_task(record, RunResult(status="ok", result_text=text + "\n```"),
+                                    self.harness.main_persona)
+        self.assertEqual(file_body, self.transport.sent[-1]["text"])
+        self.assertIn("> **Summary**", file_body)
+        self.assertNotIn(token, file_body)
+        self.assertNotIn("Hidden", file_body)
+        self.assertEqual(0, file_body.count("```") % 2)
+        self.assertLess(len(file_body), 2000)
+
+    async def test_evidence_mode_and_missing_file_fallback_on_discord(self) -> None:
+        agent = Agent("watch", MentionTrigger(), announce="evidence", writes_report=True)
+        self.harness.register(agent)
+        record = tasks.create(self.home, type="watch", title="nightly diff", agent="watch")
+        tasks.append_event(self.home, record.id, "verify", verdict="done", evidence=["checked"])
+        run = RunResult(status="ok", result_text="Final summary")
+        await self.gw.announce_task(record, run, self.harness.main_persona)
+        self.assertEqual("> checked", self.transport.sent[-1]["text"].splitlines()[2])
+        self.assertNotIn("Final summary", self.transport.sent[-1]["text"])
+        agent.announce = "file"
+        await self.gw.announce_task(record, run, self.harness.main_persona)
+        self.assertEqual("> Final summary", self.transport.sent[-1]["text"].splitlines()[2])
+
     async def test_a_scheduled_result_posts_to_the_channel_and_opens_a_thread(self) -> None:
         record = tasks.create(self.home, type="watch", title="nightly diff", agent="watch")
         run = RunResult(status="ok", result_text="3 changes", input_tokens=900,

@@ -302,6 +302,52 @@ def redact(text: str) -> str:
     return _TOKEN_SHAPES.sub(lambda m: m.group(0)[:5] + "…[redacted]", text)
 
 
+# File previews carry untrusted report text. Keep this broader policy separate from
+# result cards and error responses, whose historical redact() output is stable.
+_FILE_TOKEN_SHAPES = re.compile(
+    r"\bsk-(?:(?:ant-[a-z]+[0-9]{2}|proj|svcacct)-[A-Za-z0-9_-]{20,}|[A-Za-z0-9]{32,})(?![\w-])"
+    r"|\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"
+    r"|\b[A-Za-z0-9_-]{23,28}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,}(?![\w-]|\.\w)"
+)
+_NAMED_CREDENTIAL = re.compile(
+    r"(?i)\b((?:access_|api_|auth_|refresh_)?token|password|passwd|api_?key|client_secret"
+    r"|secret)=([^\s&\"'<>#,;(){}\[\]]+)"
+)
+_DOCUMENTATION_VALUES = {"placeholder", "example", "your-token", "your-key", "changeme"}
+# `$TOKEN`, `${API_KEY}` (whose value stops at `{`), `YOUR_TOKEN`, `xxx`: references and
+# blanks a document shows in place of a value.
+_DOCUMENTATION_SHAPE = re.compile(r"\$|\$[A-Z_][A-Z0-9_]*|(?i:your[_-][\w-]+|x{3,})")
+
+
+def redact_file(text: str) -> str:
+    """Broader masking for file excerpts: redact() first, then more on top.
+
+    Starting from redact() means an excerpt hides at least what a result card hides
+    (every *_SECRET value, anywhere). The values of the other secret-named variables
+    are masked only as whole tokens, so a short one is not cut out of a word, path or
+    file name; prose punctuation after one (`.`, `:`) still ends it. Named values stop
+    at URL fragments and prose punctuation; common documentation placeholders are left
+    readable. This is not a DLP guarantee.
+    """
+    text = redact(text)
+    values = sorted({value for key, value in os.environ.items()
+                     if key.endswith(_SECRET_SUFFIXES)
+                     and len(value.strip()) >= _SECRET_VALUE_MIN}, key=len, reverse=True)
+    for value in values:
+        text = re.sub(r"(?<![\w.@%+~-])" + re.escape(value) + r"(?![\w/@%+~-]|[.:]\w)",
+                      "[redacted]", text)
+    def named(match: re.Match) -> str:
+        value = match.group(2).rstrip(".!?")
+        # "…" ends a token redact() has already shortened; it keeps that form.
+        if (not value or value.endswith("…") or value.lower() in _DOCUMENTATION_VALUES
+                or _DOCUMENTATION_SHAPE.fullmatch(value)):
+            return match.group(0)
+        return match.group(1) + "=[redacted]" + match.group(2)[len(value):]
+
+    text = _NAMED_CREDENTIAL.sub(named, text)
+    return _FILE_TOKEN_SHAPES.sub(lambda m: m.group(0)[:5] + "…[redacted]", text)
+
+
 if __name__ == "__main__":
     # Launchers need names only, never secret values or the world package's imports.
     # Run it with `python -I`: as a script, its directory comes first on sys.path and

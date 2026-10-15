@@ -105,6 +105,17 @@ Open the home channel in a browser and read the thread a person started. Scroll 
 take screenshots; a claim about a thread cites what was on the screen.
 
 - The main persona answered.
+- A scheduled worker's card has a readable title and the body its `Agent.announce`
+  selects: the final summary for `result` (default), the completion check for `evidence`,
+  or the report's opening for `file`. For `file`, compare with the report its rule
+  picks from this attempt's files in that task's `work/`: the `announce_file` match, else
+  the first `.md`, then `.txt`, top level before folders, then by name. The body skips front matter and the `# ` title and
+  stops before the first `## ` (the next, when the opening is a `## ` section).
+  When no candidate reads as text, the body is the final summary; a path, symlink, or
+  hard link outside that task's `work/` never supplies the body. On Slack and Discord,
+  check that long excerpts are marked, code fences close, credentials stay masked,
+  and channel-wide mentions do not notify anyone. Use local fakes for these edge cases;
+  do not send credentials or broadcast mentions into a real channel to test them.
 - Each handoff is a `→ <name>: …` line, and the teammate answered in the same thread.
 - Each sub-persona posted under its own name, icon, and voice. One that posts through the
   main app needs `chat:write.customize`; without it the post quietly shows the main app's
