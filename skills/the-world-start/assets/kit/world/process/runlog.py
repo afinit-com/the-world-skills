@@ -18,13 +18,14 @@ Rolling is a rename, not copy-truncate. The only writer opens the file per entry
 written between the copy and the truncate. A failed roll is logged and the append goes
 ahead on the current file: losing the run record would be worse than an oversized file.
 
-An append that has nothing to roll only stats the file. Scanning the directory for an
-interrupted roll (recover()) happens on a process's first write to the file and after
-a roll of its own left work behind; pruning happens when the file rolls.
+An append that has nothing to roll usually only stats the file. Scanning the directory
+for an interrupted roll (recover()) happens on a process's first write to the file,
+every RECOVERY_SCAN_S seconds, and after a roll of its own left work behind; pruning
+happens when the file rolls.
 
 The .gz is written under a temp name and renamed into place, and the plain file is
 removed only after that. A roll cut short (a crash, a full disk) therefore leaves the
-plain `harness.<date>.jsonl`, never a truncated .gz under the final name, and the next
+plain `harness.<date>.jsonl`, never a truncated .gz under the final name, and a later
 write compresses it (recover()). bin/ops-log.py rolls the console log with this module.
 
 Rolling, recovering and appending happen under an flock on `.<name>.lock` beside the
@@ -63,6 +64,7 @@ except ImportError:  # Windows
 RUN_LOG_MAX_BYTES = 10 * 1024 * 1024
 # How long a failed roll or recovery waits before this process tries it again.
 ROLL_RETRY_S = 300
+RECOVERY_SCAN_S = 300
 # Windows locks are mandatory: a locked byte cannot be read by anyone else. Lock one far
 # past the end, so a lock file can still carry its holder's pid at the start.
 _WIN_LOCK_OFFSET = 0x7FFFFFF0
@@ -222,6 +224,7 @@ class _RollState:
 
     def __init__(self) -> None:
         self.recover_due = True  # first write in this process, or a roll left work behind
+        self.scan_at = 0.0  # periodically find interrupted rolls from other processes
         self.retry_at = 0.0  # no roll or recovery before this, after one failed
         self.warned: str | None = None  # the last warning, said once until a roll works
 
@@ -277,7 +280,7 @@ def _maybe_roll(path: Path, *, max_bytes: int | None, keep_days: int | None,
         st = path.stat()
     except FileNotFoundError:
         st = None
-    if state.recover_due:
+    if state.recover_due or now >= state.scan_at:
         try:
             for gz in recover(path):
                 log(f"run log: finished an interrupted roll, {gz.name}")
@@ -287,6 +290,7 @@ def _maybe_roll(path: Path, *, max_bytes: int | None, keep_days: int | None,
                             f"lines are kept uncompressed in {path.parent}")
         else:
             state.recover_due = False
+            state.scan_at = now + RECOVERY_SCAN_S
     if st is not None and st.st_size > 0:
         last_day = datetime.fromtimestamp(st.st_mtime).date()
         stamp = None

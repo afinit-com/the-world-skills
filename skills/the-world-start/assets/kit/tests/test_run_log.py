@@ -271,6 +271,25 @@ class RollCostTest(unittest.TestCase):
         with gzip.open(self.logs / f"console.{day}.out.gz", "rt", encoding="utf-8") as f:
             self.assertEqual(f.read(), "kept\n")
 
+    def test_a_later_process_crash_is_recovered_without_scanning_each_line(self):
+        runlog.append(self.path, b"from A\n")
+        child = (
+            "from pathlib import Path; from world.process import runlog; import os,sys; "
+            "runlog._compress=lambda plain: os._exit(7); "
+            "runlog.maybe_roll(Path(sys.argv[1]),max_bytes=1)"
+        )
+        done = subprocess.run([sys.executable, "-c", child, str(self.path)],
+                              cwd=Path(__file__).resolve().parents[1], timeout=30)
+        self.assertEqual(done.returncode, 7)
+        plain, = self.logs.glob("console.*.out")
+        clock = time.time()
+        with mock.patch.object(runlog.time, "time", return_value=clock + runlog.RECOVERY_SCAN_S + 1):
+            runlog.append(self.path, b"after crash\n", log=self.messages.append)
+        self.assertFalse(plain.exists())
+        with gzip.open(str(plain) + ".gz", "rb") as f:
+            self.assertEqual(f.read(), b"from A\n")
+        self.assertEqual(self.path.read_bytes(), b"after crash\n")
+
     def test_a_failing_roll_backs_off_and_warns_once(self):
         """Windows: someone follows the console log, so every rename fails. One warning
         and one attempt per ROLL_RETRY_S, not one of each per line."""
