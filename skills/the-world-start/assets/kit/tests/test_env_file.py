@@ -45,3 +45,21 @@ class EnvFileTest(unittest.TestCase):
                 env["load_harness_env"]()
                 self.assertEqual(os.environ["DUP_KEY"], "first")
             self.assertNotIn("shadowed", err.getvalue(), "a repeated key is not a shadowing export")
+
+    def test_redact_masks_the_values_of_secret_variables(self):
+        env = runpy.run_path(str(ENV))
+        secrets = {"OBS_SLACK_AS_HUMAN_SECRET": "pass-phrase-for-obs", "SLACK_AS_HUMAN_SECRET":
+                   "another-long-one", "SHORT_SECRET": "abc12", "OBS_SLACK_CHANNEL": "C0123456789"}
+        text = ("as-human pass-phrase-for-obs failed; tried another-long-one; abc12 stays; "
+                "channel C0123456789; token xoxb-1234-abcd")
+        with patch.dict(os.environ, secrets):
+            out = env["redact"](text)
+        self.assertNotIn("pass-phrase-for-obs", out)
+        self.assertNotIn("another-long-one", out)
+        # Shorter than 8: too likely to be an ordinary word to replace everywhere.
+        self.assertIn("abc12 stays", out)
+        self.assertIn("C0123456789", out, "only *_SECRET values are masked by name")
+        self.assertNotIn("xoxb-1234-abcd", out)
+        self.assertEqual(out.count("[redacted]"), 3)
+        with patch.dict(os.environ, secrets):
+            self.assertEqual(env["redact"]("nothing to hide"), "nothing to hide")
