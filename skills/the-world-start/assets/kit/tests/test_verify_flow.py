@@ -412,5 +412,39 @@ class VerifyDocTests(unittest.TestCase):
         self.assertNotIn("no longer ships", legacy)
 
 
+class LegacyWrapperTests(unittest.TestCase):
+    """Review of PR #6: the kit-owned compatibility paths still said "`write_scope` never
+    empty" and "no step-by-step flow for adding a tool", against the equip template and
+    world-scope-guard.py (no scope = writes nothing)."""
+
+    def read(self, rel: str) -> str:
+        return " ".join((KIT / rel).read_text(encoding="utf-8").split())
+
+    def test_no_wrapper_says_write_scope_is_never_empty(self) -> None:
+        for rel in (".claude/the-world/agent.md", ".claude/the-world/plugins.md",
+                    ".claude/the-world/tool.md", "templates/skill-wrapper.md.tmpl",
+                    "templates/skill-wrapper-tool.md.tmpl"):
+            text = self.read(rel)
+            self.assertNotIn("never empty", text, rel)
+            self.assertIn("`write_scope`", text, rel)
+        self.assertIn("empty, which writes nothing", self.read("templates/skill-wrapper.md.tmpl"))
+
+    def test_the_legacy_tool_path_leads_to_the_equip_flow(self) -> None:
+        tool = self.read(".claude/the-world/tool.md")
+        self.assertNotIn("no longer ships", tool)
+        self.assertIn("templates/skill-wrapper-tool.md.tmpl", tool)
+        self.assertIn("Split the request, place each piece, then build", tool)
+        self.assertIn("wait for the user's confirmation", tool)
+        self.assertIn("bin/scaffold-world-skill.py <word> tool", tool)
+        self.assertIn("Split the request, place each piece, then build",
+                      self.read("templates/skill-wrapper-tool.md.tmpl"))
+
+    @unittest.skipUnless((KIT.parents[1] / "SKILL.md").exists(), "run from the kit's source")
+    def test_the_start_skill_says_how_to_renew_an_old_wrapper(self) -> None:
+        skill = " ".join((KIT.parents[1] / "SKILL.md").read_text(encoding="utf-8").split())
+        self.assertNotIn("is never empty", skill)
+        self.assertIn("re-run the scaffolder with the same flow", skill)
+
+
 if __name__ == "__main__":
     unittest.main()
