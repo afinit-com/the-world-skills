@@ -39,6 +39,18 @@ def _fit(lines: list[str], limit: int) -> list[str]:
     return out
 
 
+def _excerpt(text: str) -> str:
+    """The head of what a run said, marked when it is not all of it. A cut inside a code
+    block closes that block again: Slack shows an unclosed ``` as literal backticks, and
+    on Discord it would run on into the footer under the card. Redacted before the cut,
+    so a secret is never cut short of what redact() recognises."""
+    text = redact(text)
+    if len(text) <= CARD_EXCERPT_CHARS:
+        return text
+    cut = text[: CARD_EXCERPT_CHARS - 1] + "…"
+    return cut + "\n```" if cut.count("```") % 2 else cut
+
+
 def task_card_lines(home: Path, record: Any, result: Any) -> list[str]:
     """The lines under a task card's headline: a status line, then what the run said.
 
@@ -60,7 +72,7 @@ def task_card_lines(home: Path, record: Any, result: Any) -> list[str]:
         return _fit([status, *quoted], CARD_BODY_CHARS)
     if evidence:
         status += " · " + _one_line(" · ".join(evidence), CARD_EVIDENCE_CHARS)
-    excerpt = redact(text)[:CARD_EXCERPT_CHARS]
+    excerpt = _excerpt(text)
     return _fit([status, *(f"> {line}" for line in excerpt.splitlines())], CARD_BODY_CHARS)
 
 
