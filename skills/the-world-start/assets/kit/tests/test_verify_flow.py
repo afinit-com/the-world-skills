@@ -305,6 +305,18 @@ class VerifyPlanTests(unittest.TestCase):
         self.assertIn("chat:write.customize", plan)
         self.assertIn("`REVIEWER_BOT_TOKEN` is not set, so it falls back to the main app", plan)
 
+    def test_the_icon_line_reads_chat_icon_not_the_portrait(self) -> None:
+        # Review of PR #6: the plan said "its portrait" for a local portrait file that
+        # Slack never shows, and "no portrait" for a persona with only an icon_url.
+        self.reviewer.portrait = "portraits/reviewer.png"
+        self.assertIn("the main app's icon (no `icon_url` set)", verify_plan(self.harness))
+        self.reviewer.portrait, self.reviewer.icon_url = "", "https://img.example/r.png"
+        self.assertIn("Reviewer (`reviewer`) posts under its own name, its icon (`icon_url`)",
+                      verify_plan(self.harness))
+        self.reviewer.icon_url = ""
+        self.reviewer.portrait = "https://img.example/r.png"  # before icon_url existed
+        self.assertIn("its icon (the http(s) `portrait`)", verify_plan(self.harness))
+
     def test_an_explicit_gateway_decides_the_channel_like_the_runtime(self) -> None:
         # Review of #2: Harness.channel wins at runtime, but the plan ignored it and asked
         # a poll-only harness for a Slack thread.

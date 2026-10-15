@@ -121,7 +121,14 @@ def verify_plan(harness) -> str:
                        "shows the main app's name)")
                 if p.bot_token_env:
                     how += f"; `{p.bot_token_env}` is not set, so it falls back to the main app"
-            icon = "its portrait" if p.portrait else "no portrait set (the main app's icon)"
+            # Persona.chat_icon, the value PostingMixin._face sends; a local `portrait`
+            # is the world map's picture and never reaches Slack.
+            if p.icon_url:
+                icon = "its icon (`icon_url`)"
+            elif p.chat_icon:
+                icon = "its icon (the http(s) `portrait`)"
+            else:
+                icon = "the main app's icon (no `icon_url` set)"
             out.append(f"- [ ] {p.display} (`{p.key}`) posts under its own name, "
                        f"{icon} and voice, through {how}")
         if subs:
