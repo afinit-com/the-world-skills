@@ -10,7 +10,7 @@
 # its writer rolls it (bin/ops-log.py).
 #
 # One outage is one incident: it opens the first round that finds the harness down (or
-# cannot tell) and closes the first round that finds it running again. With Slack on, an
+# cannot tell) and closes once its recovery notification is delivered. With Slack on, an
 # incident is one message, and every later line about it is a reply in that thread.
 #
 # Rendered by bin/ops-kit.py from the kit's templates/ops/. Re-render rather than edit.
@@ -71,9 +71,10 @@ notify() {
   rm -f "$STATE/notify.err"
   if [ "$rc" != 0 ]; then
     log "⚠️  Slack notification failed (see the line above); the event is only in this log"
-    return 0
+    return "$rc"
   fi
   if [ -n "$ts" ] && [ -f "$INCIDENT" ]; then echo "$ts" >"$INCIDENT"; fi
+  return 0
 }
 
 # Only watchdog rounds write this log, one at a time under the lock, so rolling it by
@@ -85,8 +86,9 @@ notify() {
 # would not help, so say it once each time it starts happening.
 if [ -f "$LOGS/.console.out.dropping" ]; then
   if [ ! -f "$STATE/reported-dropping" ]; then
-    notify "the console writer is dropping lines: $(cat "$LOGS/.console.out.dropping")"
-    touch "$STATE/reported-dropping"
+    if notify "the console writer is dropping lines: $(cat "$LOGS/.console.out.dropping")"; then
+      touch "$STATE/reported-dropping"
+    fi
   fi
 else
   rm -f "$STATE/reported-dropping"
@@ -95,7 +97,8 @@ fi
 # Failures, including an unreadable process list, share the same retry schedule.
 set_retry() {
   [ "${retry_scheduled:-0}" = 1 ] && return 0
-  failures=$(cat "$STATE/failures" 2>/dev/null || echo 0)
+  local counter=${1:-failures}
+  failures=$(cat "$STATE/$counter" 2>/dev/null || echo 0)
   failures=$((failures + 1))
   delay=$BACKOFF_MIN_S
   i=1
@@ -104,7 +107,7 @@ set_retry() {
     i=$((i + 1))
   done
   [ "$delay" -gt "$BACKOFF_MAX_S" ] && delay=$BACKOFF_MAX_S
-  echo "$failures" >"$STATE/failures"
+  echo "$failures" >"$STATE/$counter"
   echo $((now + delay)) >"$STATE/next_try"
 
   retry_scheduled=1
@@ -119,8 +122,11 @@ notify_state() {
   shift
   open_incident
   if [ "$(cat "$STATE/reported-failure" 2>/dev/null)" != "$key" ]; then
-    notify "$*"
-    echo "$key" >"$STATE/reported-failure"
+    if notify "$*"; then
+      echo "$key" >"$STATE/reported-failure"
+    else
+      rm -f "$STATE/reported-failure"
+    fi
   else
     log "$* (posted already)"
   fi
@@ -132,8 +138,11 @@ notify_restart() {
   local key=$1
   shift
   open_incident
-  notify "$*"
-  echo "$key" >"$STATE/reported-failure"
+  if notify "$*"; then
+    echo "$key" >"$STATE/reported-failure"
+  else
+    rm -f "$STATE/reported-failure"
+  fi
 }
 
 check_unknown() {
@@ -175,8 +184,14 @@ if [ "$running_rc" = 0 ]; then
   if [ -f "$INCIDENT" ] || [ -f "$STATE/failures" ]; then
     again="running again after $(cat "$STATE/failures" 2>/dev/null || echo 0) restart(s)"
     if [ -f "$INCIDENT" ]; then
-      notify "recovered: $again; this incident is closed"
-      rm -f "$INCIDENT"
+      # A failed recovery post keeps the incident open, with its own backoff count.
+      # It never turns a healthy harness into a restart attempt.
+      if [ -f "$STATE/recovery-failures" ] && [ "$now" -lt "$next_try" ]; then exit 0; fi
+      if ! notify "recovered: $again; this incident is closed"; then
+        set_retry recovery-failures
+        exit 0
+      fi
+      rm -f "$INCIDENT" "$STATE/recovery-failures"
     else
       log "$again"
     fi
@@ -184,6 +199,9 @@ if [ "$running_rc" = 0 ]; then
   fi
   exit 0
 fi
+
+# It failed again before recovery could be delivered: resume the same incident.
+rm -f "$STATE/recovery-failures"
 
 # Stopped on purpose. Read under the lock, so a `down` either finished before this
 # round (marker present) or starts after it.

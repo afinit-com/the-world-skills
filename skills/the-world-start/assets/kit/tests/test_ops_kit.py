@@ -56,6 +56,21 @@ class RenderTest(unittest.TestCase):
         self.home = Path(self.tmp.name) / "a & b"  # XML- and shell-hostile on purpose
         self.home.mkdir()
 
+    @unittest.skipUnless(POSIX, "POSIX symlink process-list limitation")
+    def test_arbitrary_symlink_launch_limitation_is_documented(self):
+        import re
+        alias = self.home.parent / "alias home"
+        alias.symlink_to(self.home, target_is_directory=True)
+        # A launcher rendered from the canonical home cannot enumerate arbitrary
+        # aliases later used by an operator. Preserve strict matching (shells must
+        # never become kill targets) and document the required launch spelling.
+        pattern = ops_kit.process_match(self.home)
+        self.assertIsNone(re.search(pattern, f"python {alias}/harness.py"))
+        self.assertIsNotNone(re.search(pattern, f"python {alias.resolve()}/harness.py"))
+        docs = (KIT / "docs/operations.md").read_text(encoding="utf-8")
+        self.assertIn("arbitrary symbolic-link aliases", docs)
+        self.assertIn("canonical absolute path", docs)
+
     def test_launchers_route_writer_diagnostics_to_bounded_log(self):
         for os_name in ("macos", "linux", "windows"):
             files = _render(self.home, os_name)
@@ -449,6 +464,8 @@ path = os.path.join(here, "posts.jsonl")
 count = len(open(path).read().splitlines()) if os.path.exists(path) else 0
 with open(path, "a") as f:
     f.write(json.dumps({"thread": thread, "text": args[-1]}) + "\\n")
+if os.path.exists(os.path.join(here, "notify-fail")):
+    raise SystemExit(1)
 if thread and not os.path.exists(os.path.join(here, "thread-gone")):
     print(thread)
 else:
@@ -533,8 +550,93 @@ class ConsoleWriterTest(unittest.TestCase):
         self.assertNotIn(': >"$f"', watchdog)
 
 
+class NotificationRetryTests:
+    """The same delivery-failure scenarios run against bash and Windows PowerShell."""
+
+    def prepare_notification_retry(self):
+        (self.home / "bin" / "ops-notify.py").write_text(FAKE_NOTIFY, encoding="utf-8")
+        if WINDOWS:
+            files = ops_kit.render(self.home, "stub", "windows", self.python, self.run_path,
+                                   user=self.user, notify=("T_TOKEN", "T_CHAN"))
+        else:
+            files = ops_kit.render(self.home, "stub", "linux", self.home / ".venv/bin/python",
+                                   "/usr/bin:/bin", notify=("T_TOKEN", "T_CHAN"))
+        ops_kit.write(self.home, files, force=True)
+        # Only process checks succeed when the healthy marker is present. Record all
+        # actions so a recovery delivery retry cannot accidentally restart the harness.
+        if WINDOWS:
+            self.up.write_text(
+                "Add-Content -LiteralPath (Join-Path $PSScriptRoot 'actions') -Value $args[0]\n"
+                "if ((Test-Path -LiteralPath (Join-Path $PSScriptRoot 'healthy')) -and "
+                "($args[0] -in @('running', 'healthy'))) { exit 0 }\nexit 1\n")
+        else:
+            self.up.write_text(
+                '#!/bin/sh\ndir=$(dirname "$0")\necho "$1" >>"$dir/actions"\n'
+                'if [ -f "$dir/healthy" ]; then\n'
+                '  case "$1" in running|healthy) exit 0;; esac\nfi\nexit 1\n')
+        self.failed_delivery = self.home / "bin" / "notify-fail"
+        self.failed_delivery.touch()
+
+    def notification_round(self):
+        result = self.run_ps(self.watchdog) if WINDOWS else self.run_watchdog()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def notification_attempts(self):
+        path = self.home / "bin" / "posts.jsonl"
+        return [json.loads(line) for line in path.read_text().splitlines()]
+
+    def test_failed_failure_delivery_retries_after_backoff_then_deduplicates(self):
+        self.prepare_notification_retry()
+        self.notification_round()
+        self.assertFalse((self.state / "reported-failure").exists())
+        self.assertTrue((self.state / "incident").exists())
+        self.notification_round()
+        self.assertEqual(len(self.notification_attempts()), 1, "backoff was ignored")
+        self.failed_delivery.unlink()
+        (self.state / "next_try").write_text("0")
+        self.notification_round()
+        self.assertEqual(len(self.notification_attempts()), 2)
+        self.assertEqual((self.state / "reported-failure").read_text().strip(), "start-failed")
+        self.assertEqual((self.state / "incident").read_text().strip(), "2.0")
+        (self.state / "next_try").write_text("0")
+        self.notification_round()
+        self.assertEqual(len(self.notification_attempts()), 2, "successful delivery repeated")
+        log = (self.home / "logs/watchdog.log").read_text(encoding="utf-8")
+        self.assertEqual(log.count("could not start it (attempt"), 3)
+
+    def test_failed_recovery_delivery_stays_pending_without_restarting(self):
+        self.prepare_notification_retry()
+        self.state.mkdir(parents=True, exist_ok=True)
+        (self.state / "incident").write_text("111.1")
+        (self.state / "failures").write_text("2")
+        (self.home / "scripts/healthy").touch()
+        self.notification_round()
+        self.assertEqual((self.state / "incident").read_text().strip(), "111.1")
+        self.assertEqual((self.state / "recovery-failures").read_text().strip(), "1")
+        self.assertEqual((self.state / "failures").read_text().strip(), "2")
+        self.notification_round()
+        self.assertEqual(len(self.notification_attempts()), 1, "backoff was ignored")
+        (self.state / "next_try").write_text("0")
+        self.notification_round()
+        self.assertEqual((self.state / "recovery-failures").read_text().strip(), "2")
+        self.assertGreaterEqual(int((self.state / "next_try").read_text()), int(time.time()) + 55)
+        self.failed_delivery.unlink()
+        (self.state / "next_try").write_text("0")
+        self.notification_round()
+        attempts = self.notification_attempts()
+        self.assertEqual([p["thread"] for p in attempts], ["111.1"] * 3)
+        self.assertTrue(all("recovered" in p["text"] and "2 restart(s)" in p["text"]
+                            for p in attempts))
+        for name in ("incident", "failures", "next_try", "recovery-failures"):
+            self.assertFalse((self.state / name).exists(), name)
+        self.notification_round()
+        self.assertEqual(len(self.notification_attempts()), 3)
+        actions = (self.home / "scripts/actions").read_text().splitlines()
+        self.assertEqual(actions, ["running", "healthy"] * 5)
+
+
 @unittest.skipUnless(POSIX, "the launcher and watchdog are bash + pgrep (macOS, Linux)")
-class LauncherAndWatchdogTest(unittest.TestCase):
+class LauncherAndWatchdogTest(NotificationRetryTests, unittest.TestCase):
     """Runs the rendered scripts against a stub harness in a real venv."""
 
     def setUp(self):
@@ -1135,7 +1237,7 @@ PS = ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass
 
 
 @unittest.skipUnless(WINDOWS, "the PowerShell scripts and the scheduled task are Windows only")
-class WindowsLauncherTest(unittest.TestCase):
+class WindowsLauncherTest(NotificationRetryTests, unittest.TestCase):
     """Runs the rendered PowerShell scripts against a stub harness in a real venv, and
     registers the rendered task with Task Scheduler. CI runs this on a throwaway
     windows-latest VM; everything started or registered here is removed again."""
