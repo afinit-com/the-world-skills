@@ -36,6 +36,9 @@ MAX_PENDING_APPROVALS = 50
 # task.new_task_id's shape. An ask button's task id arrives from Slack untrusted and is
 # only quoted into the prompt when it looks like one.
 _TASK_ID = re.compile(r"\d{8}-[0-9a-f]{4}")
+# Told only to whoever clicked a button with no open ask behind it. Same words as the
+# Discord gateway's: the clicker needs to know the click did nothing, the thread does not.
+APPROVAL_STALE = "이 승인 요청은 이미 처리됐거나 더는 유효하지 않습니다."
 
 
 class ApprovalMixin:
@@ -542,6 +545,19 @@ class ApprovalMixin:
         identity = (agent.persona or self.harness.main_persona).key
         await self._handle_mention(thread_ts, text, {"ts": msg_ts, "user": clicker}, identity)
 
+    async def _tell_clicker(self, clicker: str, thread_ts: str, text: str) -> None:
+        """An ephemeral note only `clicker` sees. Best-effort: a stale click changes
+        nothing, so a note that cannot be delivered is logged rather than posted to the
+        whole thread."""
+        if not self.web or not clicker:
+            return
+        try:
+            await slack_call(self.web, "chat_postEphemeral",
+                channel=self.harness.slack.channel, user=clicker, thread_ts=thread_ts, text=text,
+            )
+        except Exception as exc:  # noqa: BLE001 — a courtesy note, never worth failing over
+            self.harness.log(f"ephemeral note to {clicker} failed: {exc!r}")
+
     async def _on_interactive(self, payload: dict) -> None:
         """Block Kit button clicks. Approve/deny is the ONE decision that must stay
         with the approver — everyone else's clicks are politely rejected."""
@@ -647,15 +663,30 @@ class ApprovalMixin:
             return
         approved = action_id == "world_approve"
         ph = self.harness.approval_phrases
+
+        pending = self.state.get("pending_approvals", [])
+        # A click decides the ask its OWN message posted, and nothing else. This used to
+        # fall back to an empty entry and carry on: a button with no open ask behind it —
+        # the same card clicked twice, a card already answered, the button left in the
+        # link preview of a "기존 승인 카드" pointer (found live: Slack never refreshes an
+        # unfurl), or a value nobody rendered — wrote a fresh grant, rewrote whatever
+        # message carried it to 승인됨, and woke the requester, so a tool that had already
+        # run on its one approval ran again. No open ask, no decision: only the clicker
+        # hears that it is gone.
+        entry = next((p for p in pending if msg_ts and p.get("msg_ts") == msg_ts), None)
+        if entry is None:
+            await self._tell_clicker(clicker, thread_ts, APPROVAL_STALE)
+            self.harness.log(
+                f"{action_id} click on {msg_ts or '?'} in thread {thread_ts} matched no "
+                "pending ask — ignored"
+            )
+            return
+        # Spend the ask BEFORE the first await: a double click arrives as two events, and
+        # the second must find nothing to decide (the Discord gateway does the same).
+        self.state["pending_approvals"] = [p for p in pending if p is not entry]
         await resolve_buttons(
             (ph.resolved_approved if approved else ph.resolved_rejected).format(who=clicker)
         )
-
-        pending = self.state.get("pending_approvals", [])
-        # Grab the summary off the pending entry BEFORE dropping it — it's the
-        # record of what was actually approved, and it's gone a line later.
-        entry = next((p for p in pending if p.get("msg_ts") == msg_ts), {})
-        self.state["pending_approvals"] = [p for p in pending if p.get("msg_ts") != msg_ts]
 
         # The grant a gated write tool checks. One click authorizes one successful
         # call (make_approval_gated consumes it); a denial leaves nothing behind and
@@ -690,8 +721,15 @@ class ApprovalMixin:
         # asked over there sees the answer without visiting our channel. Parsed here,
         # BEFORE anything reads `requester` — it used to be parsed below the ledger
         # append, which raised UnboundLocalError on every single button click.
+        #
+        # The pending entry recorded the same routing when the card was posted, and it is
+        # what this process wrote rather than what arrived on the click, so it wins; the
+        # value only fills in for an entry from before those fields were stored.
         routing, _, requester = (value or "").partition("|")
         reply_channel, _, reply_thread = routing.rpartition(":")
+        requester = entry.get("requester") or requester
+        reply_channel = entry.get("reply_channel") or reply_channel
+        reply_thread = entry.get("reply_thread_ts") or reply_thread
 
         # Append-only, and written for BOTH outcomes. A ledger that only records
         # approvals cannot answer "what has this harness already been told no to?", which
@@ -704,7 +742,7 @@ class ApprovalMixin:
             # co_approver's — derived generally for correctness.
             "by_kind": "co_approver" if (slack.co_approver and clicker == slack.co_approver) else "human",
             "thread_ts": thread_ts,
-            "requester": requester or entry.get("requester", "?"),
+            "requester": requester or "?",
             "summary": entry.get("summary", "")[:300],
         })
 
