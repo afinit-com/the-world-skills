@@ -294,7 +294,7 @@ class AsHumanTests(unittest.IsolatedAsyncioTestCase):
         obj._handle_mention.assert_not_awaited()
         self.assertEqual(obj._dispatch_bot_hop.await_count, 2)
         self.assertEqual(obj._dispatch_bot_hop.call_args.args[1], '<@UBOT> [as-human:x] hop')
-        self.assertEqual(err.getvalue().count('SLACK_AS_HUMAN_SECRET'), 1, err.getvalue())
+        self.assertEqual(err.getvalue().count('[world] SLACK_AS_HUMAN_SECRET'), 1, err.getvalue())
         self.assertNotIn('a' * 15, err.getvalue())
 
     async def test_a_secret_of_the_minimum_length_works(self):
@@ -500,6 +500,29 @@ class SayAsHumanTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(f'[as-human:{SECRET}] <@UPERSONA> hello',
                                  clients['xoxb-main'].chat_postMessage.call_args.kwargs['text'])
             self.assertNotIn('xoxb-foreign', clients)
+
+    async def test_short_secret_init_and_warning_describe_the_same_recovery(self):
+        from world.slack import as_human
+
+        module = self.module()
+        key = 'OBS_SLACK_AS_HUMAN_SECRET'
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / 'harness.env'
+            path.write_text(f'{key}=short-value\n')
+            before = path.read_bytes()
+            output = io.StringIO()
+            with patch.object(module, 'env_path', return_value=path), \
+                    patch.dict(os.environ, {key: 'short-value'}, clear=True), \
+                    patch.object(as_human, '_warned_short', set()), \
+                    contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
+                module.init_secret(key)
+                self.assertEqual('', as_human.configured_secret(key))
+            self.assertEqual(before, path.read_bytes())
+            self.assertNotIn('short-value', output.getvalue())
+            self.assertNotIn('already configured', output.getvalue())
+            self.assertIn('clear', output.getvalue())
+            self.assertIn('unset', output.getvalue())
+            self.assertIn('--prefix OBS init', output.getvalue())
 
     async def test_short_secret_send_does_not_call_slack(self):
         module = self.module()

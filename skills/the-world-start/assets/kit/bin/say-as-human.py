@@ -18,7 +18,7 @@ sys.path.insert(0, str(ROOT))
 from slack_sdk.web.async_client import AsyncWebClient
 
 from world.env import env_path, load_harness_env, parse_env_file
-from world.slack.as_human import MIN_SECRET, configured_secret
+from world.slack.as_human import MIN_SECRET, configured_secret, secret_recovery
 from world.slack.listener import MENTION_RE
 
 
@@ -31,7 +31,10 @@ def init_secret(key: str) -> None:
     path = env_path()
     values = parse_env_file(path)
     if values.get(key) or os.environ.get(key):
-        print('as-human secret already configured')
+        if any(value and len(value) < MIN_SECRET for value in (values.get(key), os.environ.get(key))):
+            print(f'as-human secret is too short to use; {secret_recovery(key)}', file=sys.stderr)
+        else:
+            print('as-human secret already configured')
         return
     secret = secrets.token_urlsafe(32)
     if key in values:
