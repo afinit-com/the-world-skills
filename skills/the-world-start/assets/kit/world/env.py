@@ -284,6 +284,8 @@ def redact(text: str) -> str:
 
 if __name__ == "__main__":
     # Launchers need names only, never secret values or the world package's imports.
+    # Run it with `python -I`: as a script, its directory comes first on sys.path and
+    # world/types.py shadows the standard `types` that pathlib's imports need.
     import argparse
     parser = argparse.ArgumentParser(description="List keys declared by a harness env file.")
     parser.add_argument("--keys", type=pathlib.Path, required=True)

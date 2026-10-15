@@ -112,8 +112,10 @@ function Join-Ids($Processes) { ($Processes | ForEach-Object { $_.ProcessId }) -
 # Every key env\harness.env declares. The loader lets a variable already set win over
 # the file; under this launcher the file wins, because a stale value in the session that
 # ran `up` (a token, an OAuth client) is not something the harness was configured with.
+# `-I` keeps world\ off sys.path: run as a script, world\types.py would stand in for the
+# standard `types` module and the import of pathlib would fail.
 function Get-EnvKeys {
-  $keys = @(& $Py (Join-Path $HomeDir 'world\env.py') --keys (Join-Path $HomeDir 'env\harness.env'))
+  $keys = @(& $Py -I (Join-Path $HomeDir 'world\env.py') --keys (Join-Path $HomeDir 'env\harness.env'))
   if ($LASTEXITCODE -ne 0) { throw 'cannot read harness env keys; not starting' }
   $keys | Where-Object { $_ }
 }

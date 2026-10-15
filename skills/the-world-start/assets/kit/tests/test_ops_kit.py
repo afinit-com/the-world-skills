@@ -169,6 +169,13 @@ class RenderTest(unittest.TestCase):
         self.assertIn("-ExecutionPolicy Bypass -File", arguments)
         self.assertIn(str(self.home.resolve() / "scripts" / "my-harness-watchdog.ps1"), arguments)
 
+    def test_launchers_read_env_keys_in_isolated_mode(self):
+        # Without -I, world/types.py shadows the standard `types` (InstalledHomeLauncherTest).
+        sh = _render(self.home, "linux")["scripts/my-harness-up"][0]
+        self.assertIn('"$PY" -I "$HOME_DIR/world/env.py" --keys', sh)
+        ps1 = _render(self.home, "windows", user="u")["scripts/my-harness-up.ps1"][0]
+        self.assertIn("& $Py -I (Join-Path $HomeDir 'world\\env.py') --keys", ps1)
+
     def test_windows_scripts_quote_hostile_values_for_powershell(self):
         files = _render(self.home, "windows", user="u", notify=("OBS_SLACK_BOT_TOKEN", "OBS_SLACK_CHANNEL"),
                         keep_days=30)
@@ -807,6 +814,54 @@ class LauncherAndWatchdogTest(unittest.TestCase):
             time.sleep(0.1)
         self.assertFalse(dropping.exists())
         self.assertIn("were dropped", console.read_text(encoding="utf-8"))
+
+
+@unittest.skipUnless(POSIX, "the launcher and watchdog are bash + pgrep (macOS, Linux)")
+class InstalledHomeLauncherTest(unittest.TestCase):
+    """`up` in a home laid out by install-kit, with the whole world/ package. The stub
+    homes above copy only world/env.py, so they cannot see world/types.py shadow the
+    standard `types` module when the launcher runs world/env.py as a script."""
+
+    INSTALLER = KIT.parents[1] / "scripts" / "install-kit.py"
+
+    def interpreters(self) -> list[str]:
+        found = [sys.executable]
+        # Xcode's python3 on macOS, the distribution's on Linux: a different stdlib
+        # import order from uv's CPython, and both failed here before.
+        if Path("/usr/bin/python3").exists():
+            found.append("/usr/bin/python3")
+        return found
+
+    def test_up_starts_the_harness_in_an_installed_home(self):
+        for interpreter in self.interpreters():
+            with self.subTest(python=interpreter), tempfile.TemporaryDirectory() as tmp:
+                home = Path(tmp).resolve() / "installed home"
+                subprocess.run([sys.executable, str(self.INSTALLER), str(home),
+                                "--provider", "codex", "--channel", "slack"],
+                               check=True, capture_output=True, text=True)
+                self.assertTrue((home / "world" / "types.py").exists())
+                subprocess.run([interpreter, "-m", "venv", "--without-pip", str(home / ".venv")],
+                               check=True)
+                (home / "harness.py").write_text(STUB_HARNESS, encoding="utf-8")
+                (home / "env").mkdir(exist_ok=True)
+                (home / "env" / "harness.env").write_text("STUB_FROM_FILE=from-file\n",
+                                                          encoding="utf-8")
+                python = home / ".venv" / "bin" / "python"
+                files = ops_kit.render(home, "stub", "linux", python, "/usr/bin:/bin")
+                ops_kit.write(home, files, force=False)
+                up = home / "scripts" / "stub-up"
+                env = {k: v for k, v in os.environ.items() if k != "WORLD_OPS_LOCK_HELD"}
+                env["STUB_FROM_FILE"] = "stale-shell-value"
+                try:
+                    started = subprocess.run([str(up), "up"], capture_output=True, text=True,
+                                             env=env, timeout=120)
+                    self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
+                    seen = json.loads((home / "env-seen.json").read_text(encoding="utf-8"))
+                    self.assertIsNone(seen["file_key"])
+                finally:
+                    subprocess.run([str(up), "down"], capture_output=True, env=env, timeout=120)
+                    subprocess.run(["pkill", "-9", "-f", ops_kit.process_match(home)],
+                                   capture_output=True)
 
 
 class LockAndRollOverlapTest(unittest.TestCase):
