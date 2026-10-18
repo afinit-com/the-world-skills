@@ -249,8 +249,7 @@ class AnnounceTests(GatewayCase):
         await self.gw.announce_task(record, run, self.harness.main_persona)
         file_body = self.transport.sent[-1]["text"]
         from world.channels import base
-        if not base._SAFE_DIR_OPEN or not all(getattr(os, name, 0) for name in
-                ("O_DIRECTORY", "O_NOFOLLOW", "O_NONBLOCK")):
+        if not base.FILE_PREVIEW_SUPPORTED:
             agent.announce = "result"
             await self.gw.announce_task(record, run, self.harness.main_persona)
             self.assertEqual(file_body, self.transport.sent[-1]["text"])

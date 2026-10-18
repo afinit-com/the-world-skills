@@ -296,59 +296,26 @@ next one, so a dry run is not a first real run and the report should say when th
 A scheduled or polled run is announced as a card whose headline is the task title: the
 `title=` given to `Signal` or `ScheduleTrigger`, else the prompt's first line. Give a
 worker whose prompt opens with an instruction to the model a `title=` a person can read.
-`Agent(announce="result")` is the default: the card body is the start of the run's final
-message, with the completion evidence shrunk onto the status line. A scheduled worker
-should end with a summary a person can read, especially when the announcement is the
-result (a briefing, a digest), rather than "done" or "saved report.md".
-`announce="evidence"` puts the completion evidence in the body instead, falling back to
-the final message when no evidence was recorded.
-`announce="file"` shows the opening of the run's report, and needs `writes_report=True`
-(only such a run leaves artifacts; anything else fails when the Agent is constructed, as
-does an invalid mode). The opening skips closed YAML front matter (`---` … `---`) and a
-leading `# ` title, which repeats the headline. It is what comes next up to the first
-`## ` heading; when that is itself a `## ` heading (a report shaped `# title`, then
-`## Summary`), it is that first section, up to the next `## `. Headings inside ``` or
-`~~~` fenced code do not count, and a fence never closed is text. The same
-300-character excerpt, markup conversion, token masking, mention handling, and fence
-closing apply as for `result`.
+`Agent(announce=...)` picks the card body:
+- `"result"` (default): the start of the run's final message, with the completion
+  evidence shrunk onto the status line. End a scheduled worker with a summary a person
+  can read (a briefing, a digest), not "done" or "saved report.md".
+- `"evidence"`: the completion evidence; the final message when none was recorded.
+- `"file"` (needs `writes_report=True`): the opening of the report this attempt wrote
+  under the task's `work/`: front matter and a leading `# ` title skipped, then up to
+  the first `## ` (or the first `## ` section, when the report opens with one). Name the
+  report with `announce_file="briefing.md"` (a path or glob under `work/`); otherwise the
+  first `.md`, then `.txt`, top level first, logs, data and hidden files left out. With
+  no readable report it falls back to `"result"`, so put the summary first in the report
+  and still end the run with one. On native Windows `file` cannot read reports safely
+  and always shows `"result"`; the harness warns at startup.
 
-The report is chosen from this attempt's files inside the task's `work/`: the run's
-`RunResult.artifacts` (a new folder brings the files in it), plus files in `work/`
-modified since the attempt was claimed, because a retry reuses `work/` and a report it
-rewrites is not new. New claims record epoch nanoseconds and compare file mtime at
-that precision; legacy claim events retain their stored second precision. This is a
-modification-time heuristic, not attempt ownership: preserved/future mtimes, coarse
-filesystems, clock changes and concurrent retries can affect selection. Older files
-with mtime before the claim, other tasks, and legacy `logs/` or `findings/` are excluded. `Agent(announce_file="briefing.md")` names it: a path or glob relative
-to `work/` (`"reports/*.md"`; `*` also crosses `/`), and only matching files are tried.
-Without it, `.md` (or `.markdown`) files come first, then `.txt`, top level before
-folders, then by name; hidden files and every other suffix (`.log`, `.json`, `.svg`, …)
-are left out, so name them with `announce_file` to show one. Matching and ranking
-precede the 500-candidate retention/read limit; discovery still walks the directory
-tree and is not a total traversal budget. External artifact directories are excluded
-before traversal. Candidates are tried in order, and the first that reads as text wins: at most 64 KiB of a regular, single-linked
-UTF-8 file opened relative to a pinned `work/` directory descriptor. Every relative
-path component is opened with symlink following disabled; internal symlinks and all
-multiply linked files are also excluded. Platforms without `dir_fd` and the required
-POSIX open flags use `result` instead of a file preview. **On native Windows `file`
-never shows a report**: every card falls back to `result`, and nothing warns when the
-Agent is created or started, so choose `result` for a Windows harness. Control characters (ANSI color
-codes) and other encodings count as binary. When none is usable the card uses `result`.
-Put the person-facing summary first in the report, and still finish with a readable
-summary for that fallback.
-A `file` card quotes the report, so whatever it starts with reaches the channel.
-Only file excerpts use the broader masking policy; result cards, evidence, error
-responses and result fallback keep their existing masking. File masking starts from
-that existing masking (so an excerpt hides at least what a result card would, including
-every `*_SECRET` value anywhere), then adds common token shapes (OpenAI and Anthropic
-keys including Claude Code OAuth tokens, AWS key IDs, Discord bot tokens),
-`token=`/`password=`-style values, and the values of `*_TOKEN`, `*_KEY` and
-`*_PASSWORD` variables (at least eight characters) as whole tokens. It does not catch
-every secret format: `token: …`, JSON/YAML keys, an AWS secret access key that is not
-in the environment, a `*_TOKEN`/`*_KEY` value inside a longer path or word, and
-split, encoded or Unicode-disguised values pass through. Common documentation
-placeholders are preserved, along with punctuation and URL fragments. Do not
-point `announce_file` at raw logs or API dumps.
+Every mode keeps the 300-character excerpt and mention handling. A `file` excerpt also
+masks common token shapes, `token=`-style values and secret env values, but it quotes
+the report into the channel and masking is not complete: never point it at raw logs or
+API dumps. Selection and masking details live in `world/channels/base.py`
+(`_file_preview`) and `world/env.py` (`redact_file`).
+
 `Harness(provider=...)` takes `claude` or `codex`.
 
 `mutates=True` makes each task run in its own git worktree (the kit cuts it at spawn

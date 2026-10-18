@@ -27,7 +27,11 @@ FILE_PREVIEW_BYTES = 64 * 1024
 REPORT_SUFFIXES = {".md": 0, ".markdown": 0, ".txt": 1}
 # Matching candidates retained/read per card; discovery still walks work/.
 REPORT_CANDIDATES = 500
-_SAFE_DIR_OPEN = os.open in os.supports_dir_fd and os.stat in os.supports_dir_fd
+# A report is read only through descriptor-relative, no-follow opens. Native Windows has
+# neither, so there announce="file" always shows the result (Harness warns at startup).
+FILE_PREVIEW_SUPPORTED = (os.open in os.supports_dir_fd and os.stat in os.supports_dir_fd
+                          and all(getattr(os, name, 0) for name in
+                                  ("O_DIRECTORY", "O_NOFOLLOW", "O_NONBLOCK")))
 # A fenced code block's opening or closing line: 3+ backticks or tildes, up to 3 spaces in.
 _FENCE = re.compile(r" {0,3}(`{3,}|~{3,})(.*)")
 
@@ -313,8 +317,7 @@ def _file_preview(home: Path, record: Any, result: Any, pattern: str = "") -> st
     work = home.resolve() / work.relative_to(home)
     # Native Windows lacks dir_fd/O_NOFOLLOW: fail closed to the result card rather
     # than claiming a path-based check can bind containment to the actual open file.
-    if not _SAFE_DIR_OPEN or not all(getattr(os, name, 0) for name in
-                                    ("O_DIRECTORY", "O_NOFOLLOW", "O_NONBLOCK")):
+    if not FILE_PREVIEW_SUPPORTED:
         return ""
     try:
         work_fd = os.open(work, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)

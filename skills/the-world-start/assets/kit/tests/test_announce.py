@@ -69,10 +69,8 @@ class AnnounceModeTests(unittest.IsolatedAsyncioTestCase):
         return str(path.relative_to(self.home))
 
     def require_safe_open(self):
-        # Check at execution time as well: the unsupported-platform probe patches
-        # this capability after discovery, and Windows must still run fallback tests.
-        if not base._SAFE_DIR_OPEN or not all(getattr(os, name, 0) for name in
-                ("O_DIRECTORY", "O_NOFOLLOW", "O_NONBLOCK")):
+        # Checked per test: Windows lacks it, and must still run the fallback tests.
+        if not base.FILE_PREVIEW_SUPPORTED:
             self.skipTest("file preview needs safe descriptor-relative open")
 
     async def test_file_mode_shows_intro_before_first_section(self):
@@ -299,10 +297,7 @@ class AnnounceModeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_platform_without_safe_open_falls_back_to_result(self):
         path = self.report("report.md", "Summary")
-        with patch("world.channels.base.os.O_NONBLOCK", 0, create=True), \
-                patch("world.channels.base.os.O_NOFOLLOW", 0, create=True):
-            self.assertEqual(await self.card(), await self.card("file", [path]))
-        with patch("world.channels.base._SAFE_DIR_OPEN", False):
+        with patch("world.channels.base.FILE_PREVIEW_SUPPORTED", False):
             self.assertEqual(await self.card(), await self.card("file", [path]))
 
     async def test_an_unusable_report_gives_way_to_the_next(self):
@@ -452,3 +447,20 @@ class AnnounceModeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_no_file_and_no_result_keeps_the_existing_evidence_fallback(self):
         self.assertEqual(await self.card(result=""), await self.card("file", result=""))
+
+    def test_startup_warns_when_file_mode_cannot_read_reports_here(self):
+        from world.harness import Harness
+
+        harness = Harness("t", home=self.home, git_root=self.home)
+        logged = []
+        harness.log = logged.append
+        harness.register(Agent("watch", MentionTrigger(), announce="file", writes_report=True))
+        harness.register(Agent("other", MentionTrigger()))
+        with patch("world.channels.base.FILE_PREVIEW_SUPPORTED", True):
+            self.assertEqual([], harness.preflight_announce())
+        with patch("world.channels.base.FILE_PREVIEW_SUPPORTED", False):
+            warned = harness.preflight_announce()
+        self.assertEqual(1, len(warned))
+        self.assertIn("watch:", warned[0])
+        self.assertNotIn("other", warned[0])
+        self.assertEqual(warned, logged)
