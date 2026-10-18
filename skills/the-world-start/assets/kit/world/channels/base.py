@@ -189,7 +189,8 @@ def _report_candidates(home: Path, record: Any, result: Any, work: Path, pattern
 
     That is the run's artifacts (a new folder contributes the files in it), plus any file
     in work/ modified since this attempt was claimed: a retry reuses work/, so a report it
-    rewrites is not new and is not an artifact. Older files are never candidates.
+    rewrites is not new and is not an artifact. Preserved mtimes or clock changes can
+    include older files or omit this attempt's report.
     """
     found: dict[str, Path] = {}
     keys: dict[str, tuple] = {}

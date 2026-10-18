@@ -309,6 +309,8 @@ worker whose prompt opens with an instruction to the model a `title=` a person c
   no readable report it falls back to `"result"`, so put the summary first in the report
   and still end the run with one. On native Windows `file` cannot read reports safely
   and always shows `"result"`; the harness warns at startup.
+  Selection uses artifacts and modification times (mtime), so preserved mtimes or clock
+  changes can select an older report or cause `"result"` fallback.
 
 Every mode keeps the 300-character excerpt and mention handling. A `file` excerpt also
 masks common token shapes, `token=`-style values and secret env values, but it quotes

@@ -23,3 +23,5 @@
   report is readable, and always on native Windows (warned at startup), so put the summary
   first in the report and keep a readable final message. File excerpts mask common
   secrets but not all: do not announce raw logs or dumps.
+  Selection uses artifacts and modification times (mtime), so preserved mtimes or clock
+  changes can select an older report or cause `result` fallback.
