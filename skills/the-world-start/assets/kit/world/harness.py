@@ -413,6 +413,26 @@ class Harness:
         self.log(msg)
         return [msg]
 
+    def preflight_announce(self) -> list[str]:
+        """Say at startup when announce="file" cannot show a report on this platform.
+
+        A report is read only through descriptor-relative, no-follow opens, which native
+        Windows lacks, so there every such card quietly shows the final message instead.
+        Returns the warnings it logged, for tests."""
+        from .channels.base import FILE_PREVIEW_SUPPORTED
+
+        names = [a.name for a in self.agents if a.announce == "file"]
+        if not names or FILE_PREVIEW_SUPPORTED:
+            return []
+        msg = (
+            f"⚠️ {', '.join(names)}: announce='file' cannot read reports on this platform "
+            "(no safe descriptor-relative open), so its cards show the final message, as "
+            "announce='result' does. End the run with a readable summary, or run the "
+            "harness on macOS, Linux or WSL."
+        )
+        self.log(msg)
+        return [msg]
+
     def preflight_guard_hooks(self) -> list[str]:
         """Say out loud when a registered guard hook cannot actually run.
 
@@ -582,6 +602,7 @@ class Harness:
         self.write_agent_scope()
         self.preflight_guard_hooks()
         self.preflight_mutates()
+        self.preflight_announce()
 
     async def _main_async(self, args) -> None:
         # Slack remains the first channel adapter, but importing world or constructing a

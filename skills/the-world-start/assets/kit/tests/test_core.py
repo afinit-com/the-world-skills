@@ -453,6 +453,40 @@ class AnnounceCardBodyTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("&lt;!channel>", body.splitlines()[0])
         self.assertIn("&lt;!here|here>", body)
 
+    async def test_plain_broadcast_words_in_the_card_do_not_notify_the_channel(self) -> None:
+        # Slack turns plain @channel/@here in a non-verbatim section into real broadcast
+        # mentions (found live). A word joiner after @ stops that and still reads the same.
+        import re
+        body = await self._card("알림: @channel @Here (@everyone).",
+                                evidence="실행 @here", title="배포 @CHANNEL")
+        self.assertIsNone(re.search(r"(?i)(?<![\w@])@(?:channel|here|everyone)\b", body))
+        self.assertEqual(4 + 1, body.count("@⁠"))
+        visible = body.replace("⁠", "")
+        for word in ("배포 @CHANNEL", "실행 @here", "알림: @channel @Here (@everyone)."):
+            self.assertIn(word, visible)
+        # Not a broadcast: an address, a longer word, an ordinary handle.
+        body = await self._card("mail ops@here.example @channels @hereford @alice")
+        self.assertNotIn("⁠", body)
+
+    async def test_broadcast_defusing_preserves_link_destinations_and_code(self) -> None:
+        for source, expected in (
+                ("[profile](https://example.com/@here)",
+                 "<https://example.com/@here|profile>"),
+                ("[@channel](https://example.com/@everyone)",
+                 "<https://example.com/@everyone|@\u2060channel>"),
+                ("<https://example.com/@channel|profile>",
+                 "<https://example.com/@channel|profile>"),
+                ("<https://example.com/@here|@everyone>",
+                 "<https://example.com/@here|@\u2060everyone>"),
+                ("<https://example.com/@everyone>", "<https://example.com/@everyone>"),
+                ("`@channel @here` outside @everyone",
+                 "`@channel @here` outside @\u2060everyone"),
+                ("```\n@channel @here\n```", "```\n@channel @here\n```"),
+                ("ops@channel.io", "ops@channel.io")):
+            with self.subTest(source=source):
+                body = await self._card(source)
+                self.assertEqual(expected, "\n".join(body.splitlines()[2:]).removeprefix("> "))
+
     async def test_an_operator_replay_card_with_long_evidence_stays_inside_one_section(self) -> None:
         from world.process import task as tasks
 

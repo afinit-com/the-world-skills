@@ -15,3 +15,13 @@
 - Outward side effects require the existing one-shot approval gate.
 - A successful process is not completion when an agent promises a report; verify the
   expected file exists.
+- Scheduled workers finish with a summary a person can read, rather than "done" or
+  "saved report.md". `Agent(announce=...)` picks the card body: `"result"` (default, the
+  final message), `"evidence"` (the completion check) or `"file"` (needs
+  `writes_report=True`: the opening of this attempt's report under `work/`, named with
+  `announce_file=` or else the first `.md`/`.txt`). `file` falls back to `result` when no
+  report is readable, and always on native Windows (warned at startup), so put the summary
+  first in the report and keep a readable final message. File excerpts mask common
+  secrets but not all: do not announce raw logs or dumps.
+  Selection uses artifacts and modification times (mtime), so preserved mtimes or clock
+  changes can select an older report or cause `result` fallback.

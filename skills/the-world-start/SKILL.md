@@ -296,9 +296,28 @@ next one, so a dry run is not a first real run and the report should say when th
 A scheduled or polled run is announced as a card whose headline is the task title: the
 `title=` given to `Signal` or `ScheduleTrigger`, else the prompt's first line. Give a
 worker whose prompt opens with an instruction to the model a `title=` a person can read.
-The card body is the start of the run's final message, with the completion evidence
-shrunk onto the status line, so a worker whose announcement is the result (a briefing,
-a digest) should end with that summary rather than "done".
+`Agent(announce=...)` picks the card body:
+- `"result"` (default): the start of the run's final message, with the completion
+  evidence shrunk onto the status line. End a scheduled worker with a summary a person
+  can read (a briefing, a digest), not "done" or "saved report.md".
+- `"evidence"`: the completion evidence; the final message when none was recorded.
+- `"file"` (needs `writes_report=True`): the opening of the report this attempt wrote
+  under the task's `work/`: front matter and a leading `# ` title skipped, then up to
+  the first `## ` (or the first `## ` section, when the report opens with one). Name the
+  report with `announce_file="briefing.md"` (a path or glob under `work/`); otherwise the
+  first `.md`, then `.txt`, top level first, logs, data and hidden files left out. With
+  no readable report it falls back to `"result"`, so put the summary first in the report
+  and still end the run with one. On native Windows `file` cannot read reports safely
+  and always shows `"result"`; the harness warns at startup.
+  Selection uses artifacts and modification times (mtime), so preserved mtimes or clock
+  changes can select an older report or cause `"result"` fallback.
+
+Every mode keeps the 300-character excerpt and mention handling. A `file` excerpt also
+masks common token shapes, `token=`-style values and secret env values, but it quotes
+the report into the channel and masking is not complete: never point it at raw logs or
+API dumps. Selection and masking details live in `world/channels/base.py`
+(`_file_preview`) and `world/env.py` (`redact_file`).
+
 `Harness(provider=...)` takes `claude` or `codex`.
 
 `mutates=True` makes each task run in its own git worktree (the kit cuts it at spawn
