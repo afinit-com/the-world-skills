@@ -66,7 +66,7 @@ At one row per session, a few hundred rows read fine in one go and Jev adds noth
 
 `--jev` sends each session's opener to TypeSafe's API (`TYPESAFE_API_KEY`). Before the
 first run, say so in one line: the opener only, redacted (credentials, cookies, auth
-headers, key and token values, emails, URLs) and cut to 600 characters. Run
+headers, key and token values, emails, URLs, home-directory paths) and cut to 600 characters. Run
 `--jev-dry-run` first and show its sample. Ask which projects to leave out (work
 repositories usually) and pass them as `--exclude-project`. Send nothing without a yes.
 
