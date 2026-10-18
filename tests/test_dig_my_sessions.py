@@ -2,8 +2,8 @@
 
 What it must hold: only what a person typed is mined; sessions a program started never
 reach the chore list; range and project flags narrow every agent alike; `find` searches
-tool output but not injected context; and `--jev` sends only redacted openers, nothing
-without a key, and leaves the counting to code.
+tool output but not injected context; and `--jev` sends only redacted openers with the
+vocabulary their errands share, nothing without a key, and leaves the counting to code.
 """
 
 from __future__ import annotations
@@ -24,7 +24,9 @@ ROOT = Path(__file__).resolve().parents[1]
 SKILL = ROOT / "skills/dig-my-sessions"
 DIG = SKILL / "dig.py"
 sys.path.insert(0, str(SKILL))
+import errands  # noqa: E402
 import jev  # noqa: E402
+import sources  # noqa: E402
 
 NOW = datetime.now(timezone.utc)
 # Built from parts so no token-shaped literal sits in the repository.
@@ -199,6 +201,25 @@ def agy_cli(root: Path, cwd: str, days_ago: float) -> None:
     ], days_ago)
 
 
+def claude_work(root: Path, sid: str, cwd: str, turns: list[tuple[float, str, list]]) -> None:
+    """A Claude session of several typed turns, each followed by its tool calls."""
+    rows = []
+    for days_ago, prompt, calls in turns:
+        rows.append({"type": "user", "sessionId": sid, "cwd": cwd, "promptSource": "typed",
+                     "timestamp": iso(days_ago), "message": {"role": "user", "content": prompt}})
+        rows.extend({"type": "assistant", "sessionId": sid, "cwd": cwd,
+                     "timestamp": iso(days_ago - 0.001),
+                     "message": {"content": [{"type": "tool_use", "name": name, "input": inp}]}}
+                    for name, inp in calls)
+    write_jsonl(root / "projects" / cwd.replace("/", "-") / f"{sid}.jsonl", rows,
+                min(t[0] for t in turns))
+
+
+SYNC = [("Bash", {"command": "cd ~/code/shop && git fetch origin && gh pr list --state open"}),
+        ("Bash", {"command": "tracker sync --team core"}),
+        ("Bash", {"command": "tracker sync --mine | head"})]
+
+
 DEPLOY = "스테이징 배포 상태 확인하고 슬랙에 결과 요약해서 올려줘 deploy check"
 
 
@@ -337,8 +358,8 @@ class FakeJev(BaseHTTPRequestHandler):
                                 "probabilities": {kind: 0.9}}
             else:
                 other = json.dumps(q["instructions"], ensure_ascii=False)
-                answers[qid] = {"type": "noul",
-                                "noul": 0.95 if "deploy" in state and "deploy" in other else 0.1}
+                same = any(w in state and w in other for w in ("deploy", "tracker sync"))
+                answers[qid] = {"type": "noul", "noul": 0.95 if same else 0.1}
         out = json.dumps({"model": "jev-test", "answers": answers,
                           "usage": {"input_tokens": 100, "output_tokens": 10}}).encode()
         self.send_response(200)
@@ -378,6 +399,79 @@ class JevTests(unittest.TestCase):
         self.assertEqual(top["agents"], ["claude", "codex"])
         self.assertEqual(top["days"], 4)
         self.assertEqual(j["usage"]["input_tokens"], 100 * len(FakeJev.requests))
+
+    def test_jev_groups_errands_worded_apart_by_the_work_they_did(self) -> None:
+        server = HTTPServer(("127.0.0.1", 0), FakeJev)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        FakeJev.requests = []
+        private = [("Bash", {"command": "zz-handle-9 push && curl https://private.example/x"}),
+                   ("Write", {"file_path": "/home/u/notes/secret-plan.md", "content": "x"})]
+        with tempfile.TemporaryDirectory() as raw:
+            base = Path(raw)
+            env = build_machine(base)
+            proj = str(base / "home/code/shop")
+            # the same chore, three wordings that share no word; the middle errand sits in
+            # a session left open for days, after an unrelated one
+            claude_work(base / "claude", "s1", proj, [(12, "지난번 하던 거 이어서 보자 원격이랑 이슈 목록 기준으로", SYNC)])
+            claude_work(base / "claude", "s2", proj, [
+                (11, "결제 위젯 색상 바꿔줘 버튼만 파란색으로 하고", private),
+                (8, "where are we on the open tickets and branches today", SYNC + private)])
+            claude_work(base / "claude", "s3", proj, [(4, "현황 파악 부탁해 오늘 기준으로 한 번에 정리해서 알려줘", SYNC)])
+            env.update({"TYPESAFE_API_KEY": "test-key",
+                        "TYPESAFE_BASE_URL": f"http://127.0.0.1:{server.server_port}"})
+            result = chores(env, "--jev")
+        server.shutdown()
+        server.server_close()
+        sent = json.dumps([r["body"] for r in FakeJev.requests], ensure_ascii=False)
+        self.assertIn("tracker sync", sent)
+        for leaked in ("zz-handle-9", "private.example", "secret-plan", "notes/", str(base)):
+            self.assertNotIn(leaked, sent)
+        group = next(g for g in result["jev"]["shortlist"]
+                     if any("이어서 보자" in m["opener"] for m in g["members"]))
+        self.assertEqual(group["errands"], 3)
+        self.assertEqual(group["sessions"], 3)
+        self.assertNotIn("결제 위젯", json.dumps(group["members"], ensure_ascii=False))
+
+
+class ErrandTests(unittest.TestCase):
+    def test_a_session_left_open_is_cut_into_errands_where_the_person_was_away(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw) / "claude"
+            claude_work(root, "w1", "/home/u/code/shop", [
+                (9, "릴리즈 노트 초안 써줘 지난 태그 이후 변경 기준으로", []),
+                (9 - 0.05, "좋아 그거 PR 설명에도 넣어줘", []),
+                (2, "오늘 들어온 이슈들 트래커랑 원격 브랜치 확인해서 정리해줘", SYNC),
+            ])
+            os.environ["CLAUDE_CONFIG_DIR"] = str(root)
+            try:
+                found = list(sources.claude(sources.Window(NOW - timedelta(days=30), NOW)))
+            finally:
+                os.environ.pop("CLAUDE_CONFIG_DIR")
+            rows = errands.build(found, str)
+        self.assertEqual([r["turns"] for r in rows], [2, 1])
+        self.assertEqual({r["session"] for r in rows}, {"w1"})
+        self.assertEqual(rows[0]["local"], {})
+        self.assertEqual(rows[1]["local"]["cmd:tracker sync"], 2)
+        self.assertEqual(rows[1]["local"]["cmd:git fetch"], 1)
+
+    def test_command_heads_skip_plumbing_heredocs_and_unshareable_names(self) -> None:
+        heads = errands.command_heads(
+            "cd x && FOO=1 uv run pytest -q | tee log\n"
+            "python3 - <<'EOF'\nimport json\nfor x in y: print(x)\nEOF\n"
+            "./scripts/Screenshot_2026.png; gh api repos/a/b")
+        self.assertEqual(heads, ["pytest", "gh api"])
+
+    def test_only_vocabulary_common_to_three_errands_is_shared(self) -> None:
+        rows = [{"local": {"tool:Bash": 3, "cmd:git fetch": 2, "host:private.example": 1,
+                           "edits:.md": 1, "cmd:zz-handle-9": 2, "skill:release": 1}}
+                for _ in range(2)]
+        rows.append({"local": {"cmd:git fetch": 1, "skill:release": 1, "host:private.example": 1,
+                               "edits:.md": 1}})
+        errands.share(rows)
+        self.assertEqual(rows[0]["shared"], {"tools": ["Bash"], "did": ["git fetch", "release"]})
+        state = json.dumps([jev.state_of({"opener": "x", **r}) for r in rows])
+        for private in ("private.example", ".md", "zz-handle-9"):
+            self.assertNotIn(private, state)
 
 
 class RedactTests(unittest.TestCase):

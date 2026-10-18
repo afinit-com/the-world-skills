@@ -14,8 +14,9 @@ legacy Gemini CLI, whichever are on this machine (`--agent` narrows it). The arc
 far too big for a model to read; this script does the deterministic reduction and makes
 no judgment. Which chores are worth automating is the caller's.
 
-Everything is offline and read-only, except `--jev`, which sends redacted openers to
-TypeSafe's API and needs TYPESAFE_API_KEY. Stdlib only.
+Everything is offline and read-only, except `--jev`, which sends redacted openers and
+their shared fingerprints (errands.py) to TypeSafe's API and needs TYPESAFE_API_KEY.
+Stdlib only.
 """
 
 from __future__ import annotations
@@ -322,7 +323,9 @@ def cmd_chores(argv: list[str]) -> int:
     ap.add_argument("--jev-same", type=float, default=0.7,
                     help="Noul probability at which two openers count as the same chore")
     ap.add_argument("--jev-candidates", type=int, default=5,
-                    help="nearest openers asked about per session")
+                    help="nearest errands asked about per errand, by words and by fingerprint")
+    ap.add_argument("--errand-gap", type=float, default=3.0,
+                    help="hours away that end one errand and start the next (--jev)")
     a = ap.parse_args(argv)
 
     window, agents = window_from(a), agents_from(a)
@@ -364,8 +367,10 @@ def cmd_chores(argv: list[str]) -> int:
     }
 
     if a.jev or a.jev_dry_run:
+        import errands
         import jev
-        result["jev"] = jev.run(rows, tokenize, min_sessions=a.min_sessions,
+        errand_rows = errands.build(kept, short, a.errand_gap)
+        result["jev"] = jev.run(errand_rows, tokenize, min_sessions=a.min_sessions,
                                 same=a.jev_same, k=a.jev_candidates, dry_run=a.jev_dry_run)
         if result["jev"].get("error"):
             print(f"jev: {result['jev']['error']}", file=sys.stderr)

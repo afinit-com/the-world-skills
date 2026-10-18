@@ -8,13 +8,20 @@ A labelling trial settled the split:
   scores were agent-written test prompts and one-off dev work that merely read as
   scriptable.
 
-So recurrence is never asked as a score. Code picks candidate pairs of similar openers,
-Jev answers one yes/no per pair ("the same chore?", a Noul), and code unions the yeses and
-counts sessions, days, agents and projects. Sessions a program started are dropped
-before anything is sent (in sources.py).
+So recurrence is never asked as a score. Code picks candidate pairs, Jev answers one
+yes/no per pair ("the same chore?", a Noul), and code unions the yeses and counts
+sessions, days, agents and projects. Sessions a program started are dropped before
+anything is sent (in sources.py).
 
-What leaves the machine: each session's opener, redacted (credentials, cookies, auth
-headers, key/token values, emails, URLs) and cut to 600 characters. Nothing else.
+What is compared is an errand (errands.py), not a session: a long session is cut where
+the person was away, and each errand carries a fingerprint of the work done. Openers of
+the same chore are often worded nothing alike while the commands run are identical, so
+candidate pairs come from opener words OR the local fingerprint.
+
+What leaves the machine: each errand's opener, redacted (credentials, cookies, auth
+headers, key/token values, emails, URLs) and cut to 600 characters, followed by its shared
+fingerprint: tool names, and the command heads, skills and MCP servers that recur across
+at least three errands of the scan. Never hosts, paths, file names or command arguments.
 
   POST {TYPESAFE_BASE_URL:-https://api.typesafe.ai}/v1/systemone
   Authorization: Bearer $TYPESAFE_API_KEY
@@ -34,6 +41,8 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from statistics import median
+
+import errands
 
 MAX_CHARS = 600
 WORKERS = 8
@@ -56,7 +65,8 @@ KIND = {
 }
 SAME = ("Is `other_request` the same recurring chore as the request in the state: the "
         "same procedure on the same kind of target, so one script or skill would do both, "
-        "even if it is worded differently?")
+        "even if it is worded differently? Each side shows what the person asked and what "
+        "the agent then did (tools, commands, services).")
 
 # Order matters: a header line goes before the bare-token rules eat its value.
 REDACTIONS = (
@@ -83,6 +93,16 @@ def redact(text: str) -> str:
         text = rx.sub(repl, text)
     text = " ".join(text.split())
     return text if len(text) <= MAX_CHARS else text[: MAX_CHARS - 1] + "…"
+
+
+def state_of(row: dict) -> str:
+    """What Jev sees of one errand: the redacted opener, then its shared fingerprint."""
+    asked = redact(row["opener"])
+    shared = row.get("shared") or {}
+    if not (shared.get("tools") or shared.get("did")):
+        return asked
+    return (f"asked: {asked}\ntools: {', '.join(shared.get('tools') or []) or '-'}"
+            f" | did: {', '.join(shared.get('did') or []) or '-'}")
 
 
 class JevError(RuntimeError):
@@ -159,21 +179,29 @@ def _similarity(a: set, b: set, idf: dict) -> float:
 
 
 def candidate_pairs(rows, tokenize, pool: list[int], recurring: list[int], k: int,
-                    floor: float = 0.05, all_pairs_up_to: int = 40):
+                    floor: float = 0.05, all_pairs_up_to: int = 40, fp_floor: float = 0.15):
     """Which pairs Jev is asked about. Code proposes, Jev disposes: a pair never asked
     about can never be grouped, so proposing is generous.
 
-    - every session in the pool, against its k most similar others in the pool
-    - sessions labelled recurring_chore, against every other one, while there are few
-      enough of them (40 → 780 pairs, a few cents); the wording of the same chore drifts
-      more than any lexical similarity can follow
+    - every errand in the pool, against its k most similar others by opener words
+    - and against its k most similar by local fingerprint: the same chore worded
+      differently still runs the same commands
+    - errands labelled recurring_chore, against every other one, while there are few
+      enough of them (40 → 780 pairs, a few cents)
     """
     toks, idf = _weights(rows, tokenize)
+    fps = [errands.pairing_features(r) if "local" in r else set() for r in rows]
+    fdf = Counter(t for f in fps for t in f)
+    fidf = {t: math.log(1 + len(rows) / c) for t, c in fdf.items()}
     pairs = set()
     for i in pool:
         near = sorted(((_similarity(toks[i], toks[j], idf), j) for j in pool if j != i),
                       reverse=True)
         pairs.update((min(i, j), max(i, j)) for score, j in near[:k] if score >= floor)
+        if fps[i]:
+            near = sorted(((_similarity(fps[i], fps[j], fidf), j) for j in pool
+                           if j != i and fps[j]), reverse=True)
+            pairs.update((min(i, j), max(i, j)) for score, j in near[:k] if score >= fp_floor)
     if len(recurring) <= all_pairs_up_to:
         pairs.update((a, b) for a in recurring for b in recurring if a < b)
     asks: dict[int, list[int]] = {}
@@ -209,14 +237,16 @@ def _cadence(dates: list[datetime]) -> str | None:
 
 def run(rows: list[dict], tokenize, *, min_sessions: int, same: float, k: int,
         dry_run: bool) -> dict:
-    states = [redact(r["opener"]) for r in rows]
+    states = [state_of(r) for r in rows]
     tokens_est = sum(len(s) for s in states) // 2 + 120 * len(states)
     plan = {
         "model": MODEL,
-        "sessions": len(rows),
+        "errands": len(rows),
+        "sessions": len({r.get("session", r["id"]) for r in rows}),
         "step1_requests": len(rows),
         "step1_tokens_estimate": tokens_est,
-        "sent": "each session's opener, redacted and cut to 600 chars",
+        "sent": "each errand's opener, redacted and cut to 600 chars, with its shared "
+                "fingerprint (tools; commands, skills and MCP servers common to 3+ errands)",
         "sample": states[:3],
     }
     if dry_run:
@@ -237,11 +267,10 @@ def run(rows: list[dict], tokenize, *, min_sessions: int, same: float, k: int,
         # 1. kind, one request per session.
         with ThreadPoolExecutor(WORKERS) as ex:
             kinds = list(ex.map(lambda s: call(s, {"kind": KIND}).get("kind") or {}, states))
-        # 2. "same chore?" for each session's nearest neighbours. Exploration and other
-        #    are not chores; one_off stays in, because Jev's one_off is often the single
-        #    visible instance of something that recurs.
-        pool = [i for i, kd in enumerate(kinds) if kd.get("choice") in ("recurring_chore",
-                                                                         "one_off")]
+        # 2. "same chore?" for each errand's nearest neighbours. Every kind stays in the
+        #    pool: a status check reads as exploration as often as it reads as a chore,
+        #    and an errand left out here can never be grouped.
+        pool = list(range(len(rows)))
         recurring = [i for i, kd in enumerate(kinds) if kd.get("choice") == "recurring_chore"]
         asks = candidate_pairs(rows, tokenize, pool, recurring, k)
 
@@ -270,7 +299,8 @@ def run(rows: list[dict], tokenize, *, min_sessions: int, same: float, k: int,
         p_recur = sum(kinds[i].get("probabilities", {}).get("recurring_chore", 0.0)
                       for i in members) / len(members)
         groups.append({
-            "sessions": len(members),
+            "sessions": len({rows[i].get("session", rows[i]["id"]) for i in members}),
+            "errands": len(members),
             "days": len({d.date() for d in dates}),
             "first": min(dates).date().isoformat(),
             "last": max(dates).date().isoformat(),
@@ -286,9 +316,9 @@ def run(rows: list[dict], tokenize, *, min_sessions: int, same: float, k: int,
         })
     # Distinct days before session count: sessions minutes apart on one day are one
     # sitting (one prompt retried), not a chore that comes back.
-    groups.sort(key=lambda g: (-g["days"], -g["sessions"], -g["p_recurring"]))
-    shortlist = [g for g in groups if g["sessions"] >= min_sessions]
-    single = [g for g in groups if g["sessions"] == 1][:10]
+    groups.sort(key=lambda g: (-g["days"], -g["errands"], -g["p_recurring"]))
+    shortlist = [g for g in groups if g["errands"] >= min_sessions]
+    single = [g for g in groups if g["errands"] == 1][:10]
     return {
         "plan": plan,
         "usage": dict(usage),
@@ -299,7 +329,7 @@ def run(rows: list[dict], tokenize, *, min_sessions: int, same: float, k: int,
         "labels": [{"id": r["id"], "kind": kd.get("choice"),
                     "confidence": kd.get("confidence")} for r, kd in zip(rows, kinds)],
         "shortlist": shortlist,
-        "below_min_sessions": [g for g in groups if 1 < g["sessions"] < min_sessions],
+        "below_min_sessions": [g for g in groups if 1 < g["errands"] < min_sessions],
         "recurring_seen_once": single,
     }
 
@@ -326,7 +356,8 @@ def print_report(j: dict) -> None:
             continue
         print(f"\n### {title}\n")
         for g in j[key]:
-            print(f"· {g['sessions']} sessions / {g['days']} days · {g['first']} → {g['last']}"
+            print(f"· {g['errands']} errands in {g['sessions']} sessions / {g['days']} days"
+                  f" · {g['first']} → {g['last']}"
                   f" · {'ONE SITTING' if g['one_sitting'] else g['cadence'] or '-'}"
                   f" · {'/'.join(g['agents'])} · "
                   f"{', '.join(g['projects'][:3])} · p_recurring {g['p_recurring']}")

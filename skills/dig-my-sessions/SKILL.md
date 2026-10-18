@@ -64,10 +64,15 @@ many. `--include-automated` keeps them.
 At one row per session, a few hundred rows read fine in one go and Jev adds nothing. Offer
 `--jev` when the scan is across many agents or projects, or runs to thousands of rows.
 
-`--jev` sends each session's opener to TypeSafe's API (`TYPESAFE_API_KEY`). Before the
-first run, say so in one line: the opener only, redacted (credentials, cookies, auth
-headers, key and token values, emails, URLs) and cut to 600 characters. Run
-`--jev-dry-run` first and show its sample. Ask which projects to leave out (work
+`--jev` works on errands, not sessions: a session left open for days is cut wherever the
+person was away three hours (`--errand-gap`), and each errand carries a fingerprint of
+the work done in it (commands run, skills, MCP servers). It sends each errand's opener and
+the shareable part of that fingerprint to TypeSafe's API (`TYPESAFE_API_KEY`). Before the
+first run, say so in one line: the opener, redacted (credentials, cookies, auth headers,
+key and token values, emails, URLs) and cut to 600 characters, plus tool names and the
+command heads, skills and MCP servers that recur across three or more errands. Hosts,
+paths, file names and command arguments stay on the machine. Run `--jev-dry-run` first
+and show its sample. Ask which projects to leave out (work
 repositories usually) and pass them as `--exclude-project`. Send nothing without a yes.
 
 ```bash
@@ -76,8 +81,9 @@ python3 <this skill>/dig.py chores --days 120 --exclude-project acme --jev
 ```
 
 Jev answers only narrow questions. A Choice labels each opener `recurring_chore`,
-`one_off`, `exploration` or `other`. A Noul asks "the same chore?" of similar pairs that
-code proposes. Code unions the yeses and counts sessions, distinct days, agents, projects
+`one_off`, `exploration` or `other`. A Noul asks "the same chore?" of pairs that code proposes
+from similar wording or a similar fingerprint, so the same chore worded differently is
+still asked about. Code unions the yeses and counts sessions, distinct days, agents, projects
 and cadence. Read its **shortlist** as your input to step 4, not as a verdict. A group
 marked `ONE SITTING` is one session's worth of retries, not recurrence. Do not ask Jev
 how automatable something is. One line cannot show how often a chore recurs, and that is
