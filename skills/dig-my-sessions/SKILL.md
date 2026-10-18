@@ -65,15 +65,15 @@ At one row per session, a few hundred rows read fine in one go and Jev adds noth
 `--jev` when the scan is across many agents or projects, or runs to thousands of rows.
 
 `--jev` works on errands, not sessions: a session left open for days is cut wherever the
-person was away three hours (`--errand-gap`), and each errand carries a fingerprint of
-the work done in it (commands run, skills, MCP servers). It sends each errand's opener and
-the shareable part of that fingerprint to TypeSafe's API (`TYPESAFE_API_KEY`). Before the
-first run, say so in one line: the opener, redacted (credentials, cookies, auth headers,
-key and token values, emails, URLs) and cut to 600 characters, plus tool names and the
-command heads, skills and MCP servers that recur across three or more errands. Hosts,
-paths, file names and command arguments stay on the machine. Run `--jev-dry-run` first
-and show its sample. Ask which projects to leave out (work
-repositories usually) and pass them as `--exclude-project`. Send nothing without a yes.
+person was away three hours (`--errand-gap`), and each errand carries a fingerprint of the
+work done in it. It sends each errand's opener and the public part of that fingerprint to
+TypeSafe's API (`TYPESAFE_API_KEY`). Before the first run, say so in one line: the opener,
+redacted (credentials, cookies, auth headers, key and token values, emails, URLs, paths)
+and cut to 600 characters, plus built-in tool names and well-known commands such as `git
+fetch` from a fixed list. Skills, MCP servers, hosts, file names and command arguments
+stay on the machine. Run `--jev-dry-run` first and show its sample. Ask which projects to
+leave out (work repositories usually) and pass them as `--exclude-project`. Send nothing
+without a yes.
 
 ```bash
 python3 <this skill>/dig.py chores --days 120 --exclude-project acme --jev-dry-run
@@ -81,13 +81,14 @@ python3 <this skill>/dig.py chores --days 120 --exclude-project acme --jev
 ```
 
 Jev answers only narrow questions. A Choice labels each opener `recurring_chore`,
-`one_off`, `exploration` or `other`. A Noul asks "the same chore?" of pairs that code proposes
-from similar wording or a similar fingerprint, so the same chore worded differently is
-still asked about. Code unions the yeses and counts sessions, distinct days, agents, projects
-and cadence. Read its **shortlist** as your input to step 4, not as a verdict. A group
-marked `ONE SITTING` is one session's worth of retries, not recurrence. Do not ask Jev
-how automatable something is. One line cannot show how often a chore recurs, and that is
-where the value is.
+`one_off`, `exploration` or `other`. A Noul asks "the same chore?" of pairs that code
+proposes from similar wording or a similar fingerprint, so the same chore worded
+differently is still asked about. Code unions the yeses and counts errands, sessions,
+distinct days, agents, projects and cadence; a group makes the shortlist when it spans
+`--min-sessions` sessions or distinct days. Read its **shortlist** as your input to step
+4, not as a verdict. A group marked `ONE SITTING` is retries minutes apart, or one
+session's errands on one day: not recurrence. Do not ask Jev how automatable something is.
+One line cannot show how often a chore recurs, and that is where the value is.
 
 ### 4. Cluster into chores
 

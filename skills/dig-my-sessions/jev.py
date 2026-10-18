@@ -19,9 +19,11 @@ the same chore are often worded nothing alike while the commands run are identic
 candidate pairs come from opener words OR the local fingerprint.
 
 What leaves the machine: each errand's opener, redacted (credentials, cookies, auth
-headers, key/token values, emails, URLs) and cut to 600 characters, followed by its shared
-fingerprint: tool names, and the command heads, skills and MCP servers that recur across
-at least three errands of the scan. Never hosts, paths, file names or command arguments.
+headers, key/token values, emails, URLs, filesystem paths) and cut to 600 characters,
+followed by its shared fingerprint: built-in tool names and well-known commands, from the
+fixed vocabulary in errands.py. Skills, MCP servers, hosts, file names and command
+arguments the agent used stay on the machine; the opener is otherwise the person's own
+words, as typed.
 
   POST {TYPESAFE_BASE_URL:-https://api.typesafe.ai}/v1/systemone
   Authorization: Bearer $TYPESAFE_API_KEY
@@ -84,6 +86,8 @@ REDACTIONS = (
     (re.compile(r"\beyJ[\w-]{8,}\.[\w-]{8,}\.[\w-]{8,}"), "[key]"),  # JWT
     (re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+"), "[email]"),
     (re.compile(r"\b(?:https?|wss?|ftp)://\S+"), "[url]"),
+    (re.compile(r"(?<![\w.:/-])(?:~/[\w.@+-]+(?:/[\w.@+-]*)*|"
+                r"/[\w.@+-]+(?:/[\w.@+-]*)+|[A-Za-z]:\\[^\s'\"]+)"), "[path]"),
     (re.compile(r"\b[A-Fa-f0-9]{32,}\b|\b[A-Za-z0-9+/_-]{40,}={0,2}"), "[key]"),
 )
 
@@ -101,8 +105,11 @@ def state_of(row: dict) -> str:
     shared = row.get("shared") or {}
     if not (shared.get("tools") or shared.get("did")):
         return asked
-    return (f"asked: {asked}\ntools: {', '.join(shared.get('tools') or []) or '-'}"
-            f" | did: {', '.join(shared.get('did') or []) or '-'}")
+    # The fingerprint is fixed vocabulary already; redacting it too is the floor under
+    # that, should a vocabulary entry ever look like a credential.
+    tools = redact(", ".join(shared.get("tools") or [])) or "-"
+    did = redact(", ".join(shared.get("did") or [])) or "-"
+    return f"asked: {asked}\ntools: {tools} | did: {did}"
 
 
 class JevError(RuntimeError):
@@ -245,8 +252,8 @@ def run(rows: list[dict], tokenize, *, min_sessions: int, same: float, k: int,
         "sessions": len({r.get("session", r["id"]) for r in rows}),
         "step1_requests": len(rows),
         "step1_tokens_estimate": tokens_est,
-        "sent": "each errand's opener, redacted and cut to 600 chars, with its shared "
-                "fingerprint (tools; commands, skills and MCP servers common to 3+ errands)",
+        "sent": "each errand's opener, redacted and cut to 600 chars, with built-in tool "
+                "names and well-known commands from a fixed vocabulary",
         "sample": states[:3],
     }
     if dry_run:
@@ -264,7 +271,7 @@ def run(rows: list[dict], tokenize, *, min_sessions: int, same: float, k: int,
         return r.get("answers") or {}
 
     try:
-        # 1. kind, one request per session.
+        # 1. kind, one request per errand.
         with ThreadPoolExecutor(WORKERS) as ex:
             kinds = list(ex.map(lambda s: call(s, {"kind": KIND}).get("kind") or {}, states))
         # 2. "same chore?" for each errand's nearest neighbours. Every kind stays in the
@@ -281,7 +288,7 @@ def run(rows: list[dict], tokenize, *, min_sessions: int, same: float, k: int,
             ans = call(states[i], qs)
             return [(i, j, (ans.get(f"same_{j}") or {}).get("noul", 0.0)) for j in js]
 
-        # One request per session, its candidates as parallel questions in it, chunked
+        # One request per errand, its candidates as parallel questions in it, chunked
         # so a request stays well inside the context limit.
         batches = [(i, js[n:n + 16]) for i, js in asks.items() for n in range(0, len(js), 16)]
         with ThreadPoolExecutor(WORKERS) as ex:
@@ -296,16 +303,21 @@ def run(rows: list[dict], tokenize, *, min_sessions: int, same: float, k: int,
         if len(members) < 2 and kinds[members[0]].get("choice") != "recurring_chore":
             continue
         dates = [datetime.strptime(rows[i]["date"], "%Y-%m-%d %H:%M") for i in members]
+        sessions = {rows[i].get("session", rows[i]["id"]) for i in members}
+        days = {d.date() for d in dates}
         p_recur = sum(kinds[i].get("probabilities", {}).get("recurring_chore", 0.0)
                       for i in members) / len(members)
         groups.append({
-            "sessions": len({rows[i].get("session", rows[i]["id"]) for i in members}),
+            "sessions": len(sessions),
             "errands": len(members),
-            "days": len({d.date() for d in dates}),
+            "days": len(days),
             "first": min(dates).date().isoformat(),
             "last": max(dates).date().isoformat(),
             "cadence": _cadence(dates),
-            "one_sitting": len(members) > 1 and max(dates) - min(dates) < timedelta(hours=3),
+            # Retries minutes apart, or errands of one session on one day: not recurrence.
+            "one_sitting": len(members) > 1 and (
+                max(dates) - min(dates) < timedelta(hours=3)
+                or (len(sessions) == 1 and len(days) == 1)),
             "agents": sorted({rows[i]["agent"] for i in members}),
             "projects": [p for p, _ in Counter(rows[i]["project"] for i in members).most_common()],
             "kinds": dict(Counter(kinds[i].get("choice") for i in members)),
@@ -316,8 +328,15 @@ def run(rows: list[dict], tokenize, *, min_sessions: int, same: float, k: int,
         })
     # Distinct days before session count: sessions minutes apart on one day are one
     # sitting (one prompt retried), not a chore that comes back.
+    # A chore recurs across sessions or across days: one session left open for a month,
+    # coming back to the same errand on three days, is recurrence; three errands of one
+    # afternoon are not.
     groups.sort(key=lambda g: (-g["days"], -g["errands"], -g["p_recurring"]))
-    shortlist = [g for g in groups if g["errands"] >= min_sessions]
+
+    def recurs(g):
+        return max(g["sessions"], g["days"]) >= min_sessions
+
+    shortlist = [g for g in groups if recurs(g)]
     single = [g for g in groups if g["errands"] == 1][:10]
     return {
         "plan": plan,
@@ -329,7 +348,7 @@ def run(rows: list[dict], tokenize, *, min_sessions: int, same: float, k: int,
         "labels": [{"id": r["id"], "kind": kd.get("choice"),
                     "confidence": kd.get("confidence")} for r, kd in zip(rows, kinds)],
         "shortlist": shortlist,
-        "below_min_sessions": [g for g in groups if 1 < g["errands"] < min_sessions],
+        "below_min_sessions": [g for g in groups if g["errands"] > 1 and not recurs(g)],
         "recurring_seen_once": single,
     }
 
@@ -349,7 +368,7 @@ def print_report(j: dict) -> None:
     u = j.get("usage", {})
     print(f"\n{j['requests']} requests · {u.get('input_tokens', '?')} input tokens · "
           f"kinds {j['kinds']} · {j['pairs_same']}/{j['pairs_asked']} pairs judged the same")
-    for title, key in (("shortlist (same chore, enough sessions)", "shortlist"),
+    for title, key in (("shortlist (same chore, enough sessions or days)", "shortlist"),
                        ("recurring, but under --min-sessions", "below_min_sessions"),
                        ("labelled recurring, seen once", "recurring_seen_once")):
         if not j.get(key):
