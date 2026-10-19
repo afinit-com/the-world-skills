@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        `/the-world-skills:help-my-world` (Claude Code) or `$help-my-world` (Codex) fills this
+        `/the-world:help-my-world` (Claude Code) or `$help-my-world` (Codex) fills this
         form for you, environment included. A security problem goes to SECURITY.md, not here.
 
         help-my-world가 환경 정보까지 이 양식을 채워 줍니다. 보안 문제는 여기 말고 SECURITY.md를 보세요.

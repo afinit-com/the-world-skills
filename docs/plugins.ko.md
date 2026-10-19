@@ -26,16 +26,16 @@
 
 ```bash
 claude plugin marketplace add afinit-com/the-world-skills
-claude plugin install the-world-skills@the-world
+claude plugin install the-world@the-world
 ```
 
-새 세션에서 `/the-world-skills:the-world-start`을 호출합니다.
+새 세션에서 `/the-world:the-world-start`을 호출합니다.
 
 ### Codex
 
 ```bash
 codex plugin marketplace add afinit-com/the-world-skills
-codex plugin add the-world-skills@the-world
+codex plugin add the-world@the-world
 ```
 
 새 세션에서 `$the-world-start`과 원하는 일을 입력합니다.
@@ -56,7 +56,7 @@ codex plugin add the-world-skills@the-world
 ```bash
 python3 scripts/build-plugin.py dist/the-world-marketplace
 codex plugin marketplace add ./dist/the-world-marketplace
-codex plugin add the-world-skills@the-world-local
+codex plugin add the-world@the-world-local
 ```
 
 새 세션에서 스킬 목록을 열어 `the-world-start`을 선택하거나 `$the-world-start`과 원하는
@@ -71,12 +71,12 @@ codex plugin add the-world-skills@the-world-local
 claude --plugin-dir "$PWD"
 ```
 
-`/the-world-skills:the-world-start` 또는 `/the-world-skills:the-world-util`을 호출합니다.
+`/the-world:the-world-start` 또는 `/the-world:the-world-util`을 호출합니다.
 지속 설치하려면 위에서 생성한 마켓플레이스를 등록합니다.
 
 ```bash
 claude plugin marketplace add ./dist/the-world-marketplace
-claude plugin install the-world-skills@the-world-local
+claude plugin install the-world@the-world-local
 ```
 
 ## 패키지와 프로젝트의 경계
@@ -97,7 +97,7 @@ claude plugin install the-world-skills@the-world-local
   앱 전용 필드와 키 순서는 그대로 둡니다. 이미 일치하면 파일을 건드리지 않습니다.
   빌드는 소스 파일을 몰래 고치지 않으므로 `--sync`는 목적지를 받지 않는 독립 동작이며,
   어긋난 채로 빌드하면 `--sync`를 실행하라는 메시지와 함께 실패합니다.
-- 빌드 출력: `plugins/the-world-skills/`에 완전한 사본과 두 앱의 마켓플레이스 목록을
+- 빌드 출력: `plugins/the-world/`에 완전한 사본과 두 앱의 마켓플레이스 목록을
   만듭니다. 원본 저장소 밖으로 이동해도 설치 스크립트와 관계도 자산을 찾을 수 있습니다.
 - 번들 안의 `.claude/hooks`, `.codex/hooks`는 **설치 자료**입니다. 플러그인 자체에
   전역 훅이나 MCP 서버를 등록하지 않습니다.

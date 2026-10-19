@@ -60,7 +60,8 @@ def plugin_version() -> str:
                     data = json.loads(path.read_text(encoding="utf-8"))
                 except (OSError, ValueError):
                     continue
-                if data.get("name") == "the-world-skills":
+                # "the-world-skills" is the plugin's name before 0.4.0.
+                if data.get("name") in ("the-world", "the-world-skills"):
                     return f"{data.get('version', '?')} ({redact(str(parent))})"
     return "unknown"
 

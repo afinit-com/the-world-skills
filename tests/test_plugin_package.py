@@ -154,7 +154,7 @@ class PluginPackageTests(unittest.TestCase):
             output = temporary / "marketplace"
             command = [sys.executable, str(ROOT / "scripts/build-plugin.py"), str(output)]
             subprocess.run(command, check=True, capture_output=True, cwd=temporary)
-            plugin = output / "plugins/the-world-skills"
+            plugin = output / "plugins/the-world"
             for host in ("claude",):
                 catalog = json.loads((output / f".{host}-plugin/marketplace.json").read_text())
                 self.assertEqual((output / catalog["plugins"][0]["source"]).resolve(), plugin)
@@ -191,7 +191,7 @@ class PluginPackageTests(unittest.TestCase):
             rebuilt = temporary / "rebuilt"
             subprocess.run([sys.executable, str(plugin / "scripts/build-plugin.py"), str(rebuilt)],
                            check=True, capture_output=True, cwd=temporary)
-            self.assertTrue((rebuilt / "plugins/the-world-skills/skills/the-world-start/SKILL.md").is_file())
+            self.assertTrue((rebuilt / "plugins/the-world/skills/the-world-start/SKILL.md").is_file())
             sentinel = output / "keep.txt"
             sentinel.write_text("mine")
             retry = subprocess.run(command, capture_output=True, cwd=temporary)

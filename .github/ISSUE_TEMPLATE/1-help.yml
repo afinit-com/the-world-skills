@@ -5,10 +5,10 @@ body:
   - type: markdown
     attributes:
       value: |
-        The easiest way: type `/the-world-skills:help-my-world` (Claude Code) or `$help-my-world` (Codex)
+        The easiest way: type `/the-world:help-my-world` (Claude Code) or `$help-my-world` (Codex)
         and say what happened. It fills this form, environment included, and shows it to you first.
 
-        가장 쉬운 방법: Claude Code에서 `/the-world-skills:help-my-world`, Codex에서 `$help-my-world`를
+        가장 쉬운 방법: Claude Code에서 `/the-world:help-my-world`, Codex에서 `$help-my-world`를
         입력하고 무슨 일이 있었는지 말하세요. 환경 정보까지 이 양식을 채워서 먼저 보여 줍니다.
   - type: textarea
     id: goal

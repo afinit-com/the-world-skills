@@ -1,6 +1,6 @@
 {
-  "name": "the-world-skills",
-  "version": "0.3.3",
+  "name": "the-world",
+  "version": "0.4.0",
   "license": "MIT",
   "description": "Learn harnesses by building a world of collaborating bot characters and tools.",
   "author": {

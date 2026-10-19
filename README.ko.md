@@ -16,7 +16,7 @@
 
 ```bash
 claude plugin marketplace add afinit-com/the-world-skills
-claude plugin install the-world-skills@the-world
+claude plugin install the-world@the-world
 ```
 
 </details>
@@ -26,10 +26,18 @@ claude plugin install the-world-skills@the-world
 
 ```bash
 codex plugin marketplace add afinit-com/the-world-skills
-codex plugin add the-world-skills@the-world
+codex plugin add the-world@the-world
 ```
 
 </details>
+
+> **0.4.0 이전에 설치했다면:** 플러그인 이름이 `the-world-skills`에서 `the-world`로 바뀌어,
+> `/the-world-skills:the-world-start`는 이제 `/the-world:the-world-start`입니다. 한 번만 바꿔 주세요:
+>
+> ```bash
+> claude plugin marketplace update the-world && claude plugin uninstall the-world-skills@the-world && claude plugin install the-world@the-world
+> codex plugin marketplace upgrade && codex plugin remove the-world-skills@the-world && codex plugin add the-world@the-world
+> ```
 
 <details>
 <summary><b>다른 에이전트 (스킬만)</b></summary>
@@ -45,7 +53,7 @@ npx skills add afinit-com/the-world-skills
 **2. 맡길 일을 말하세요.** 봇이 일할 프로젝트 폴더에서:
 
 ```text
-/the-world-skills:the-world-start 매일 오전 9시에 이 레포 변경 사항 요약해줘
+/the-world:the-world-start 매일 오전 9시에 이 레포 변경 사항 요약해줘
 ```
 
 Codex에서는 `$the-world-start …`입니다. 봇은 프로젝트 옆에 자기 폴더를 갖습니다
@@ -59,7 +67,7 @@ Codex에서는 `$the-world-start …`입니다. 봇은 프로젝트 옆에 자�
 
 필요한 것: **Python 3.11+와 [uv](https://docs.astral.sh/uv/)**, 3단계에는
 [Slack CLI](https://docs.slack.dev/tools/slack-cli)와 한 번의 `slack login`.
-macOS, Linux, 네이티브 Windows에서 동작합니다. 막히면 `/the-world-skills:help-my-world`.
+macOS, Linux, 네이티브 Windows에서 동작합니다. 막히면 `/the-world:help-my-world`.
 
 <details>
 <summary>각 단계에서 일어나는 일</summary>

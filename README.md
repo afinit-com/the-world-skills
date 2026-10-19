@@ -15,7 +15,7 @@ lets you talk to the characters from Slack. Ships as a plugin for Claude Code an
 
 ```bash
 claude plugin marketplace add afinit-com/the-world-skills
-claude plugin install the-world-skills@the-world
+claude plugin install the-world@the-world
 ```
 
 </details>
@@ -25,10 +25,19 @@ claude plugin install the-world-skills@the-world
 
 ```bash
 codex plugin marketplace add afinit-com/the-world-skills
-codex plugin add the-world-skills@the-world
+codex plugin add the-world@the-world
 ```
 
 </details>
+
+> **Installed before 0.4.0?** The plugin was renamed from `the-world-skills` to
+> `the-world`, so `/the-world-skills:the-world-start` became `/the-world:the-world-start`.
+> Switch once:
+>
+> ```bash
+> claude plugin marketplace update the-world && claude plugin uninstall the-world-skills@the-world && claude plugin install the-world@the-world
+> codex plugin marketplace upgrade && codex plugin remove the-world-skills@the-world && codex plugin add the-world@the-world
+> ```
 
 <details>
 <summary><b>Other agents (skills only)</b></summary>
@@ -44,7 +53,7 @@ Then the skill is plain `/the-world-start`. More in the [plugin guide](docs/plug
 **2. Say what you want done**, from the project you want it to work on:
 
 ```text
-/the-world-skills:the-world-start summarize this repo's changes every day at 9am
+/the-world:the-world-start summarize this repo's changes every day at 9am
 ```
 
 In Codex it is `$the-world-start …`. The bot gets its own folder next to the project
@@ -60,7 +69,7 @@ channel to connect it.
 
 You need **Python 3.11+ and [uv](https://docs.astral.sh/uv/)**, and for step 3 the
 [Slack CLI](https://docs.slack.dev/tools/slack-cli) with `slack login` done once. Runs on
-macOS, Linux, and native Windows. Stuck? `/the-world-skills:help-my-world`.
+macOS, Linux, and native Windows. Stuck? `/the-world:help-my-world`.
 
 <details>
 <summary>What happens in each step</summary>
