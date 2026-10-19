@@ -101,11 +101,11 @@ def _short(text: str, limit: int = 70) -> str:
 def world_shape(home: Path) -> list[str]:
     """What this world is made of, read from its code without running it.
 
-    Every harness diverges after /the-world-start, so "it broke" means nothing until the
+    Every harness diverges after /the-world:start, so "it broke" means nothing until the
     maintainer knows which characters, triggers, and tools this one has. The parsing is
-    the-world-audit's scanner (a sibling skill in the same plugin), which never imports
+    audit's scanner (a sibling skill in the same plugin), which never imports
     the harness. Names and shapes only: no prompt, no voice, no WORLD.md."""
-    scan_path = HERE.parents[1] / "the-world-audit" / "scan.py"
+    scan_path = HERE.parents[1] / "audit" / "scan.py"
     if not scan_path.is_file() or not (home / "harness.py").is_file():
         return []
     import importlib.util

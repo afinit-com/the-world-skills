@@ -46,7 +46,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from runner_api import Check  # noqa: E402 — needs the sys.path line above
 
 ROOT = Path(__file__).resolve().parent.parent
-KIT = ROOT / "skills" / "the-world-start" / "assets" / "kit"
+KIT = ROOT / "skills" / "start" / "assets" / "kit"
 CASES = Path(__file__).resolve().parent / "cases"
 CHECKER = Path(__file__).resolve().parent / ".venv" / "bin" / "python"
 

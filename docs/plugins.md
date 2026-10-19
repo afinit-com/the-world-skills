@@ -32,7 +32,7 @@ claude plugin marketplace add afinit-com/the-world-skills
 claude plugin install the-world@the-world
 ```
 
-In a new session, invoke `/the-world:the-world-start`.
+In a new session, invoke `/the-world:start`.
 
 ### Codex
 
@@ -41,7 +41,7 @@ codex plugin marketplace add afinit-com/the-world-skills
 codex plugin add the-world@the-world
 ```
 
-In a new session, type `$the-world-start` followed by what you want done.
+In a new session, type `$the-world:start` followed by what you want done.
 
 Registering, installing, and enabling from the root marketplace is verified for Claude Code
 and Codex in isolated config directories (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`). What gets
@@ -62,7 +62,7 @@ codex plugin marketplace add ./dist/the-world-marketplace
 codex plugin add the-world@the-world-local
 ```
 
-In a new session, pick `the-world-start` from the skill list or type `$the-world-start`
+In a new session, pick `start` from the skill list or type `$the-world:start`
 followed by what you want done. The CLI command is `plugin add`. The build never
 overwrites an existing path, so use a new output path when you rebuild.
 
@@ -74,7 +74,7 @@ During development you can load the current repository directly, with no registr
 claude --plugin-dir "$PWD"
 ```
 
-Invoke `/the-world:the-world-start` or `/the-world:the-world-util`.
+Invoke `/the-world:start` or `/the-world:util`.
 For a lasting install, register the marketplace built above.
 
 ```bash
@@ -130,7 +130,7 @@ Test counts change, so run them yourself:
 
 ```bash
 python3 -m unittest discover -s tests
-cd skills/the-world-start/assets/kit && uv run --extra dev pytest -q
+cd skills/start/assets/kit && uv run --extra dev pytest -q
 ```
 
 The common Agent Plugins JSON Schema and Claude Code manifest validation pass. Installing
@@ -143,10 +143,10 @@ in `agents/openai.yaml`. The Codex plugin-creator validation helper rejects
 of that helper, and keeps the explicit-invocation policy rather than dropping it to pass.
 See [Codex invocation policy](https://learn.chatgpt.com/docs/build-skills).
 
-`the-world-start` also proposes work: given only a project path, or no job at all, it reads
+`start` also proposes work: given only a project path, or no job at all, it reads
 what the user has asked their coding agents to do (through `dig-my-sessions`, offline) and
 proposes jobs with the evidence attached.
-`the-world-audit` only reads a harness to check it for risks, so it has no
+`audit` only reads a harness to check it for risks, so it has no
 explicit-invocation policy, and neither has `dig-my-sessions`, which reads local session
 history (its `--jev` mode asks before sending anything). All five skills are exposed to
 both apps under the same `skills/` path, and their scripts use only the standard library.

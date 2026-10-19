@@ -490,7 +490,7 @@ class Agent:
                                     # surface and hands the agent the harness's synced
                                     # plugins (see Harness.plugins / world.process.plugins).
                                     # A THIRD authority axis alongside allow_bash and
-                                    # task_allowed — audit it the same way (the-world-audit
+                                    # task_allowed — audit it the same way (audit
                                     # skill reports all three).
                                     # Full-trust caveat: a loaded plugin brings its OWN
                                     # hooks and MCP servers, which strict_mcp_config does

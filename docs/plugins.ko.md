@@ -29,7 +29,7 @@ claude plugin marketplace add afinit-com/the-world-skills
 claude plugin install the-world@the-world
 ```
 
-새 세션에서 `/the-world:the-world-start`을 호출합니다.
+새 세션에서 `/the-world:start`을 호출합니다.
 
 ### Codex
 
@@ -38,7 +38,7 @@ codex plugin marketplace add afinit-com/the-world-skills
 codex plugin add the-world@the-world
 ```
 
-새 세션에서 `$the-world-start`과 원하는 일을 입력합니다.
+새 세션에서 `$the-world:start`과 원하는 일을 입력합니다.
 
 루트 마켓플레이스로 Claude Code와 Codex 모두 등록·설치·활성화까지 격리된 설정
 폴더(`CLAUDE_CONFIG_DIR`, `CODEX_HOME`)에서 검증했습니다. 설치되는 것은 저장소
@@ -59,7 +59,7 @@ codex plugin marketplace add ./dist/the-world-marketplace
 codex plugin add the-world@the-world-local
 ```
 
-새 세션에서 스킬 목록을 열어 `the-world-start`을 선택하거나 `$the-world-start`과 원하는
+새 세션에서 스킬 목록을 열어 `start`을 선택하거나 `$the-world:start`과 원하는
 일을 입력합니다. CLI 명령 이름은 `plugin add`입니다.
 빌드는 기존 경로를 덮어쓰지 않으므로 다시 만들 때는 새 출력 경로를 사용하세요.
 
@@ -71,7 +71,7 @@ codex plugin add the-world@the-world-local
 claude --plugin-dir "$PWD"
 ```
 
-`/the-world:the-world-start` 또는 `/the-world:the-world-util`을 호출합니다.
+`/the-world:start` 또는 `/the-world:util`을 호출합니다.
 지속 설치하려면 위에서 생성한 마켓플레이스를 등록합니다.
 
 ```bash
@@ -121,7 +121,7 @@ claude plugin install the-world@the-world-local
 
 ```bash
 python3 -m unittest discover -s tests
-cd skills/the-world-start/assets/kit && uv run --extra dev pytest -q
+cd skills/start/assets/kit && uv run --extra dev pytest -q
 ```
 
 공통 Agent Plugins JSON Schema와 Claude Code 매니페스트 검증을 통과합니다. 각 앱
@@ -135,9 +135,9 @@ Codex plugin-creator 검증 도우미는 frontmatter의 `disable-model-invocatio
 빼지 않습니다.
 [Codex 호출 정책](https://learn.chatgpt.com/docs/build-skills).
 
-`the-world-start`는 할 일 제안도 맡습니다. 프로젝트 경로만 받거나 맡길 일을 모르겠다고 하면,
+`start`는 할 일 제안도 맡습니다. 프로젝트 경로만 받거나 맡길 일을 모르겠다고 하면,
 코딩 에이전트에게 시켜온 일들을 `dig-my-sessions`로 오프라인에서 읽고 근거를 붙여 제안합니다.
-`the-world-audit`은 하네스를 읽기만 하는 위험 점검이라 명시 호출 전용 정책을 두지
+`audit`은 하네스를 읽기만 하는 위험 점검이라 명시 호출 전용 정책을 두지
 않습니다. 로컬 세션 기록을 읽는 `dig-my-sessions`도 같습니다(`--jev` 모드는 무엇이든
 보내기 전에 묻습니다). 다섯 스킬은 두 앱에 같은 `skills/` 경로로 노출되며, 스크립트는
 표준 라이브러리만 씁니다.

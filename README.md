@@ -30,9 +30,10 @@ codex plugin add the-world@the-world
 
 </details>
 
-> **Installed before 0.4.0?** The plugin was renamed from `the-world-skills` to
-> `the-world`, so `/the-world-skills:the-world-start` became `/the-world:the-world-start`.
-> Switch once:
+> **Installed before 0.5.0?** The names got shorter: `/the-world-skills:the-world-start`
+> (before 0.4.0) and `/the-world:the-world-start` (0.4.0) are now `/the-world:start`, and the
+> same goes for `audit` and `util`. On 0.4.0, update the plugin as usual. Before 0.4.0 the
+> plugin itself had another name, so switch once:
 >
 > ```bash
 > claude plugin marketplace update the-world && claude plugin uninstall the-world-skills@the-world && claude plugin install the-world@the-world
@@ -46,17 +47,17 @@ codex plugin add the-world@the-world
 npx skills add afinit-com/the-world-skills
 ```
 
-Then the skill is plain `/the-world-start`. More in the [plugin guide](docs/plugins.md).
+Then the skill is plain `/start`. More in the [plugin guide](docs/plugins.md).
 
 </details>
 
 **2. Say what you want done**, from the project you want it to work on:
 
 ```text
-/the-world:the-world-start summarize this repo's changes every day at 9am
+/the-world:start summarize this repo's changes every day at 9am
 ```
 
-In Codex it is `$the-world-start …`. The bot gets its own folder next to the project
+In Codex it is `$the-world:start …`. The bot gets its own folder next to the project
 (`~/code/my-app` → `~/code/my-app-world`); started from an empty folder, it lives there
 instead and you name the project in the sentence. The agent asks which world the characters
 live in, unless you said it already ("as a pirate crew", or your favorite anime's world),
@@ -92,19 +93,19 @@ macOS, Linux, and native Windows. Stuck? `/the-world:help-my-world`.
 
 | Skill | What it does |
 |---|---|
-| `the-world-start` | Name a project or a job (given only a project, it reads the project and its local Claude Code/Codex session history and proposes jobs) → scaffold one worker with defaults → local verification → connect Slack and customize when ready. Also resumes incomplete setup. Carries the kit in `assets/kit/`. |
-| `the-world-audit` | Read-only risk review of an existing harness. Marks each item closed, open, or not verified across bot authority, tool scope, outward actions and approval, content-borne manipulation, self-reconfiguration, secrets, and silent failure; open items carry a file, a line, and a repro. Never fixes anything. |
+| `start` | Name a project or a job (given only a project, it reads the project and its local Claude Code/Codex session history and proposes jobs) → scaffold one worker with defaults → local verification → connect Slack and customize when ready. Also resumes incomplete setup. Carries the kit in `assets/kit/`. |
+| `audit` | Read-only risk review of an existing harness. Marks each item closed, open, or not verified across bot authority, tool scope, outward actions and approval, content-borne manipulation, self-reconfiguration, secrets, and silent failure; open items carry a file, a line, and a repro. Never fixes anything. |
 | `dig-my-sessions` | Dig through this machine's past sessions of Claude Code, Codex, opencode, Cursor, Antigravity CLI (`agy`) and the legacy Gemini CLI, over a date range and projects you choose. Finds the session that touched a ticket, branch or topic, with its resume command. Or it mines the history for chores you keep doing by hand, drops the sessions a program started, and proposes what to hand to a world, a skill or a one-line script. Offline and read-only. The optional `--jev` mode sends redacted openers to TypeSafe's Jev for labelling, and only after you agree. |
-| `the-world-util` | Standalone utilities with no harness preconditions, dispatched by subcommand. Today: `slack icon generate`. |
+| `util` | Standalone utilities with no harness preconditions, dispatched by subcommand. Today: `slack icon generate`. |
 | `help-my-world` | Ask the maintainers for help without being a developer. You say what you wanted and what happened; it fills the repository's issue form with the rest — the steps, a redacted environment report, and your world's shape (characters, triggers, tools) — walks you through GitHub CLI setup if needed, and files nothing until you approve the draft. |
 
-`the-world-start` is `disable-model-invocation: true` — it writes into a git repo, so a
-human types it or it doesn't run. `help-my-world` is the same, because it publishes. `the-world-audit` and `dig-my-sessions` only read, so the
+`start` is `disable-model-invocation: true` — it writes into a git repo, so a
+human types it or it doesn't run. `help-my-world` is the same, because it publishes. `audit` and `dig-my-sessions` only read, so the
 model can invoke them as well.
 
 Everything else a harness needs — adding a bot, wiring a scoped capability, verifying a new
 bot, connecting a plugin registry — is **installed into the harness itself** by
-`/the-world-start`, so a harness keeps working when you clone it elsewhere.
+`/the-world:start`, so a harness keeps working when you clone it elsewhere.
 
 ## The two hard rules
 
@@ -119,7 +120,7 @@ describe the job in ordinary language.
 the enforcement. A capability is a dedicated **`ToolSpec` exposed through the selected
 provider's MCP adapter** whose boundary (cwd, host, repo, "no merge verb") is bound at
 construction. The philosophy in one line
-([`docs/philosophy.md`](skills/the-world-start/assets/kit/docs/philosophy.md), installed into every harness): *a promise written in a prompt is not
+([`docs/philosophy.md`](skills/start/assets/kit/docs/philosophy.md), installed into every harness): *a promise written in a prompt is not
 enforcement.*
 
 ## See the characters on a map
@@ -129,7 +130,7 @@ uv run python harness.py --world-map
 ```
 
 Opens as `WORLD.html`: each character's tools, role, and write scope, and how they work
-together. See [building the map](skills/the-world-start/assets/kit/docs/world-map.md).
+together. See [building the map](skills/start/assets/kit/docs/world-map.md).
 
 ## Running a harness
 
@@ -138,13 +139,13 @@ together. See [building the map](skills/the-world-start/assets/kit/docs/world-ma
 
 What the installer writes where, how to upgrade, provider modes, and the rules the runtime
 holds you to are in the [harness guide](docs/harness-guide.md). Integrations with GitHub,
-Linear and Jira: [recipes](skills/the-world-start/assets/kit/docs/integrations.md).
-Discord (experimental): [docs](skills/the-world-start/assets/kit/docs/discord.md).
+Linear and Jira: [recipes](skills/start/assets/kit/docs/integrations.md).
+Discord (experimental): [docs](skills/start/assets/kit/docs/discord.md).
 
 ## License
 
 [MIT](LICENSE). Copyright 2026 Afinit.
 
-The kit `/the-world-start` unpacks into your harness (`world/`, `.claude/the-world/`, `templates/`, the
+The kit `/the-world:start` unpacks into your harness (`world/`, `.claude/the-world/`, `templates/`, the
 guard hooks) carries this license with it; what you then build on top of it — your
 `harness.py`, abilities, tools, and world — is yours.

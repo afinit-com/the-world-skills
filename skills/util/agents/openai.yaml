@@ -1,4 +1,4 @@
 interface:
   display_name: "The World Utilities"
   short_description: "Run standalone The World utility workflows"
-  default_prompt: "Use $the-world-util for the requested standalone harness utility."
+  default_prompt: "Use $the-world:util for the requested standalone harness utility."

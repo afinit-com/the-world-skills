@@ -9,10 +9,10 @@ work, and the rules the runtime holds you to. To get started, the
 ## How the runtime and the commands get to your harness
 
 `npx skills` installs skill directories, not repos — so the runtime cannot simply be
-"already there" in your project. It ships inside `the-world-start`:
+"already there" in your project. It ships inside `start`:
 
 ```
-skills/the-world-start/
+skills/start/
   SKILL.md
   scripts/install-kit.py     unpacks the kit into a target directory, idempotently
   assets/kit/
@@ -30,10 +30,10 @@ skills/the-world-start/
     bin/slack-pair.py         channel + approver IDs from one @-mention
     docs/world-map.md         portraits, relationships, and tool-map guide
     docs/integrations.md      GitHub · Linear · Jira recipes (poll check + gated write)
-skills/the-world-audit/
+skills/audit/
   SKILL.md                   what the audit must hold and how it reports
   scan.py                    read-only evidence scanner (parses the harness, never imports it)
-skills/the-world-util/
+skills/util/
   SKILL.md                   subcommand router
   references/slack-icon.md
 skills/help-my-world/
@@ -41,7 +41,7 @@ skills/help-my-world/
   collect_env.py             redacted environment report (stdlib only)
 ```
 
-`/the-world-start` Phase 3 step 1 runs the installer. What it does to the harness directory:
+`/the-world:start` Phase 3 step 1 runs the installer. What it does to the harness directory:
 
 | | Files | On re-run |
 |---|---|---|
@@ -133,7 +133,7 @@ MCP verification using the saved Codex CLI login.
 Codex-only installs omit `claude-agent-sdk`; changing such an install to `both` preserves
 its project-owned `pyproject.toml` and prints an explicit action to add that dependency.
 The implementation decision, matrix, and residual risks are recorded in
-[`docs/codex-compatibility.md`](../skills/the-world-start/assets/kit/docs/codex-compatibility.md).
+[`docs/codex-compatibility.md`](../skills/start/assets/kit/docs/codex-compatibility.md).
 
 ## One way to give an agent a capability
 
@@ -165,7 +165,7 @@ The implementation decision, matrix, and residual risks are recorded in
   instead of a dollar figure, because an absent cost and a genuinely free call must not look alike.
 
 Each traces to a real incident; the reasoning is in
-[`docs/philosophy.md`](../skills/the-world-start/assets/kit/docs/philosophy.md).
+[`docs/philosophy.md`](../skills/start/assets/kit/docs/philosophy.md).
 
 > **Env var naming.** A harness's config vars carry no kit-wide prefix: `<PROJECT>_THING`
 > for what one harness owns, a bare `THING` for what a set of harnesses genuinely shares
@@ -182,6 +182,6 @@ Each traces to a real incident; the reasoning is in
 
 ## Provenance
 
-Here the kit is packaged inside the `the-world-start` skill: it scaffolds into a target
+Here the kit is packaged inside the `start` skill: it scaffolds into a target
 directory and copies and merges its guard hooks and `settings.json` instead of assuming
 them present.

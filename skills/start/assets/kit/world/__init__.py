@@ -15,7 +15,7 @@ A harness project declares everything in plain Python:
         h.main()
 
 Scaffolded and extended by project-local skills in .claude/skills or .agents/skills:
-/the-world-start (survey + world + project), `agent.md` (new agent + Slack persona),
+/the-world:start (survey + world + project), `agent.md` (new agent + Slack persona),
 `tool.md` (scoped in-process MCP tools).
 
 Importing world loads the harness env file (env/harness.env at the repo root) as a side effect. That

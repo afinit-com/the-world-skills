@@ -36,7 +36,7 @@
 
 ```bash
 uv venv --python 3.13 evals2/.venv
-uv pip install --python evals2/.venv/bin/python -e skills/the-world-start/assets/kit
+uv pip install --python evals2/.venv/bin/python -e skills/start/assets/kit
 ```
 
 그다음:
