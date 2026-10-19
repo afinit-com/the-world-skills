@@ -392,6 +392,20 @@ class RedactTests(unittest.TestCase):
             self.assertNotIn(leaked, out)
         self.assertLessEqual(len(jev.redact("가" * 2000)), jev.MAX_CHARS)
 
+    def test_redact_strips_home_paths_and_attached_file_names(self) -> None:
+        text = ("# Files mentioned by the user: ## grades (1).xls: /Users/zebrafinch/Downloads/"
+                "grades (1).xls ## My request for Codex: is my school listed?\n"
+                "[$maker](/Users/zebrafinch/.codex/skills/maker/SKILL.md) help\n"
+                "cwd: /home/zebrafinch/work/acme-billing\n"
+                r"/Users/zebrafinch/Downloads/ha\ \(2\).md do step one" "\n"
+                r"open C:\Users\zebrafinch\notes.txt and ~/work/acme-billing/run.sh")
+        out = jev.redact(text)
+        for leaked in ("zebrafinch", "grades", "acme-billing", "ha\\", "notes.txt", "run.sh"):
+            self.assertNotIn(leaked, out)
+        for kept in ("is my school listed?", "help", "do step one"):
+            self.assertIn(kept, out)
+        self.assertEqual(jev.redact("peer uds:/tmp/x.sock"), "peer uds:/tmp/x.sock")
+
 
 if __name__ == "__main__":
     unittest.main()

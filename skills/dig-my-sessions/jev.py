@@ -14,7 +14,7 @@ counts sessions, days, agents and projects. Sessions a program started are dropp
 before anything is sent (in sources.py).
 
 What leaves the machine: each session's opener, redacted (credentials, cookies, auth
-headers, key/token values, emails, URLs) and cut to 600 characters. Nothing else.
+headers, key/token values, emails, URLs, home-directory paths) and cut to 600 characters. Nothing else.
 
   POST {TYPESAFE_BASE_URL:-https://api.typesafe.ai}/v1/systemone
   Authorization: Bearer $TYPESAFE_API_KEY
@@ -64,6 +64,13 @@ REDACTIONS = (
                 r"\s*:.*$"), r"\1: [redacted]"),
     (re.compile(r"(?i)(-H\s*['\"]?\s*(?:authorization|cookie|x-api-key)\s*:)[^'\"\n]*"),
      r"\1 [redacted]"),
+    # Codex lists attached files as "## <name>: <path>"; a name has spaces and no marker.
+    (re.compile(r"(?s)# Files mentioned by the user:.*?(?=## My request for Codex:|\Z)"),
+     "# Files mentioned by the user: [files] "),
+    # A home path carries the login name and the names of the user's files and projects.
+    (re.compile(r"(?:\b[A-Za-z]:)?[\\/](?:Users|home)[\\/](?:\\.|[^\s'\"`<>()\[\]])+"),
+     "[path]"),
+    (re.compile(r"(?<![\w/])~[\\/](?:\\.|[^\s'\"`<>()\[\]])+"), "[path]"),
     (re.compile(r"(?i)\b(bearer|basic|token)\s+[A-Za-z0-9._~+/=-]{8,}"), r"\1 [redacted]"),
     (re.compile(r"(?i)\b([\w-]*(?:api[_-]?key|secret|token|passw(?:or)?d|session|cookie|"
                 r"auth)[\w-]*)\s*[:=]\s*['\"]?[^\s'\"]+"), r"\1=[redacted]"),
