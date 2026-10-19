@@ -143,8 +143,9 @@ in `agents/openai.yaml`. The Codex plugin-creator validation helper rejects
 of that helper, and keeps the explicit-invocation policy rather than dropping it to pass.
 See [Codex invocation policy](https://learn.chatgpt.com/docs/build-skills).
 
-`the-world-start` also proposes work: given only a project path, it reads that project's
-Claude Code and Codex session records and proposes jobs with the evidence attached.
+`the-world-start` also proposes work: given only a project path, or no job at all, it reads
+what the user has asked their coding agents to do (through `dig-my-sessions`, offline) and
+proposes jobs with the evidence attached.
 `the-world-audit` only reads a harness to check it for risks, so it has no
 explicit-invocation policy, and neither has `dig-my-sessions`, which reads local session
 history (its `--jev` mode asks before sending anything). All five skills are exposed to
