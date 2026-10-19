@@ -2,8 +2,8 @@
 
 What it must hold: only what a person typed is mined; sessions a program started never
 reach the chore list; range and project flags narrow every agent alike; `find` searches
-tool output but not injected context; and `--jev` sends only redacted openers, nothing
-without a key, and leaves the counting to code.
+tool output but not injected context; and `--jev` sends only redacted openers with the
+vocabulary their errands share, nothing without a key, and leaves the counting to code.
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest import mock
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -24,7 +25,10 @@ ROOT = Path(__file__).resolve().parents[1]
 SKILL = ROOT / "skills/dig-my-sessions"
 DIG = SKILL / "dig.py"
 sys.path.insert(0, str(SKILL))
+import errands  # noqa: E402
 import jev  # noqa: E402
+import sources  # noqa: E402
+from dig import tokenize as jev_tokenize  # noqa: E402
 
 NOW = datetime.now(timezone.utc)
 # Built from parts so no token-shaped literal sits in the repository.
@@ -199,6 +203,64 @@ def agy_cli(root: Path, cwd: str, days_ago: float) -> None:
     ], days_ago)
 
 
+def claude_work(root: Path, sid: str, cwd: str, turns: list[tuple[float, str, list]],
+                gap: float = 0.001) -> None:
+    """A Claude session of several typed turns, each followed by its tool calls."""
+    rows = []
+    for days_ago, prompt, calls in turns:
+        rows.append({"type": "user", "sessionId": sid, "cwd": cwd, "promptSource": "typed",
+                     "timestamp": iso(days_ago), "message": {"role": "user", "content": prompt}})
+        rows.extend({"type": "assistant", "sessionId": sid, "cwd": cwd,
+                     "timestamp": iso(days_ago - gap),
+                     "message": {"content": [{"type": "tool_use", "name": name, "input": inp}]}}
+                    for name, inp in calls)
+    write_jsonl(root / "projects" / cwd.replace("/", "-") / f"{sid}.jsonl", rows,
+                min(t[0] for t in turns))
+
+
+def codex_work(root: Path, sid: str, cwd: str, prompt: str, days_ago: float,
+               calls: list[dict]) -> None:
+    """A Codex session whose tool calls are the given response_item payloads."""
+    rows = [{"timestamp": iso(days_ago), "type": "session_meta",
+             "payload": {"id": sid, "cwd": cwd, "source": "cli", "originator": "codex-tui"}},
+            {"timestamp": iso(days_ago), "type": "event_msg",
+             "payload": {"type": "user_message", "message": prompt}}]
+    rows.extend({"timestamp": iso(days_ago - 0.001), "type": "response_item", "payload": c}
+                for c in calls)
+    day = NOW - timedelta(days=days_ago)
+    write_jsonl(root / "sessions" / day.strftime("%Y/%m/%d") / f"rollout-{sid}.jsonl",
+                rows, days_ago)
+
+
+def errand_rows(base: Path, window_days: float = 60, until_days: float = 0, **kw) -> list[dict]:
+    """errands.build over the fake machine's Claude and Codex history."""
+    env = {"CLAUDE_CONFIG_DIR": str(base / "claude"), "CODEX_HOME": str(base / "codex")}
+    window = sources.Window(NOW - timedelta(days=window_days), NOW - timedelta(days=until_days))
+    with mock.patch.dict(os.environ, env):
+        found = list(sources.claude(window)) + list(sources.codex(window))
+        return errands.build(found, str, window=window, **kw)
+
+
+# The same chore, run with public tools: what the shared fingerprint is for.
+SYNC = [("Bash", {"command": "cd ~/code/shop && git fetch origin && gh pr list --state open"}),
+        ("Bash", {"command": "gh issue list --label triage"})]
+# What a recurring chore also repeats, every time: targets, people, secrets, private tools.
+# None of it may reach Jev however often it recurs.
+PRIVATE = [
+    ("Bash", {"command": "ssh prod-db-01 uptime && mysql -p hunter2 -h db"}),
+    ("Bash", {"command": "sudo -u alice-admin launchctl list; kubectl --context acme-eks get pods"}),
+    ("Bash", {"command": 'git commit -m "wip; zz-handle-9 approved" && make deploy-customerx'}),
+    ("Bash", {"command": "curl https://private.example/x > notes-secret"}),
+    ("Write", {"file_path": "/home/u/notes/secret-plan.md", "content": "x"}),
+    ("Skill", {"skill": "zz-private-skill"}),
+    ("mcp__corp_gitlab__list_mrs", {}),
+    ("build_alice_private", {}),
+]
+LEAKS = ("prod-db-01", "hunter2", "alice", "acme-eks", "zz-handle-9", "customerx",
+         "private.example", "notes-secret", "secret-plan", "notes/", ".md", "zz-private-skill",
+         "gitlab", "build_alice")
+
+
 DEPLOY = "스테이징 배포 상태 확인하고 슬랙에 결과 요약해서 올려줘 deploy check"
 
 
@@ -317,7 +379,7 @@ class ChoresTests(unittest.TestCase):
     def test_jev_sends_nothing_without_a_key_or_on_a_dry_run(self) -> None:
         dry = chores(self.env, "--jev-dry-run")
         self.assertTrue(dry["jev"]["dry_run"])
-        self.assertEqual(dry["jev"]["plan"]["step1_requests"], len(dry["sessions"]))
+        self.assertEqual(dry["jev"]["plan"]["step1_requests"], dry["jev"]["plan"]["errands"])
         missing = chores(self.env, "--jev")
         self.assertIn("TYPESAFE_API_KEY is not set", missing["jev"]["error"])
 
@@ -337,8 +399,8 @@ class FakeJev(BaseHTTPRequestHandler):
                                 "probabilities": {kind: 0.9}}
             else:
                 other = json.dumps(q["instructions"], ensure_ascii=False)
-                answers[qid] = {"type": "noul",
-                                "noul": 0.95 if "deploy" in state and "deploy" in other else 0.1}
+                same = any(w in state and w in other for w in ("deploy", "gh issue"))
+                answers[qid] = {"type": "noul", "noul": 0.95 if same else 0.1}
         out = json.dumps({"model": "jev-test", "answers": answers,
                           "usage": {"input_tokens": 100, "output_tokens": 10}}).encode()
         self.send_response(200)
@@ -378,6 +440,192 @@ class JevTests(unittest.TestCase):
         self.assertEqual(top["agents"], ["claude", "codex"])
         self.assertEqual(top["days"], 4)
         self.assertEqual(j["usage"]["input_tokens"], 100 * len(FakeJev.requests))
+
+    def test_jev_groups_errands_worded_apart_by_the_work_they_did(self) -> None:
+        server = HTTPServer(("127.0.0.1", 0), FakeJev)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        FakeJev.requests = []
+        with tempfile.TemporaryDirectory() as raw:
+            base = Path(raw)
+            env = build_machine(base)
+            proj = str(base / "home/code/shop")
+            # the same chore, three wordings that share no word, each running every
+            # command once; the middle errand sits in a session left open for days, after
+            # an unrelated one. All three also repeat the same private targets.
+            claude_work(base / "claude", "s1", proj,
+                        [(12, "지난번 하던 거 이어서 보자 원격이랑 이슈 목록 기준으로", SYNC + PRIVATE)])
+            claude_work(base / "claude", "s2", proj, [
+                (11, "결제 위젯 색상 바꿔줘 버튼만 파란색으로 하고", PRIVATE[4:5]),
+                (8, "where are we on the open tickets and branches today", SYNC + PRIVATE)])
+            claude_work(base / "claude", "s3", proj,
+                        [(4, "현황 파악 부탁해 오늘 기준으로 한 번에 정리해서 알려줘", SYNC + PRIVATE)])
+            env.update({"TYPESAFE_API_KEY": "test-key",
+                        "TYPESAFE_BASE_URL": f"http://127.0.0.1:{server.server_port}"})
+            result = chores(env, "--jev")
+        server.shutdown()
+        server.server_close()
+        sent = json.dumps([r["body"] for r in FakeJev.requests], ensure_ascii=False)
+        self.assertIn("git fetch, gh pr, gh issue", sent)
+        for leaked in LEAKS + (str(base),):
+            self.assertNotIn(leaked, sent)
+        group = next(g for g in result["jev"]["shortlist"]
+                     if any("이어서 보자" in m["opener"] for m in g["members"]))
+        self.assertEqual((group["errands"], group["sessions"]), (3, 3))
+        self.assertNotIn("결제 위젯", json.dumps(group["members"], ensure_ascii=False))
+
+    def test_one_session_counts_as_recurrence_only_across_days(self) -> None:
+        def run(days):
+            rows = [{"id": f"e{i}", "session": "one", "agent": "claude", "project": "~/p",
+                     "date": d, "opener": "현황 파악 부탁해 오늘 기준으로 정리 gh issue"}
+                    for i, d in enumerate(days)]
+            with mock.patch.object(jev, "ask", lambda *a, **k: {"answers": {
+                    q: ({"choice": "exploration"} if q == "kind" else {"noul": 0.95})
+                    for q in a[1]}}), mock.patch.dict(os.environ, {"TYPESAFE_API_KEY": "k"}):
+                return jev.run(rows, jev_tokenize, min_sessions=3, same=0.7, k=5,
+                               dry_run=False)
+        afternoon = run(["2026-10-01 13:00", "2026-10-01 16:30", "2026-10-01 20:00"])
+        self.assertEqual(afternoon["shortlist"], [])
+        self.assertTrue(afternoon["below_min_sessions"][0]["one_sitting"])
+        month = run(["2026-09-01 09:00", "2026-09-08 09:00", "2026-09-15 09:00"])
+        self.assertEqual([(g["sessions"], g["days"]) for g in month["shortlist"]], [(1, 3)])
+
+
+class ErrandTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self._tmp.name)
+        self.proj = "/home/u/code/shop"
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_a_session_left_open_is_cut_into_errands_where_the_person_was_away(self) -> None:
+        claude_work(self.base / "claude", "w1", self.proj, [
+            (9, "릴리즈 노트 초안 써줘 지난 태그 이후 변경 기준으로", []),
+            (9 - 0.05, "좋아 그거 PR 설명에도 넣어줘", []),
+            (2, "오늘 들어온 이슈들 트래커랑 원격 브랜치 확인해서 정리해줘", SYNC),
+            # a short resume after another gap continues that errand, tool calls and all
+            (1, "계속", [("Bash", {"command": "gh run view 7"})]),
+        ])
+        rows = errand_rows(self.base)
+        self.assertEqual([r["turns"] for r in rows], [2, 2])
+        self.assertEqual({r["session"] for r in rows}, {"w1"})
+        self.assertEqual(rows[0]["local"], {})
+        self.assertEqual(rows[1]["local"]["cmd:gh run"], 1)
+        self.assertEqual(rows[1]["shared"]["did"], ["git fetch", "gh pr", "gh issue", "gh run"])
+
+    def test_the_same_request_typed_again_is_another_errand_but_a_resumed_copy_is_not(self):
+        again = "지난주랑 같은 기준으로 이슈 트래커 현황 정리해줘 부탁해"
+        turns = [(10, again, SYNC), (3, again, SYNC)]
+        claude_work(self.base / "claude", "a1", self.proj, turns)
+        claude_work(self.base / "claude", "a2", self.proj, turns)  # resume: history copied
+        rows = errand_rows(self.base)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["local"]["cmd:gh issue"], 1)
+
+    def test_each_tool_call_belongs_to_one_errand_inside_the_window(self) -> None:
+        claude_work(self.base / "claude", "b1", self.proj, [
+            (5, "첫 번째 일 이슈 트래커 현황 정리해줘 오늘 기준으로", []),
+            # 30 seconds before the next prompt: the first errand's, not both
+            (2, "두 번째 일 배포 상태 확인해서 슬랙에 올려줘 오늘 기준으로",
+             [("Bash", {"command": "gh pr list"})]),
+        ], gap=-30 / 86400)
+        claude_work(self.base / "claude", "b2", self.proj, [
+            (6, "범위 끝에 걸친 일 정리해줘 오늘 기준으로 한 번에", []),
+            (0.5, "범위 밖에서 이어 한 일 정리해줘 오늘 기준으로",
+             [("Bash", {"command": "gh release list"})]),
+        ])
+        rows = {r["opener"].split()[0]: r["local"] for r in errand_rows(self.base, until_days=1)}
+        self.assertEqual(rows["첫"].get("cmd:gh pr"), 1)
+        self.assertNotIn("cmd:gh pr", rows["두"])
+        self.assertNotIn("cmd:gh release", rows["범위"])
+
+    def test_codex_shell_calls_are_read_and_patch_bodies_are_not(self) -> None:
+        patch = ("*** Begin Patch\n*** Update File: /repo/config.txt\n@@\n-old\n+new\n"
+                 " customer private-client\n ssh prod-db-01\n*** End Patch")
+        codex_work(self.base / "codex", "x9", self.proj, "이슈 트래커 현황 정리해줘 오늘 기준으로 부탁", 2, [
+            {"type": "function_call", "name": "exec_command",
+             "arguments": json.dumps({"cmd": "git fetch origin"})},
+            {"type": "function_call", "name": "shell",
+             "arguments": json.dumps({"command": ["/bin/zsh", "-lc", "git status && gh pr list"]})},
+            {"type": "local_shell_call", "action": {"type": "exec", "command": ["gh", "issue", "list"]}},
+            {"type": "custom_tool_call", "name": "apply_patch", "input": patch},
+            {"type": "custom_tool_call", "name": "build_alice_private", "input": "ssh prod-db-01"},
+        ])
+        [row] = errand_rows(self.base)
+        cmds = sorted(k for k in row["local"] if k.startswith("cmd:"))
+        self.assertEqual(cmds, ["cmd:gh issue", "cmd:gh pr", "cmd:git fetch", "cmd:git status"])
+        self.assertEqual(row["local"]["edits:.txt"], 1)
+        state = jev.state_of(row)
+        for leaked in ("customer", "private-client", "prod-db", "config", "build_alice"):
+            self.assertNotIn(leaked, state)
+
+    def test_command_heads_follow_shell_grammar(self) -> None:
+        cases = {
+            "cd x && FOO=1 uv run pytest -q | tee log": ["pytest"],
+            "python3 - <<'EOF'\nimport json\nfor x in y: print(x)\nEOF\ngh api repos/a/b":
+                ["python3", "gh api"],
+            'git commit -m "fix; ssh prod-db" && gh pr view': ["git commit", "gh pr"],
+            "bash -lc 'git fetch origin && gh pr list'": ["git fetch", "gh pr"],
+            "sudo -u alice-admin git status": ["sudo"],
+            "sudo git push": ["git push"],
+            "kubectl --context acme-eks get pods": ["kubectl"],
+            "make build > deploy-log 2>&1": ["make build"],
+            "./scripts/Screenshot_2026.png": [],
+            'echo "unbalanced': [],
+        }
+        for cmd, heads in cases.items():
+            self.assertEqual(errands.command_heads(cmd), heads, cmd)
+
+    def test_only_the_fixed_vocabulary_is_shared(self) -> None:
+        fp = errands.Counter()
+        for name, inp in SYNC + PRIVATE:
+            errands.add_call(fp, name, inp)
+        local = dict(fp)
+        for kept in ("cmd:ssh prod-db-01", "host:private.example", "skill:zz-private-skill",
+                     "mcp:corp-gitlab", "edits:.md"):
+            self.assertIn(kept, local)  # still there for pairing on this machine
+        shared = errands.shared(local)
+        self.assertEqual(shared["tools"], ["Bash", "Write", "Skill"])
+        self.assertEqual(shared["did"][:3], ["git fetch", "gh pr", "gh issue"])
+        state = jev.state_of({"opener": "Review /home/alice/payroll.csv today", "shared": shared})
+        for leaked in LEAKS + ("payroll", "/home"):
+            self.assertNotIn(leaked, state)
+
+    def test_errands_running_each_command_once_are_still_proposed(self) -> None:
+        rows = []
+        for opener in ("이어서 보자 원격 기준", "what is still open today", "현황 정리 부탁"):
+            fp = errands.Counter()
+            for name, inp in SYNC:
+                errands.add_call(fp, name, inp)
+            rows.append({"id": opener, "opener": opener, "local": dict(fp)})
+        asks = jev.candidate_pairs(rows, jev_tokenize, [0, 1, 2], [], k=5)
+        self.assertEqual(sum(len(v) for v in asks.values()), 3)
+
+    def test_errands_worded_apart_group_offline_by_the_work_they_did(self) -> None:
+        env = build_machine(self.base)
+        env.pop("TYPESAFE_API_KEY", None)
+        proj = str(self.base / "home/code/shop")
+        claude_work(self.base / "claude", "s1", proj,
+                    [(12, "지난번 하던 거 이어서 보자 원격이랑 이슈 목록 기준으로", SYNC + PRIVATE)])
+        claude_work(self.base / "claude", "s2", proj, [
+            (11, "결제 위젯 색상 바꿔줘 버튼만 파란색으로 하고", PRIVATE[4:5]),
+            (8, "where are we on the open tickets and branches today", SYNC + PRIVATE)])
+        claude_work(self.base / "claude", "s3", proj,
+                    [(4, "현황 파악 부탁해 오늘 기준으로 한 번에 정리해서 알려줘", SYNC + PRIVATE)])
+        result = chores(env, "--errands")
+        self.assertNotIn("jev", result)
+        group = next(g for g in result["errands"]["look_alike"]
+                     if any("이어서 보자" in m["opener"] for m in g["members"]))
+        self.assertEqual((group["errands"], group["sessions"], group["days"]), (3, 3, 3))
+        self.assertNotIn("결제 위젯", json.dumps(group["members"], ensure_ascii=False))
+        self.assertIn("cmd:git fetch", group["members"][0]["work"])
+        self.assertNotIn("errands", chores(env))
+
+    def test_errand_gap_must_be_positive(self) -> None:
+        r = dig(build_machine(self.base), "chores", "--jev-dry-run", "--errand-gap", "0")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("--errand-gap", r.stderr)
 
 
 class RedactTests(unittest.TestCase):

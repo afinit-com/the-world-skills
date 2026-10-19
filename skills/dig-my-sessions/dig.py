@@ -7,6 +7,7 @@ Two questions, one index:
   python3 dig.py find checkout retry --since 2026-08-01 --agent codex
   python3 dig.py chores --days 90                  # what does the human keep doing by hand?
   python3 dig.py chores --project my-app --exclude-project work --json out.json
+  python3 dig.py chores --days 120 --errands       # + errands grouped by wording or work done
   python3 dig.py chores --days 120 --jev           # + Jev labels and same-chore grouping
 
 History is read from Claude Code, Codex, opencode, Cursor, Antigravity CLI (`agy`) and the
@@ -14,8 +15,9 @@ legacy Gemini CLI, whichever are on this machine (`--agent` narrows it). The arc
 far too big for a model to read; this script does the deterministic reduction and makes
 no judgment. Which chores are worth automating is the caller's.
 
-Everything is offline and read-only, except `--jev`, which sends redacted openers to
-TypeSafe's API and needs TYPESAFE_API_KEY. Stdlib only.
+Everything is offline and read-only, except `--jev`, which sends redacted openers and
+their shared fingerprints (errands.py) to TypeSafe's API and needs TYPESAFE_API_KEY.
+Stdlib only.
 """
 
 from __future__ import annotations
@@ -30,6 +32,7 @@ from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import errands  # noqa: E402
 import sources  # noqa: E402
 
 # Pure acknowledgements / steering grunts: real typed text, but not a chore.
@@ -309,21 +312,30 @@ def cmd_chores(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(prog="dig.py chores")
     common_args(ap, 180)
     ap.add_argument("--min-sessions", type=int, default=3,
-                    help="a chore must recur across at least this many sessions")
+                    help="a chore must recur across at least this many sessions (with "
+                         "--errands/--jev: sessions or distinct days)")
     ap.add_argument("--threshold", type=float, default=0.34)
     ap.add_argument("--top", type=int, default=40)
     ap.add_argument("--include-automated", action="store_true",
                     help="keep sessions a program started (SDK, codex exec, scheduled runs)")
     ap.add_argument("--json", dest="json_out")
+    ap.add_argument("--errands", action="store_true",
+                    help="cut sessions into errands and group those that look alike, by "
+                         "wording or by the work done (offline)")
     ap.add_argument("--jev", action="store_true",
-                    help="label and group openers with Jev (sends redacted openers to TypeSafe)")
+                    help="label and group errands with Jev (sends redacted openers and a "
+                         "fixed-vocabulary fingerprint to TypeSafe)")
     ap.add_argument("--jev-dry-run", action="store_true",
                     help="show what --jev would send, and send nothing")
     ap.add_argument("--jev-same", type=float, default=0.7,
-                    help="Noul probability at which two openers count as the same chore")
+                    help="Noul probability at which two errands count as the same chore")
     ap.add_argument("--jev-candidates", type=int, default=5,
-                    help="nearest openers asked about per session")
+                    help="nearest errands asked about per errand, by words and by fingerprint")
+    ap.add_argument("--errand-gap", type=float, default=errands.GAP_HOURS,
+                    help="hours away that end one errand and start the next")
     a = ap.parse_args(argv)
+    if a.errand_gap <= 0:
+        ap.error("--errand-gap must be a positive number of hours")
 
     window, agents = window_from(a), agents_from(a)
     found = sources.sessions(window, agents)
@@ -363,9 +375,14 @@ def cmd_chores(argv: list[str]) -> int:
         "verbatim_repeats": clusters[: a.top],
     }
 
+    if a.errands or a.jev or a.jev_dry_run:
+        errand_rows = errands.build(kept, short, a.errand_gap, window)
+        # With --jev too, so what Jev adds over code alone shows side by side.
+        result["errands"] = errands.look_alikes(errand_rows, tokenize,
+                                                min_sessions=a.min_sessions)
     if a.jev or a.jev_dry_run:
         import jev
-        result["jev"] = jev.run(rows, tokenize, min_sessions=a.min_sessions,
+        result["jev"] = jev.run(errand_rows, tokenize, min_sessions=a.min_sessions,
                                 same=a.jev_same, k=a.jev_candidates, dry_run=a.jev_dry_run)
         if result["jev"].get("error"):
             print(f"jev: {result['jev']['error']}", file=sys.stderr)
@@ -400,6 +417,8 @@ def print_chores(result: dict, top: int) -> None:
             print(f"· {c['sessions']} sessions · {'/'.join(c['agents'])} · "
                   f"{' '.join(c['keywords'][:5])}")
             print(f"    {' '.join(c['examples'][-1]['text'].split())[:160]}")
+    if result.get("errands"):
+        errands.print_report(result["errands"])
     j = result.get("jev")
     if j:
         import jev
