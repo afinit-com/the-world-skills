@@ -32,7 +32,6 @@ words, as typed.
 from __future__ import annotations
 
 import json
-import math
 import os
 import re
 import ssl
@@ -41,9 +40,6 @@ import urllib.error
 import urllib.request
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta
-from statistics import median
-
 import errands
 
 MAX_CHARS = 600
@@ -160,31 +156,6 @@ def ask(state, questions: dict, key: str, base: str, attempts: int = 5) -> dict:
     raise JevError("unreachable")
 
 
-HANGUL = re.compile(r"[가-힣]{2,}")
-
-
-def _features(text: str, tokenize) -> set[str]:
-    """Words, plus character bigrams of Korean words: 배포확인 and 배포점검 share no word
-    but share 배포, and a word-only comparison never proposes them as a pair."""
-    out = set(tokenize(text))
-    for w in HANGUL.findall(text):
-        out.update("§" + w[i:i + 2] for i in range(len(w) - 1))
-    return out
-
-
-def _weights(rows, tokenize):
-    toks = [_features(r["opener"], tokenize) for r in rows]
-    df = Counter(t for ts in toks for t in ts)
-    n = len(rows) or 1
-    return toks, {t: math.log(1 + n / c) for t, c in df.items()}
-
-
-def _similarity(a: set, b: set, idf: dict) -> float:
-    inter = sum(idf[t] for t in a & b)
-    union = sum(idf[t] for t in a | b)
-    return inter / union if union else 0.0
-
-
 def candidate_pairs(rows, tokenize, pool: list[int], recurring: list[int], k: int,
                     floor: float = 0.05, all_pairs_up_to: int = 40, fp_floor: float = 0.15):
     """Which pairs Jev is asked about. Code proposes, Jev disposes: a pair never asked
@@ -196,17 +167,15 @@ def candidate_pairs(rows, tokenize, pool: list[int], recurring: list[int], k: in
     - errands labelled recurring_chore, against every other one, while there are few
       enough of them (40 → 780 pairs, a few cents)
     """
-    toks, idf = _weights(rows, tokenize)
-    fps = [errands.pairing_features(r) if "local" in r else set() for r in rows]
-    fdf = Counter(t for f in fps for t in f)
-    fidf = {t: math.log(1 + len(rows) / c) for t, c in fdf.items()}
+    toks, idf = errands.opener_weights(rows, tokenize)
+    fps, fidf = errands.work_weights(rows)
     pairs = set()
     for i in pool:
-        near = sorted(((_similarity(toks[i], toks[j], idf), j) for j in pool if j != i),
+        near = sorted(((errands.similarity(toks[i], toks[j], idf), j) for j in pool if j != i),
                       reverse=True)
         pairs.update((min(i, j), max(i, j)) for score, j in near[:k] if score >= floor)
         if fps[i]:
-            near = sorted(((_similarity(fps[i], fps[j], fidf), j) for j in pool
+            near = sorted(((errands.similarity(fps[i], fps[j], fidf), j) for j in pool
                            if j != i and fps[j]), reverse=True)
             pairs.update((min(i, j), max(i, j)) for score, j in near[:k] if score >= fp_floor)
     if len(recurring) <= all_pairs_up_to:
@@ -215,31 +184,6 @@ def candidate_pairs(rows, tokenize, pool: list[int], recurring: list[int], k: in
     for a, b in sorted(pairs):
         asks.setdefault(a, []).append(b)
     return asks
-
-
-def _groups(n: int, edges) -> list[list[int]]:
-    parent = list(range(n))
-
-    def root(x):
-        while parent[x] != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
-
-    for a, b in edges:
-        parent[root(a)] = root(b)
-    out: dict[int, list[int]] = {}
-    for i in range(n):
-        out.setdefault(root(i), []).append(i)
-    return list(out.values())
-
-
-def _cadence(dates: list[datetime]) -> str | None:
-    days = sorted({d.date() for d in dates})
-    if len(days) < 2:
-        return None
-    gap = median((b - a).days for a, b in zip(days, days[1:]))
-    return f"every ~{gap:g}d"
 
 
 def run(rows: list[dict], tokenize, *, min_sessions: int, same: float, k: int,
@@ -299,42 +243,21 @@ def run(rows: list[dict], tokenize, *, min_sessions: int, same: float, k: int,
     # 3. Counting is code's.
     edges = [(i, j) for i, j, p in judged if p >= same]
     groups = []
-    for members in _groups(len(rows), edges):
+    for members in errands.union_groups(len(rows), edges):
         if len(members) < 2 and kinds[members[0]].get("choice") != "recurring_chore":
             continue
-        dates = [datetime.strptime(rows[i]["date"], "%Y-%m-%d %H:%M") for i in members]
-        sessions = {rows[i].get("session", rows[i]["id"]) for i in members}
-        days = {d.date() for d in dates}
-        p_recur = sum(kinds[i].get("probabilities", {}).get("recurring_chore", 0.0)
-                      for i in members) / len(members)
-        groups.append({
-            "sessions": len(sessions),
-            "errands": len(members),
-            "days": len(days),
-            "first": min(dates).date().isoformat(),
-            "last": max(dates).date().isoformat(),
-            "cadence": _cadence(dates),
-            # Retries minutes apart, or errands of one session on one day: not recurrence.
-            "one_sitting": len(members) > 1 and (
-                max(dates) - min(dates) < timedelta(hours=3)
-                or (len(sessions) == 1 and len(days) == 1)),
-            "agents": sorted({rows[i]["agent"] for i in members}),
-            "projects": [p for p, _ in Counter(rows[i]["project"] for i in members).most_common()],
-            "kinds": dict(Counter(kinds[i].get("choice") for i in members)),
-            "p_recurring": round(p_recur, 2),
-            "members": [{"date": rows[i]["date"], "agent": rows[i]["agent"],
-                         "project": rows[i]["project"], "id": rows[i]["id"],
-                         "opener": rows[i]["opener"][:280]} for i in sorted(members)],
-        })
+        g = errands.summarize(rows, members)
+        g["kinds"] = dict(Counter(kinds[i].get("choice") for i in members))
+        g["p_recurring"] = round(sum(
+            kinds[i].get("probabilities", {}).get("recurring_chore", 0.0)
+            for i in members) / len(members), 2)
+        groups.append(g)
     # Distinct days before session count: sessions minutes apart on one day are one
     # sitting (one prompt retried), not a chore that comes back.
-    # A chore recurs across sessions or across days: one session left open for a month,
-    # coming back to the same errand on three days, is recurrence; three errands of one
-    # afternoon are not.
     groups.sort(key=lambda g: (-g["days"], -g["errands"], -g["p_recurring"]))
 
     def recurs(g):
-        return max(g["sessions"], g["days"]) >= min_sessions
+        return errands.recurs(g, min_sessions)
 
     shortlist = [g for g in groups if recurs(g)]
     single = [g for g in groups if g["errands"] == 1][:10]

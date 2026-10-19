@@ -1,4 +1,4 @@
-"""errands.py — what `--jev` compares: errands, each with a fingerprint of the work done.
+"""errands.py — `dig.py chores --errands`: errands, each with a fingerprint of the work done.
 
 An opener alone undersells a session two ways. A session left open for weeks holds many
 errands, and only the first one has an opener. And two sessions doing the same chore are
@@ -11,7 +11,8 @@ skills, MCP servers, URL hosts and the kinds of file edited.
 
 Two fingerprints per errand, because not all of it may leave the machine:
 
-- `local`: everything above, used only on this machine to propose candidate pairs.
+- `local`: everything above, used only on this machine: to group errands that look alike
+  (`look_alikes`, offline) and to propose the pairs `--jev` asks about.
 - `shared`: what Jev may see, drawn from a fixed public vocabulary and nothing else:
   built-in tool names (PUBLIC_TOOLS) and well-known commands with their well-known
   subcommands (PUBLIC_COMMANDS). Never skills, MCP servers, hosts, paths, file names or
@@ -25,16 +26,21 @@ names only, which still separates a chat from a session that edited files.
 from __future__ import annotations
 
 import json
+import math
 import re
 import shlex
 from collections import Counter
-from datetime import timedelta
+from datetime import datetime, timedelta
+from statistics import median
 from pathlib import Path
 from urllib.parse import urlparse
 
 import sources
 
 GAP_HOURS = 3.0
+WORDS_SAME = 0.34  # opener similarity at which two errands look alike (as verbatim repeats)
+WORK_SAME = 0.5    # fingerprint similarity at which two errands look alike
+WORK_MIN = 3       # an errand that touched fewer things than this says too little to compare
 OPENER_MIN = 25  # as Session.opener: a short first turn ("계속") is a resume, not an errand
 LOOKBACK = timedelta(minutes=1)  # the first prompt's own tool calls can carry its timestamp
 
@@ -389,3 +395,138 @@ def shared(local: dict) -> dict:
 def pairing_features(row: dict) -> set[str]:
     """What candidate pairing compares, locally: everything the errand touched, once."""
     return {k for k in row["local"] if not k.startswith("tool:")}
+
+
+HANGUL = re.compile(r"[가-힣]{2,}")
+
+
+def _features(text: str, tokenize) -> set[str]:
+    """Words, plus character bigrams of Korean words: 배포확인 and 배포점검 share no word
+    but share 배포, and a word-only comparison never pairs them."""
+    out = set(tokenize(text))
+    for w in HANGUL.findall(text):
+        out.update("§" + w[i:i + 2] for i in range(len(w) - 1))
+    return out
+
+
+def _idf(sets: list[set]) -> dict:
+    df = Counter(t for ts in sets for t in ts)
+    n = len(sets) or 1
+    return {t: math.log(1 + n / c) for t, c in df.items()}
+
+
+def opener_weights(rows, tokenize):
+    toks = [_features(r["opener"], tokenize) for r in rows]
+    return toks, _idf(toks)
+
+
+def work_weights(rows):
+    fps = [pairing_features(r) if "local" in r else set() for r in rows]
+    return fps, _idf(fps)
+
+
+def similarity(a: set, b: set, idf: dict) -> float:
+    inter = sum(idf[t] for t in a & b)
+    union = sum(idf[t] for t in a | b)
+    return inter / union if union else 0.0
+
+
+def union_groups(n: int, edges) -> list[list[int]]:
+    parent = list(range(n))
+
+    def root(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for a, b in edges:
+        parent[root(a)] = root(b)
+    out: dict[int, list[int]] = {}
+    for i in range(n):
+        out.setdefault(root(i), []).append(i)
+    return list(out.values())
+
+
+def _cadence(dates: list[datetime]) -> str | None:
+    days = sorted({d.date() for d in dates})
+    if len(days) < 2:
+        return None
+    gap = median((b - a).days for a, b in zip(days, days[1:]))
+    return f"every ~{gap:g}d"
+
+
+def summarize(rows: list[dict], members: list[int]) -> dict:
+    """What code can count about a group of errands: sessions, distinct days, cadence."""
+    dates = [datetime.strptime(rows[i]["date"], "%Y-%m-%d %H:%M") for i in members]
+    sessions = {rows[i].get("session", rows[i]["id"]) for i in members}
+    days = {d.date() for d in dates}
+    return {
+        "sessions": len(sessions),
+        "errands": len(members),
+        "days": len(days),
+        "first": min(dates).date().isoformat(),
+        "last": max(dates).date().isoformat(),
+        "cadence": _cadence(dates),
+        # Retries minutes apart, or errands of one session on one day: not recurrence.
+        "one_sitting": len(members) > 1 and (
+            max(dates) - min(dates) < timedelta(hours=3)
+            or (len(sessions) == 1 and len(days) == 1)),
+        "agents": sorted({rows[i]["agent"] for i in members}),
+        "projects": [p for p, _ in Counter(rows[i]["project"] for i in members).most_common()],
+        "members": [{"date": rows[i]["date"], "agent": rows[i]["agent"],
+                     "project": rows[i]["project"], "id": rows[i]["id"],
+                     "opener": rows[i]["opener"][:280],
+                     "work": [k for k, _ in Counter(rows[i].get("local") or {}).most_common()
+                              if not k.startswith("tool:")][:8]}
+                    for i in sorted(members)],
+    }
+
+
+def recurs(group: dict, min_sessions: int) -> bool:
+    """A chore recurs across sessions or across days: one session left open for a month,
+    coming back to the same errand on three days, is recurrence; three errands of one
+    afternoon are not."""
+    return max(group["sessions"], group["days"]) >= min_sessions
+
+
+def look_alikes(rows: list[dict], tokenize, *, min_sessions: int, words: float = WORDS_SAME,
+                work: float = WORK_SAME) -> dict:
+    """Errands that look like the same chore, by code alone and on this machine: openers
+    worded alike, or fingerprints alike (the same chore worded nothing alike still runs
+    the same commands against the same services). Candidates for the reader to judge,
+    not verdicts: code cannot tell a chore from two errands that merely touched the same
+    things."""
+    toks, idf = opener_weights(rows, tokenize)
+    fps, fidf = work_weights(rows)
+    edges = []
+    for i in range(len(rows)):
+        for j in range(i + 1, len(rows)):
+            if (similarity(toks[i], toks[j], idf) >= words
+                    or (len(fps[i]) >= WORK_MIN and len(fps[j]) >= WORK_MIN
+                        and similarity(fps[i], fps[j], fidf) >= work)):
+                edges.append((i, j))
+    groups = [summarize(rows, m) for m in union_groups(len(rows), edges) if len(m) > 1]
+    # Distinct days before session count: sessions minutes apart on one day are one
+    # sitting (one prompt retried), not a chore that comes back.
+    groups.sort(key=lambda g: (-g["days"], -g["errands"]))
+    return {
+        "errands": len(rows),
+        "sessions": len({r.get("session", r["id"]) for r in rows}),
+        "look_alike": [g for g in groups if recurs(g, min_sessions)],
+        "below_min_sessions": [g for g in groups if not recurs(g, min_sessions)],
+    }
+
+
+def print_report(e: dict) -> None:
+    print(f"\n## errands that look alike ({e['errands']} errands in {e['sessions']} "
+          f"sessions; by wording or by the work done — judge them, code only proposes)\n")
+    for g in e["look_alike"]:
+        print(f"· {g['errands']} errands in {g['sessions']} sessions / {g['days']} days"
+              f" · {g['first']} → {g['last']}"
+              f" · {'ONE SITTING' if g['one_sitting'] else g['cadence'] or '-'}"
+              f" · {'/'.join(g['agents'])} · {', '.join(g['projects'][:3])}")
+        for m in g["members"][-3:]:
+            print(f"    {m['date']} {' '.join(m['opener'].split())[:150]}")
+            if m["work"]:
+                print(f"        did: {', '.join(m['work'][:6])}")

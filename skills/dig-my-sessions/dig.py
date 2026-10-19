@@ -7,6 +7,7 @@ Two questions, one index:
   python3 dig.py find checkout retry --since 2026-08-01 --agent codex
   python3 dig.py chores --days 90                  # what does the human keep doing by hand?
   python3 dig.py chores --project my-app --exclude-project work --json out.json
+  python3 dig.py chores --days 120 --errands       # + errands grouped by wording or work done
   python3 dig.py chores --days 120 --jev           # + Jev labels and same-chore grouping
 
 History is read from Claude Code, Codex, opencode, Cursor, Antigravity CLI (`agy`) and the
@@ -312,12 +313,15 @@ def cmd_chores(argv: list[str]) -> int:
     common_args(ap, 180)
     ap.add_argument("--min-sessions", type=int, default=3,
                     help="a chore must recur across at least this many sessions (with "
-                         "--jev: sessions or distinct days)")
+                         "--errands/--jev: sessions or distinct days)")
     ap.add_argument("--threshold", type=float, default=0.34)
     ap.add_argument("--top", type=int, default=40)
     ap.add_argument("--include-automated", action="store_true",
                     help="keep sessions a program started (SDK, codex exec, scheduled runs)")
     ap.add_argument("--json", dest="json_out")
+    ap.add_argument("--errands", action="store_true",
+                    help="cut sessions into errands and group those that look alike, by "
+                         "wording or by the work done (offline)")
     ap.add_argument("--jev", action="store_true",
                     help="label and group errands with Jev (sends redacted openers and a "
                          "fixed-vocabulary fingerprint to TypeSafe)")
@@ -328,7 +332,7 @@ def cmd_chores(argv: list[str]) -> int:
     ap.add_argument("--jev-candidates", type=int, default=5,
                     help="nearest errands asked about per errand, by words and by fingerprint")
     ap.add_argument("--errand-gap", type=float, default=errands.GAP_HOURS,
-                    help="hours away that end one errand and start the next (--jev)")
+                    help="hours away that end one errand and start the next")
     a = ap.parse_args(argv)
     if a.errand_gap <= 0:
         ap.error("--errand-gap must be a positive number of hours")
@@ -371,9 +375,13 @@ def cmd_chores(argv: list[str]) -> int:
         "verbatim_repeats": clusters[: a.top],
     }
 
+    if a.errands or a.jev or a.jev_dry_run:
+        errand_rows = errands.build(kept, short, a.errand_gap, window)
+        # With --jev too, so what Jev adds over code alone shows side by side.
+        result["errands"] = errands.look_alikes(errand_rows, tokenize,
+                                                min_sessions=a.min_sessions)
     if a.jev or a.jev_dry_run:
         import jev
-        errand_rows = errands.build(kept, short, a.errand_gap, window)
         result["jev"] = jev.run(errand_rows, tokenize, min_sessions=a.min_sessions,
                                 same=a.jev_same, k=a.jev_candidates, dry_run=a.jev_dry_run)
         if result["jev"].get("error"):
@@ -409,6 +417,8 @@ def print_chores(result: dict, top: int) -> None:
             print(f"· {c['sessions']} sessions · {'/'.join(c['agents'])} · "
                   f"{' '.join(c['keywords'][:5])}")
             print(f"    {' '.join(c['examples'][-1]['text'].split())[:160]}")
+    if result.get("errands"):
+        errands.print_report(result["errands"])
     j = result.get("jev")
     if j:
         import jev

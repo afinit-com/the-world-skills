@@ -602,6 +602,26 @@ class ErrandTests(unittest.TestCase):
         asks = jev.candidate_pairs(rows, jev_tokenize, [0, 1, 2], [], k=5)
         self.assertEqual(sum(len(v) for v in asks.values()), 3)
 
+    def test_errands_worded_apart_group_offline_by_the_work_they_did(self) -> None:
+        env = build_machine(self.base)
+        env.pop("TYPESAFE_API_KEY", None)
+        proj = str(self.base / "home/code/shop")
+        claude_work(self.base / "claude", "s1", proj,
+                    [(12, "지난번 하던 거 이어서 보자 원격이랑 이슈 목록 기준으로", SYNC + PRIVATE)])
+        claude_work(self.base / "claude", "s2", proj, [
+            (11, "결제 위젯 색상 바꿔줘 버튼만 파란색으로 하고", PRIVATE[4:5]),
+            (8, "where are we on the open tickets and branches today", SYNC + PRIVATE)])
+        claude_work(self.base / "claude", "s3", proj,
+                    [(4, "현황 파악 부탁해 오늘 기준으로 한 번에 정리해서 알려줘", SYNC + PRIVATE)])
+        result = chores(env, "--errands")
+        self.assertNotIn("jev", result)
+        group = next(g for g in result["errands"]["look_alike"]
+                     if any("이어서 보자" in m["opener"] for m in g["members"]))
+        self.assertEqual((group["errands"], group["sessions"], group["days"]), (3, 3, 3))
+        self.assertNotIn("결제 위젯", json.dumps(group["members"], ensure_ascii=False))
+        self.assertIn("cmd:git fetch", group["members"][0]["work"])
+        self.assertNotIn("errands", chores(env))
+
     def test_errand_gap_must_be_positive(self) -> None:
         r = dig(build_machine(self.base), "chores", "--jev-dry-run", "--errand-gap", "0")
         self.assertNotEqual(r.returncode, 0)
