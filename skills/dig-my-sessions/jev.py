@@ -19,11 +19,11 @@ the same chore are often worded nothing alike while the commands run are identic
 candidate pairs come from opener words OR the local fingerprint.
 
 What leaves the machine: each errand's opener, redacted (credentials, cookies, auth
-headers, key/token values, emails, URLs, filesystem paths) and cut to 600 characters,
-followed by its shared fingerprint: built-in tool names and well-known commands, from the
-fixed vocabulary in errands.py. Skills, MCP servers, hosts, file names and command
-arguments the agent used stay on the machine; the opener is otherwise the person's own
-words, as typed.
+headers, key/token values, emails, URLs, filesystem paths, and the file names Codex lists
+as attached) and cut to 600 characters, followed by its shared fingerprint: built-in tool
+names and well-known commands, from the fixed vocabulary in errands.py. Skills, MCP
+servers, hosts, file names and command arguments the agent used stay on the machine; the
+opener is otherwise the person's own words, as typed.
 
   POST {TYPESAFE_BASE_URL:-https://api.typesafe.ai}/v1/systemone
   Authorization: Bearer $TYPESAFE_API_KEY
@@ -72,6 +72,13 @@ REDACTIONS = (
                 r"\s*:.*$"), r"\1: [redacted]"),
     (re.compile(r"(?i)(-H\s*['\"]?\s*(?:authorization|cookie|x-api-key)\s*:)[^'\"\n]*"),
      r"\1 [redacted]"),
+    # Codex lists attached files as "## <name>: <path>"; a name has spaces and no marker.
+    (re.compile(r"(?s)# Files mentioned by the user:.*?(?=## My request for Codex:|\Z)"),
+     "# Files mentioned by the user: [files] "),
+    # A home path carries the login name and the names of the user's files and projects.
+    (re.compile(r"(?:\b[A-Za-z]:)?[\\/](?:Users|home)[\\/](?:\\.|[^\s'\"`<>()\[\]])+"),
+     "[path]"),
+    (re.compile(r"(?<![\w/])~[\\/](?:\\.|[^\s'\"`<>()\[\]])+"), "[path]"),
     (re.compile(r"(?i)\b(bearer|basic|token)\s+[A-Za-z0-9._~+/=-]{8,}"), r"\1 [redacted]"),
     (re.compile(r"(?i)\b([\w-]*(?:api[_-]?key|secret|token|passw(?:or)?d|session|cookie|"
                 r"auth)[\w-]*)\s*[:=]\s*['\"]?[^\s'\"]+"), r"\1=[redacted]"),
