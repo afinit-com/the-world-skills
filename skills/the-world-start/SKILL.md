@@ -61,25 +61,37 @@ README and agent instructions suggest a job, and a job usually names its project
 ask only for what is still missing. A job without a project leaves you guessing every
 worker's sources and boundaries, so settle both before designing a worker.
 
-When the user gives a project but no job, don't ask "what should it do?" back. Find out
-what the user keeps doing there by hand, and propose jobs from that:
+When the user gives a project but no job, or answers that they don't know what to hand
+over, don't ask "what should it do?" back. Find out what the user keeps doing by hand, and
+propose jobs from that. Many users have never thought of their agent history as something
+to use, so never ask them to pick a tool or a data source; just look.
 
-- The project itself: README, agent instructions (`CLAUDE.md`, `AGENTS.md`), the
-  project's own skills and commands, journals or logs it keeps, and recent `git log`.
-- The local session history of coding agents run in that directory, starting with the
-  tool you are running in. Claude Code keeps it in
-  `~/.claude/projects/<the absolute path with every non-alphanumeric character replaced
-  by '-'>/*.jsonl`; Codex in `${CODEX_HOME:-~/.codex}/sessions/**/rollout-*.jsonl`, where
-  the first line's `cwd` names the directory. Read what the user typed and which commands
-  ran, not whole transcripts. The sibling skill `dig-my-sessions` does this reduction for
-  every agent at once: `python3 <its dir>/dig.py chores --project <project>`.
+- The project itself, when there is one: README, agent instructions (`CLAUDE.md`,
+  `AGENTS.md`), the project's own skills and commands, journals or logs it keeps, and
+  recent `git log`.
+- What the user has asked their coding agents to do. Run the sibling skill's script:
+  `python3 <this skill's dir>/../dig-my-sessions/dig.py chores --project <project>`, or
+  without `--project` when there is no project yet. It finds every agent's local history
+  on its own (Claude Code, Codex, opencode, Cursor, Antigravity, Gemini), reads it
+  read-only, and sends nothing anywhere. Add `--errands` when the output runs to
+  thousands of rows. Never pass `--jev` from here. Before running it, tell the user in one
+  line, in their words, with no jargon ("session", "transcript", "history file"), and
+  without asking: for a Korean-speaking user, `최근 Claude·Codex에서 시키신 일들을 훑어볼게요.
+  이 컴퓨터 밖으로는 안 나가요. 빼고 싶은 프로젝트가 있으면 말해주세요.` Pass any project they name
+  as `--exclude-project`.
+  If the script is not there, read the history yourself, starting with the tool you are
+  running in. Claude Code keeps it in `~/.claude/projects/<the absolute path with every
+  non-alphanumeric character replaced by '-'>/*.jsonl`; Codex in
+  `${CODEX_HOME:-~/.codex}/sessions/**/rollout-*.jsonl`, where the first line's `cwd`
+  names the directory. Read what the user typed and which commands ran, not whole
+  transcripts.
 
-Propose two or three jobs, each with the evidence behind it (how many sessions asked for
-it, which commits or journal entries show it), and let the user pick. If you found no
-history, say so and say the proposals come from the project alone. If none of them fits
-and the user can't name a job either, suggest `dig-my-sessions` once, in a line: it digs
-through every agent's history across all projects for the chores the user keeps doing by
-hand, and a chore picked there comes back here as a job sentence.
+Propose two or three jobs in plain words, each with the evidence behind it ("지난 두 달
+동안 배포 확인을 8번 직접 시키셨어요", or the commits and journal entries that show it), and
+let the user pick. A job proposed without a project names the project it came from, which
+settles the project too. If you found no history, say so and say the proposals come from
+the project alone. If nothing fits, ask the user to describe one thing they did by hand
+this week, and build the job sentence from that.
 
 Once both are settled, ask which world the cast lives in (세계관), before you name a
 character, split the job into roles, or write `WORLD.md`. The world is the user's to
