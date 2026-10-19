@@ -29,16 +29,16 @@ the GitHub address — no clone needed.
 
 ```bash
 claude plugin marketplace add afinit-com/the-world-skills
-claude plugin install the-world-skills@the-world
+claude plugin install the-world@the-world
 ```
 
-In a new session, invoke `/the-world-skills:the-world-start`.
+In a new session, invoke `/the-world:the-world-start`.
 
 ### Codex
 
 ```bash
 codex plugin marketplace add afinit-com/the-world-skills
-codex plugin add the-world-skills@the-world
+codex plugin add the-world@the-world
 ```
 
 In a new session, type `$the-world-start` followed by what you want done.
@@ -59,7 +59,7 @@ without clashing.
 ```bash
 python3 scripts/build-plugin.py dist/the-world-marketplace
 codex plugin marketplace add ./dist/the-world-marketplace
-codex plugin add the-world-skills@the-world-local
+codex plugin add the-world@the-world-local
 ```
 
 In a new session, pick `the-world-start` from the skill list or type `$the-world-start`
@@ -74,12 +74,12 @@ During development you can load the current repository directly, with no registr
 claude --plugin-dir "$PWD"
 ```
 
-Invoke `/the-world-skills:the-world-start` or `/the-world-skills:the-world-util`.
+Invoke `/the-world:the-world-start` or `/the-world:the-world-util`.
 For a lasting install, register the marketplace built above.
 
 ```bash
 claude plugin marketplace add ./dist/the-world-marketplace
-claude plugin install the-world-skills@the-world-local
+claude plugin install the-world@the-world-local
 ```
 
 ## Package and project boundary
@@ -103,7 +103,7 @@ The license is MIT; see [LICENSE](../LICENSE).
   touches nothing. The build never quietly edits source files, so `--sync` is a standalone
   action that takes no destination, and building while they disagree fails with a message
   telling you to run `--sync`.
-- Build output: a complete copy in `plugins/the-world-skills/` plus marketplace listings
+- Build output: a complete copy in `plugins/the-world/` plus marketplace listings
   for both apps. Moved outside the source repository, it can still find the install
   scripts and the world-map assets.
 - The bundled `.claude/hooks` and `.codex/hooks` are **install material**. The plugin

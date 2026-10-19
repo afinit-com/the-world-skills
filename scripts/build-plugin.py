@@ -17,7 +17,7 @@ MANIFESTS = ("plugin.json", ".codex-plugin/plugin.json", ".claude-plugin/plugin.
 SHARED = ("name", "version", "description", "author", "repository", "license")
 # The repository root is itself a marketplace, so a public checkout installs in two lines:
 #   claude plugin marketplace add afinit-com/the-world-skills
-#   claude plugin install the-world-skills@the-world
+#   claude plugin install the-world@the-world
 # (Codex: `codex plugin marketplace add …` then `codex plugin add …`.) Its catalog files are
 # generated from plugin.json by --sync, like the shared manifest fields. The name differs
 # from the local build's `the-world-local` so the two can be registered side by side.

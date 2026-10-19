@@ -5,7 +5,7 @@
   },
   "plugins": [
     {
-      "name": "the-world-skills",
+      "name": "the-world",
       "source": {
         "source": "local",
         "path": "./"
