@@ -6,7 +6,7 @@ disable-model-invocation: true
 
 # /help-my-world — ask the maintainers for help
 
-After `/the-world:start`, every world is different: its own characters, jobs, tools, and
+After the `start` skill builds it, every world is different: its own characters, jobs, tools, and
 schedule. The person asking for help is often not a developer and should not have to
 become one to be helped. So the user says what happened in their words, and you do the
 rest: the maintainer who reads the issue was not here, and gets everything they would

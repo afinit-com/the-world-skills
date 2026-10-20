@@ -34,7 +34,7 @@ Ownership is the whole point of the split below:
 
   yours        harness.py WORLD.md abilities/ tools/ slack-app/ env/harness.env logs/
                scripts/ (bin/ops-kit.py renders into it only when asked)
-               Never touched. /the-world:start writes these after this runs.
+               Never touched. The start skill writes these after this runs.
 
 ⚠️ A RE-RUN IS DESTRUCTIVE. Each kit-owned TREE is `rmtree`d before it is copied, so
 anything you put inside `world/` that the kit does not also ship
@@ -556,7 +556,7 @@ def main() -> None:
     for line in log:
         print(f"  {line}")
     print(
-        "\nNext (still /the-world:start's job):\n"
+        "\nNext (still the start skill's job):\n"
         "  1. write harness.py and WORLD.md (see the skill: what must hold, and world/'s surface)\n"
         "  2. uv venv .venv && uv pip install -e .\n"
         "  3. uv run python bin/smoke.py"

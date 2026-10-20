@@ -70,7 +70,10 @@ skills/help-my-world/
 하네스를 연 사람은 어느 것이 진짜인지 알 수 없습니다.
 
 <a id="upgrading"></a>
-`npx skills update` 후 기존 하네스를 업그레이드하려면:
+기존 하네스를 업그레이드하려면 먼저 스킬을 설치한 방식대로 업데이트하세요. 플러그인은 평소처럼,
+`npx skills`는 `npx skills update`로 합니다. 0.5.0 이전에 `npx skills`로 설치했다면 update가
+`the-world-start` → `start` 이름 변경을 따라가지 않으니 [README](../README.ko.md)처럼 지우고 다시
+추가하세요. 이 과정 없이도 하네스는 그대로 돌아가며, 설치 스크립트 재실행은 키트 소유 트리만 새로 고칩니다. 그다음:
 
 ```bash
 cd <harness> && git status --short          # 반드시 clean이어야 합니다 — 아래 참고

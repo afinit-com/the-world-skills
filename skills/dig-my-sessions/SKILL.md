@@ -134,8 +134,9 @@ boring, and propose no more than about five.
 Report a compact table: chore · evidence (N sessions, distinct days, date range, agents,
 projects) · verdict · form · what it saves. Then let the user pick. Never build unasked.
 
-- `world job` → hand it to `/the-world:start` as one sentence with its project, e.g.
-  `/the-world:start <project> 매일 아침 9시에 …`. An existing harness takes it
+- `world job` → hand it to the `start` skill as one sentence with its project, e.g.
+  `/the-world:start <project> 매일 아침 9시에 …` (Codex: `$the-world:start`; installed with
+  `npx skills`: `/start`, `$start`). An existing harness takes it
   through its own commands for adding a bot. Do not build harness code from here.
 - `skill` → build it with the user's skill-authoring flow. Deterministic steps go in a
   script, one judgment stays with the model, and the triggers use the user's own phrasing

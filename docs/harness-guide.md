@@ -70,7 +70,11 @@ copies of the runtime to keep in step, and nobody who opens the harness can tell
 one is real.
 
 <a id="upgrading"></a>
-To upgrade an existing harness after `npx skills update`:
+To upgrade an existing harness, first update what you installed the skills with: the
+plugin as usual, or `npx skills update`. Coming from before 0.5.0 with `npx skills`, update
+does not follow the `the-world-start` → `start` rename; remove and add again as the
+[README](../README.md) shows. A harness keeps running without this; re-running the
+installer only refreshes the kit-owned trees. Then:
 
 ```bash
 cd <harness> && git status --short          # MUST be clean — see below

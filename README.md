@@ -52,11 +52,14 @@ are shared with every other skill you install this way; if you already have one 
 name, use the plugin instead. More in the [plugin guide](docs/plugins.md).
 
 Installed this way before 0.5.0? `npx skills update` does not follow the rename. Remove the
-old three and add again, in the same scope you used (add `-g` for a global install):
+old three and add again, in the same scope you used:
 
 ```bash
 npx skills remove the-world-start the-world-audit the-world-util
 npx skills add afinit-com/the-world-skills
+# global install:
+npx skills remove -g the-world-start the-world-audit the-world-util
+npx skills add -g afinit-com/the-world-skills
 ```
 
 </details>

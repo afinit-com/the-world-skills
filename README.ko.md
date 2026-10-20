@@ -53,11 +53,14 @@ npx skills add afinit-com/the-world-skills
 자세한 내용은 [플러그인 문서](docs/plugins.ko.md).
 
 0.5.0 이전에 이렇게 설치했다면 `npx skills update`가 바뀐 이름을 따라가지 않습니다. 설치했던 범위
-그대로(전역 설치였다면 `-g`를 붙여) 예전 세 개를 지우고 다시 추가하세요:
+그대로 예전 세 개를 지우고 다시 추가하세요:
 
 ```bash
 npx skills remove the-world-start the-world-audit the-world-util
 npx skills add afinit-com/the-world-skills
+# 전역 설치였다면:
+npx skills remove -g the-world-start the-world-audit the-world-util
+npx skills add -g afinit-com/the-world-skills
 ```
 
 </details>
