@@ -1,6 +1,6 @@
 ---
 name: util
-description: Standalone utilities that support a World harness but don't need one — invoked with a subcommand. Currently "slack icon generate", which turns any source image into a Slack-compliant app/bot icon (square, 512–2000px, under 2MB) by picking the right squaring strategy per image. Use when the user says "the world util", "슬랙 아이콘", "slack icon 만들어", "아이콘으로 편집해줘", or a Slack icon upload was rejected for size/ratio.
+description: The World — Standalone utilities that support a World harness but don't need one — invoked with a subcommand. Currently "slack icon generate", which turns any source image into a Slack-compliant app/bot icon (square, 512–2000px, under 2MB) by picking the right squaring strategy per image. Use when the user says "the world util", "슬랙 아이콘", "slack icon 만들어", "아이콘으로 편집해줘", or a Slack icon upload was rejected for size/ratio.
 ---
 
 # util — harness-adjacent utilities

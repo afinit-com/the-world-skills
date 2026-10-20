@@ -1,5 +1,5 @@
 interface:
-  display_name: "Help My World"
+  display_name: "The World Help"
   short_description: "File a the-world-skills issue with context and environment"
   default_prompt: "Use $help-my-world to turn what went wrong into a GitHub issue on the-world-skills."
 policy:

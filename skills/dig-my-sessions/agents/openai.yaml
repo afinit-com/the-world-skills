@@ -1,4 +1,4 @@
 interface:
-  display_name: "Dig My Sessions"
+  display_name: "The World Dig My Sessions"
   short_description: "Find a past agent session, or mine history for chores to automate"
   default_prompt: "Use $dig-my-sessions to find which past session worked on this, or to list the chores I keep doing by hand."

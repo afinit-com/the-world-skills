@@ -1,6 +1,6 @@
 ---
 name: start
-description: Create or resume a World harness from Claude Code or Codex, which also runs the bots. Build collaborating characters, their tools and relationship map, verify locally, then connect Slack. Use for "the world start", "world init", "하네스 만들어", "감시 봇 만들어", or continuing this harness's setup; not for arbitrary Slack bot development.
+description: The World — Create or resume a World harness from Claude Code or Codex, which also runs the bots. Build collaborating characters, their tools and relationship map, verify locally, then connect Slack. Use for "the world start", "world init", "하네스 만들어", "감시 봇 만들어", or continuing this harness's setup; not for arbitrary Slack bot development.
 disable-model-invocation: true
 ---
 
