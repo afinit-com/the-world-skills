@@ -186,19 +186,37 @@ connected yet" stays there after it stops being true. Those go elsewhere:
 `bin/smoke.py` flags a code block, path, command, PID, env name, or install heading in
 `WORLD.md`; fix every `[WARN] WORLD.md` line before you finish.
 
-The two creation words become real commands via
-`bin/scaffold-world-skill.py <word> agent|tool|verify --universe ... --description ...`. Default
-to `recruit` and `equip` when the user has no preference. Honor explicit naming choices.
+**The world's words become the harness's commands.** Every harness gets four, one per
+flow, via `bin/scaffold-world-skill.py <word> agent|tool|verify|ops --universe ...
+--description ...`: adding a character (`agent`), equipping the cast (`tool`), checking
+the harness end to end (`verify`), and running it (`ops`: start, stop, restart, status,
+the watchdog, and repair after the folder moves). Once the world is chosen, draft the four
+words from it, as you draft the cast: a pirate crew might `enlist` a hand, `rig` a tool,
+`drill` the crew and take the `helm`. Show them in the same message as the cast and their
+voices, each with its meaning in the user's words (`enlist — 선원 모집: 새 캐릭터를
+들여요`), so one confirmation settles both. Write them only after the user approves or
+edits them, and put them in `WORLD.md`'s vocabulary.
+
+- A word is ASCII, lowercase, kebab-case (the scaffolder refuses anything else), and not
+  the name of a command the host already has (`status`, `init`, `review`, `config`,
+  `help`, `start`). Put its meaning in the user's language in `--description`, and the
+  phrases they will type in `--extra-trigger-phrases`, written as `, "부활시켜", "새 동료"`
+  (for the ops word: `, "켜줘", "꺼줘", "재시작", "상태"`).
+- Fall back to `recruit`, `equip`, `verify` and `ops` only when no world was chosen or the
+  user declines the world's words. Honor explicit naming choices.
+
 The tool word does not assume a tool: it splits the request into pieces, places each as a
 tool, code, prompt procedure, skill, knowledge, setting or world sentence, and builds only
-after the user confirms the proposal table.
+after the user confirms the proposal table. The ops word reads before it acts
+(`bin/ops-kit.py --check`, then the launcher's `status`), renders the scripts when there
+are none, and shows the watchdog's register and remove commands for the person to run.
 The scaffolder keeps a wrapper that exists, so a tool word scaffolded before this flow has
 no proposal table, and it and an older agent word still say "`write_scope` never empty".
 On resume, move such a `SKILL.md` aside (under `.claude/skills/<word>/` and
 `.agents/skills/<word>/`), re-run the scaffolder with the same flow, and carry over the
-user's own edits.
-Scaffold the word for checking the harness the same way, with `verify` as the flow; default
-to `verify`.
+user's own edits. A harness that has no ops word yet gets one on resume. One that kept the
+fallback words although a world was chosen gets the offer of the world's words once; on a
+yes, scaffold them and move the old folders aside.
 
 **Exit 0 is not completion.** A worker that produces analysis (`writes_report=True`) is
 verified by a file landing in its task's `work/`, never by an exit code.
@@ -440,6 +458,17 @@ watchdog and let the user run them; don't run them yourself. Fill the README's "
 on purpose" rows from that output: with a watchdog, remove the watchdog before `down`.
 On Windows it writes PowerShell scripts and a Task Scheduler task to register with
 `schtasks`; there `down` stops a run in progress without waiting for it, so say that.
-`docs/operations.md` has the rest.
+`docs/operations.md` has the rest. Either way, say that the ops word starts, stops,
+restarts and checks on it from now on, and sets up the watchdog later if they want it.
 The harness needs neither this plugin nor the kit to run. Re-running the installer is only
 for upgrades.
+
+End the report with one line telling the user to open a new session in the harness
+directory, with its real path: `cd <harness> && claude` when you scaffolded the words for
+Claude Code, `cd <harness> && codex` for Codex (in Windows PowerShell 5.1, `cd <harness>;
+claude`). Say that the four words and the guard hooks load only in that session, not in
+the one you are in. This is the last line, after the next action. For a Korean-speaking
+user:
+
+> 이제 새 터미널에서 `cd ~/code/my-app-world && claude`로 하네스 세션을 여세요.
+> enlist·rig·drill·helm 명령과 가드 훅은 거기서만 동작해요.

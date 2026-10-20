@@ -455,7 +455,20 @@ class LegacyWrapperTests(unittest.TestCase):
         self.assertNotIn("is never empty", skill)
         self.assertIn("re-run the scaffolder with the same flow", skill)
         # Review of PR #6: the usage line said `agent|tool` while the flow takes `verify`.
-        self.assertIn("bin/scaffold-world-skill.py <word> agent|tool|verify", skill)
+        self.assertIn("bin/scaffold-world-skill.py <word> agent|tool|verify|ops", skill)
+
+    @unittest.skipUnless((KIT.parents[1] / "SKILL.md").exists(), "run from the kit's source")
+    def test_the_start_skill_names_world_words_and_where_they_work(self) -> None:
+        # A harness built on a chosen world came out with `recruit` and `equip` after the world was
+        # chosen, and the finish never said the words load only in a harness session.
+        skill = " ".join((KIT.parents[1] / "SKILL.md").read_text(encoding="utf-8").split())
+        self.assertNotIn("Default to `recruit` and `equip` when the user has no preference", skill)
+        self.assertIn("Show them in the same message as the cast and their voices", skill)
+        self.assertIn("Fall back to `recruit`, `equip`, `verify` and `ops` only when no world "
+                      "was chosen", skill)
+        self.assertIn("`cd <harness> && claude`", skill)
+        self.assertIn("`cd <harness> && codex`", skill)
+        self.assertIn("This is the last line", skill)
 
 
 if __name__ == "__main__":

@@ -65,7 +65,7 @@ class PluginPackageTests(unittest.TestCase):
         self.assertIn("right after Slack is first connected", text)
         self.assertIn("never press an approve or deny button", text)
         self.assertIn("only when the user allowed it in this conversation", text)
-        self.assertIn("with `verify` as the flow", text)
+        self.assertIn("checking the harness end to end (`verify`)", text)
         self.assertTrue((ROOT / "skills/start/assets/kit/docs/verify.md").is_file())
 
     def test_sync_restores_shared_fields_without_touching_app_specific_ones(self) -> None:

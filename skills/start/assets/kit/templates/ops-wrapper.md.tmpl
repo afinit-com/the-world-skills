@@ -1,0 +1,89 @@
+---
+name: {{word}}
+description: {{flavor_description}} — this harness's word for running it: start, stop for a while, take it down for good, restart, show what is running, keep it alive across reboots, and repair it after the folder moved. Use when the user says "{{word}}"{{extra_trigger_phrases}}, or asks to start, stop, restart, check on, or keep the harness running.
+---
+
+# /{{word}} — this harness's word for running it
+
+Scaffolded once by /the-world:start, so that running this harness is a real command here
+rather than something only the setup session knew. Run everything from this harness's
+directory. Keep speaking in {{universe_name}}'s vocabulary, and keep commands, pids, paths
+and "not running" exact.
+
+## Read before acting
+
+Every request starts with
+
+```bash
+uv run python bin/ops-kit.py --check
+```
+
+It writes nothing. It says whether the launcher scripts exist and were rendered for this
+folder, whether `.venv` was made here, whether the watchdog is registered and which
+script it runs, and whether the harness is running. Below that it prints either this
+harness's exact commands (`start`, `status`, `restart`, `logs`, `stop`, `register`,
+`unregister`, `watchdog`, `take-down`) or, with exit 2, a numbered fix. Use the commands
+it prints rather than ones you remember: they carry this harness's script name and this
+machine's service manager (launchd, systemd or Task Scheduler).
+
+When the scripts exist and are current, also run the `status` command before you answer
+or act. Report what the output says is running: the pid and uptime, the console writer,
+the watchdog's state, the last lines. Never say what is running from memory or from this
+conversation.
+
+## No scripts yet
+
+`scripts: none rendered` means the harness runs only while someone keeps
+`uv run python harness.py` open in a terminal. To start it in the background, restart it
+from here, or keep it alive, render the scripts first:
+
+```bash
+uv run python bin/ops-kit.py
+```
+
+If Slack is connected, add `--notify --prefix <PREFIX>` so restarts are posted to the
+harness's channel. Find the prefix from the key names, never the values:
+`python3 -I world/env.py --keys env/harness.env` lists names such as
+`<PREFIX>_SLACK_BOT_TOKEN`. Never print or read back `env/harness.env` itself. If ops-kit
+refuses `--notify` because a value is missing, render without it and say so. Rendering
+writes only `scripts/`; it starts and registers nothing. Before the first `up`, ask the
+person to stop any `harness.py` they still run in a terminal, since a second copy beside
+it is refused.
+
+## What people ask, and what you run
+
+| They say | You run |
+|---|---|
+| Start it (켜줘) | `start`, then `status` |
+| Stop it for a while (잠깐 꺼줘) | `stop`. The watchdog leaves it down until the next `start`. |
+| Restart it (재시작) | `restart`, then `status` |
+| How is it (상태) | `--check`, then `status`, and `watchdog` when one is registered |
+| Show its output | the last lines from `status`; `logs` follows it live, so give that one to the person |
+| Keep it alive, even after a reboot (재부팅해도 살아있게) | render the scripts if missing; show `register`; once the person ran it, `--check` until the watchdog reads loaded or enabled, then `start` if it is not running |
+| Take it down for good (완전히 꺼줘) | show `unregister` and wait until `--check` no longer reads it as registered; then `stop` |
+
+The order for taking it down is the kit's rule: remove the watchdog first, then stop.
+
+## The watchdog belongs to the person
+
+`register` and `unregister` change what this machine starts at login (`launchctl
+bootstrap` / `bootout`, `systemctl --user enable` / `disable`, `schtasks /Create` /
+`/Delete`). Show them and let the person run them, then confirm with `--check`. Run them
+yourself only when the person asks you to in so many words. Starting, stopping and
+restarting with the harness's own script are yours to do when asked.
+
+## After the folder moved
+
+The scripts, `.venv`, and a registered watchdog all hold the path they were made at. When
+`--check` exits 2 it prints the fix in order: unregister the old watchdog, stop what is
+running, recreate `.venv`, re-render with `--force` keeping the same `--name` and flags,
+register again, start. Show the whole list and run it after the person says yes, leaving
+the watchdog lines to them as above. Re-run `--check` afterwards and report what it says.
+A venv-only finding needs no hurry: the harness still runs through the venv's python, so
+offer to recreate it at a quiet moment.
+
+`docs/operations.md` has the rest: logs, the console writer, Windows differences.
+
+This wrapper is yours. If `WORLD.md`'s Vocabulary entry changes, rename this skill's folder
+(the directory holding this `SKILL.md`) to match — it is a one-time scaffold, not read from
+`WORLD.md` at runtime.

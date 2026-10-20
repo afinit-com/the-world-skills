@@ -76,13 +76,14 @@ PROVIDER_FILES = {
 }
 KIT_FILES = [
     # The templates a harness still reads AFTER install: the wrapper skill bodies that
-    # bin/scaffold-world-skill.py fills in (agent words, tool words, verify words), and the
+    # bin/scaffold-world-skill.py fills in (agent, tool, verify and ops words), and the
     # Slack app manifest used when the harness is finally provisioned. The rest of
     # templates/ is read from the kit during install and never from the target, so it is
     # not copied.
     "templates/skill-wrapper.md.tmpl",
     "templates/skill-wrapper-tool.md.tmpl",
     "templates/verify-wrapper.md.tmpl",
+    "templates/ops-wrapper.md.tmpl",
     "templates/slack-manifest.json.tmpl",
     # Read by bin/ops-kit.py, only when the user opts into running the harness all the
     # time (docs/operations.md).
