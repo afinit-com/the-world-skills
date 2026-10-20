@@ -470,6 +470,13 @@ class LegacyWrapperTests(unittest.TestCase):
         self.assertIn("`cd <harness> && codex`", skill)
         self.assertIn("This is the last line", skill)
 
+    @unittest.skipUnless((KIT.parents[1] / "SKILL.md").exists(), "run from the kit's source")
+    def test_the_start_skill_lays_out_messages_with_the_card_helper(self) -> None:
+        skill = " ".join((KIT.parents[1] / "SKILL.md").read_text(encoding="utf-8").split())
+        self.assertIn("**Messages are laid out, not run on.**", skill)
+        self.assertIn("`listener.post(text, blocks=blocks)`", skill)
+        self.assertIn("world.slack.blocks.card(title,", skill)
+
 
 if __name__ == "__main__":
     unittest.main()

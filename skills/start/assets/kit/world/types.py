@@ -247,6 +247,21 @@ VOICE_GUARD = (
 )
 
 
+# How a message reads in a chat thread, for every persona with or without a voice. The
+# voice decides the tone; this decides the layout, and neither overrides the other. The
+# channel renders the result into blocks (world/slack/blocks.py: text_blocks), so a
+# headline line and blank-line groups become a bold headline and separate sections.
+# A line like "좋아, 승인 받았다. reports/r12.csv 반영, 모델 … push. 창이 열리면
+# 바로 배포한다." — four facts in one run-on line.
+MESSAGE_FORMAT = (
+    "Lay out every message for a chat thread: first one headline line with the outcome; "
+    "then the details as short lines or bullets, grouped, with a blank line between "
+    "groups; one fact per line, never several facts joined by commas; ids, file paths, "
+    "commands and versions in backticks. Short is good, a wall of text is not. This is "
+    "layout only: your speaking style still sets the tone."
+)
+
+
 def voice_clause(persona: "Persona | None") -> str:
     """The speaking-style text to inject for `persona`, or "" when it declares none."""
     if persona is None or not persona.voice.strip():

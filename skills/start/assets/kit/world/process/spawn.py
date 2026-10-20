@@ -21,7 +21,7 @@ from .task import read as read_task
 from .task import task_work_dir
 from ..context import current_task, reset_current_worktree, set_current_worktree
 from ..runners.base import ToolCallback
-from ..types import Agent, RunResult, voice_clause
+from ..types import MESSAGE_FORMAT, Agent, RunResult, voice_clause
 
 if TYPE_CHECKING:
     from ..harness import Harness
@@ -61,6 +61,8 @@ def compose_prompt(harness: "Harness", agent: Agent, trigger_prompt: str, contex
     if agent.persona and agent.persona.flavor:
         parts.append(f"You speak as {agent.persona.flavor}")
     parts.append(voice_clause(agent.persona))
+    # The run's final message is what its task card shows (Agent.announce="result").
+    parts.append(f"Your final message is posted to the team's chat. {MESSAGE_FORMAT}")
     parts.append(trigger_prompt)
     parts.append(context)
     return "\n\n".join(part for part in parts if part)

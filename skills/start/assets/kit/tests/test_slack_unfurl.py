@@ -35,7 +35,7 @@ class PostUnfurlTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_unfurl_false_asks_for_no_preview_on_every_chunk(self):
         poster = self.poster()
-        await poster.post("x" * 5000, unfurl=False)
+        await poster.post("\n\n".join(["x"] * 60), unfurl=False)  # past 50 blocks: two messages
         calls = poster.web.chat_postMessage.await_args_list
         self.assertEqual(len(calls), 2)
         for call in calls:

@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import re
 
+from ..types import MESSAGE_FORMAT
+
 APPROVAL_MARKER = "APPROVAL_REQUEST:"
 
 # Rendered into RULES_TEMPLATE when a harness declares Harness.pre_approved_tools.
@@ -178,12 +180,12 @@ Rules (non-negotiable):
   .claude/settings*.json, permission allowlists, hooks, or harness code — not
   even via APPROVAL_REQUEST. A denied command is something to report, not an allowlist
   request.
-- Your final text is posted verbatim to the thread as your own identity. Write
-  for a human skimming Slack: outcome first, short, no giant dumps.
+- Your final text is posted to the thread as your own identity, for a human
+  skimming Slack. {message_format}
 - Reply in the language the humans in this thread write in, whatever language
   this prompt, your persona, the world description, or a teammate's handoff is
   written in. Keep tool names, code, and quoted text as they are.
 
 Teammates you can hand off to (by name, with hand_off):
 {roster}
-""".strip()
+""".strip().replace("{message_format}", MESSAGE_FORMAT)

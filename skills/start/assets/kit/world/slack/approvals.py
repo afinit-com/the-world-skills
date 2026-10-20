@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .approval_text import decision_from_text, relay_decision
+from .blocks import text_blocks
 from .post import slack_call
 from .rules import LAST_HOP_NOTE
 from ..process import approval_scope
@@ -145,9 +146,8 @@ class ApprovalMixin:
             thread_ts=thread_ts,
             text=ph.request_fallback.format(mention=mention, name=req_name, summary=summary),
             blocks=[
-                {"type": "section",
-                 "text": {"type": "mrkdwn",
-                          "text": ph.request_block.format(mention=mention, name=req_name, summary=summary)}},
+                # Headline, then the ask and the files it covers, then the decision.
+                *text_blocks(ph.request_block.format(mention=mention, name=req_name, summary=summary)),
                 {"type": "actions", "elements": [
                     {"type": "button", "style": "primary", "action_id": "world_approve",
                      "text": {"type": "plain_text", "text": ph.approve_button}, "value": value},
@@ -473,7 +473,7 @@ class ApprovalMixin:
             thread_ts=thread_ts,
             text=text,
             blocks=[
-                {"type": "section", "text": {"type": "mrkdwn", "text": text}},
+                *text_blocks(text),
                 {"type": "actions", "elements": [
                     {"type": "button", "style": "primary", "action_id": "world_hop_allow",
                      "text": {"type": "plain_text", "text": ph.hop_allow_button},

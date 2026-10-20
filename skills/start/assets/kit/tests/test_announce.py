@@ -34,7 +34,7 @@ class AnnounceModeTests(unittest.IsolatedAsyncioTestCase):
         posted = []
 
         async def post(body, **kwargs):
-            posted.append(kwargs["blocks"][0]["text"]["text"])
+            posted.append(body)  # the card's text; its blocks are cut from the same lines
             return "1.2"
 
         mixin.post = post

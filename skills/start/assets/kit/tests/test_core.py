@@ -398,8 +398,7 @@ class AnnounceCardBodyTests(unittest.IsolatedAsyncioTestCase):
         mixin.save_state = lambda: None
 
         async def post(body, **kw):
-            [section] = kw["blocks"][:1]
-            posted.append(section["text"]["text"])
+            posted.append(body)  # the card's text; its blocks are cut from the same lines
             return "111.222"
 
         mixin.post = post
@@ -910,9 +909,28 @@ class PersonaVoiceTests(unittest.TestCase):
         blank = Persona(key="lumen", display="Lumen", flavor="항해사", voice="  ")
         self.assertEqual(self._rules(plain), self._rules(blank))
         self.assertTrue(self._rules(plain).startswith("You are 항해사\nYou are answering"))
+        from world.types import MESSAGE_FORMAT
+
         self.assertEqual(
-            self._spawn_prompt(plain), "You speak as 항해사\n\nTRIGGER\n\nCONTEXT"
+            self._spawn_prompt(plain),
+            "You speak as 항해사\n\nYour final message is posted to the team's chat. "
+            f"{MESSAGE_FORMAT}\n\nTRIGGER\n\nCONTEXT",
         )
+
+    def test_the_layout_rule_sits_beside_the_voice_in_every_prompt(self) -> None:
+        # A persona's run-on line ("좋아, 승인 받았다. … 반영, 모델 … push.") was
+        # within its voice; nothing asked for a headline and one fact per line.
+        from world.types import MESSAGE_FORMAT, Persona
+
+        for voice in ("", self.VOICE):
+            persona = Persona(key="lumen", display="Lumen", flavor="항해사", voice=voice)
+            for prompt in (self._rules(persona), self._spawn_prompt(persona)):
+                self.assertIn(MESSAGE_FORMAT, prompt)
+                if voice:
+                    self.assertLess(prompt.index(self.VOICE), prompt.index(MESSAGE_FORMAT))
+        for rule in ("headline line", "blank line between", "one fact per line", "backticks",
+                     "layout only"):
+            self.assertIn(rule, MESSAGE_FORMAT)
 
 
 if __name__ == "__main__":

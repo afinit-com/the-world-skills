@@ -12,6 +12,7 @@ import contextlib
 from typing import TYPE_CHECKING
 
 from .as_human import safe_payload, safe_text
+from .blocks import MAX_BLOCKS, TEXT_CHARS, has_text, plain_text, split_messages, text_blocks
 from ..channels.base import posting_icon
 
 if TYPE_CHECKING:
@@ -72,17 +73,24 @@ class PostingMixin:
         channel: str | None = None,
         context: dict | None = None,
         unfurl: bool = True,
+        plain: bool = False,
     ) -> str | None:
         """Posts to the dedicated channel (optionally into a thread) AS the given
-        bot identity; returns the message ts. Chunks long text. Unknown/tokenless
-        identity falls back to the main bot. `blocks` (Block Kit, e.g. buttons)
-        only applies to the first chunk — callers using blocks are expected to
-        keep text short enough for one. `channel` overrides the target — used to
+        bot identity; returns the message ts. Unknown/tokenless identity falls back to
+        the main bot.
+
+        Always Block Kit. `blocks` (see world/slack/blocks.py: `card`, `text_blocks`)
+        is the message; `text` is its notification fallback. Without blocks, or with
+        only buttons, `text` is rendered into sections above them. More than 50 blocks
+        continue as further messages in the same thread. `plain=True` posts `text`
+        alone, in chunks, for the rare message whose raw text another bot reads.
+
+        `channel` overrides the target — used to
         relay an approve/deny decision back into a relay channel's own thread
         (see world/slack/mentions.py's _handle_relay_mention); every other call site
         leaves it unset and gets the dedicated channel as always.
 
-        `context` is ONE Block Kit context block attached to the LAST chunk — the small
+        `context` is ONE Block Kit context block attached to the LAST message — the small
         grey annotation line (see run_footer.py). Kept separate from `blocks` because it
         is positional-by-meaning (always last, always after any buttons) and because a
         caller posting plain text should not have to switch to blocks to annotate it.
@@ -95,26 +103,53 @@ class PostingMixin:
             return None
         text = safe_text(text, posting=True)
         channel = channel or self.harness.slack.channel
+        if plain:
+            return await self._post_chunks(web, text, identity=identity, thread_ts=thread_ts,
+                                           channel=channel, unfurl=unfurl)
+        # Every post is Block Kit (world/slack/blocks.py): what a caller built is used as
+        # given, and plain text is split into sections, a short first line set apart as
+        # the headline. Buttons alone get the text above them, so a long text with an
+        # actions block is no longer cut to its first chunk.
+        rendered = list(blocks or [])
+        if not has_text(rendered):
+            rendered = text_blocks(text) + rendered
+        messages = split_messages(rendered or text_blocks("(empty)"))
+        if context and len(messages[-1]) >= MAX_BLOCKS:  # the footer needs one more
+            messages.append([messages[-1].pop()])
         first_ts = None
-        offsets = list(range(0, max(len(text), 1), SLACK_CHUNK))
-        for i in offsets:
-            body = text[i : i + SLACK_CHUNK] or "(empty)"
-            kwargs: dict = {"blocks": blocks} if blocks and i == offsets[0] else {}
+        for n, group in enumerate(messages):
+            # The footer annotates the whole message, so under a reply long enough to
+            # split it goes under the END, not above the rest.
+            if context and n == len(messages) - 1:
+                group = [*group, context]
+            # `text` is the notification and screen-reader fallback: the caller's own
+            # words on the first message, the continuation's words after it.
+            fallback = text if n == 0 and text.strip() else plain_text(group)
+            kwargs: dict = {"blocks": group}
             if not unfurl:
                 kwargs.update(unfurl_links=False, unfurl_media=False)
-            # The footer annotates the whole message, so on a reply long enough to chunk
-            # it belongs under the END of the reply, not buried above three more posts.
-            # Rendered as its own blocks payload so `text` stays the notification body.
-            if context and i == offsets[-1]:
-                kwargs.setdefault(
-                    "blocks", [{"type": "section", "text": {"type": "mrkdwn", "text": body}}]
-                )
-                kwargs["blocks"] = [*kwargs["blocks"], context]
             resp = await slack_call(web, "chat_postMessage",
-                channel=channel, text=body, thread_ts=thread_ts, **kwargs, **self._face(identity),
+                channel=channel, text=fallback[:TEXT_CHARS] or "(empty)", thread_ts=thread_ts,
+                **kwargs, **self._face(identity),
             )
             first_ts = first_ts or resp["ts"]
-            thread_ts = thread_ts or resp["ts"]  # chunks 2+ go into the same thread
+            thread_ts = thread_ts or resp["ts"]  # messages 2+ go into the same thread
+        return first_ts
+
+    async def _post_chunks(self, web, text: str, *, identity: str, thread_ts: str | None,
+                           channel: str, unfurl: bool) -> str | None:
+        """Plain text in chunks of SLACK_CHUNK, no blocks: for a message whose words
+        must reach Slack exactly as `text` (a bot-authored @-mention another bot's relay
+        watcher reads)."""
+        first_ts = None
+        for i in range(0, max(len(text), 1), SLACK_CHUNK):
+            kwargs: dict = {} if unfurl else {"unfurl_links": False, "unfurl_media": False}
+            resp = await slack_call(web, "chat_postMessage",
+                channel=channel, text=text[i : i + SLACK_CHUNK] or "(empty)",
+                thread_ts=thread_ts, **kwargs, **self._face(identity),
+            )
+            first_ts = first_ts or resp["ts"]
+            thread_ts = thread_ts or resp["ts"]
         return first_ts
 
     async def notify_thread(self, thread_ts: str, text: str, *, channel: str | None = None) -> None:

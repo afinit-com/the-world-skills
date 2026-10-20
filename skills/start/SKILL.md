@@ -164,6 +164,17 @@ the same confirmation settles which language the personas speak: offer it as the
 only. Numbers, "unverified" markers, errors, and approval requests stay exact in every
 example, and the kit injects that same rule beside the voice into every prompt.
 
+**Messages are laid out, not run on.** Every message the harness posts to Slack is Block
+Kit: a headline with the one-line outcome, then the facts as fields or short bullets (ids,
+paths and versions in backticks), then small context, with dividers between groups. The
+kit does this for its own posts, and beside the voice it injects a layout rule into every
+persona prompt: a headline line first, one fact per line, a blank line between groups.
+Draft the voice examples in that shape too. Harness code that posts by itself (a tick
+task, a monitor, a check's notice) builds the message with `world.slack.blocks.card(title,
+fields=..., bullets=..., body=..., context=..., buttons=...)`, which returns `(text,
+blocks)`, and posts `listener.post(text, blocks=blocks)`. Never hand-build a one-line
+string that joins several facts with commas.
+
 **Every check says what it covers.** Before a worker depends on a source, confirm the
 source exists: the endpoint answers, the property ID is readable, the file is there. A
 `/health` that returns 404 is a finding to report, not a URL to poll. When you describe a

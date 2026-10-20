@@ -287,6 +287,9 @@ class InstallerOwnershipTests(unittest.TestCase):
             agent = (target / ".claude/skills/recruit/SKILL.md").read_text()
             self.assertNotIn("Where it goes", agent)
             self.assertIn("add the agent the user asked for", agent)
+            for body in (tool, agent):  # new harness code posts cards, not run-on lines
+                self.assertIn("world.slack.blocks.card(", body)
+                self.assertIn("listener.post(text, blocks=blocks)", body)
 
 
     @unittest.skipIf(os.name == "nt", "chmod cannot make a directory unwritable on Windows")

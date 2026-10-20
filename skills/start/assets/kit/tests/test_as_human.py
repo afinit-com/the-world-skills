@@ -174,7 +174,9 @@ class AsHumanTests(unittest.IsolatedAsyncioTestCase):
         obj = self.listener()
         obj.web.chat_postMessage = AsyncMock(return_value={'ts': '3'})
         obj._face = Mock(return_value={})
-        await obj.post('x' * 3895 + f'[as-human:{SECRET}] a longer tail',
+        # 60 paragraphs: more than one message holds (50 blocks), so the marker in the
+        # tail lands in the second message.
+        await obj.post('\n\n'.join(['x'] * 60) + f'[as-human:{SECRET}] a longer tail',
                        blocks=[{'text': f'[as-human:{SECRET}] card'}],
                        context={'text': SECRET})
         self.assertEqual(obj.web.chat_postMessage.await_count, 2)
