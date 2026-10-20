@@ -74,7 +74,7 @@ To upgrade an existing harness after `npx skills update`:
 
 ```bash
 cd <harness> && git status --short          # MUST be clean — see below
-python3 <installed-skill>/scripts/install-kit.py .   # keeps project-profile.json; Windows: `python`
+python3 <installed start skill>/scripts/install-kit.py .   # keeps project-profile.json; Windows: `python`
 uv pip install -e .
 uv run python bin/smoke.py
 git diff                                    # the report the installer does not print

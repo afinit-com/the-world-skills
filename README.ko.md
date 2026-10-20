@@ -48,7 +48,17 @@ codex plugin add the-world@the-world
 npx skills add afinit-com/the-world-skills
 ```
 
-이때 스킬 이름은 그냥 `/start`입니다. 자세한 내용은 [플러그인 문서](docs/plugins.ko.md).
+이때 스킬 이름은 그냥 `/start`(Codex에서는 `$start`)입니다. `start`, `audit`, `util`이라는 이름은
+이렇게 설치한 다른 스킬과 같은 공간을 쓰므로, 같은 이름의 스킬이 이미 있다면 플러그인으로 설치하세요.
+자세한 내용은 [플러그인 문서](docs/plugins.ko.md).
+
+0.5.0 이전에 이렇게 설치했다면 `npx skills update`가 바뀐 이름을 따라가지 않습니다. 설치했던 범위
+그대로(전역 설치였다면 `-g`를 붙여) 예전 세 개를 지우고 다시 추가하세요:
+
+```bash
+npx skills remove the-world-start the-world-audit the-world-util
+npx skills add afinit-com/the-world-skills
+```
 
 </details>
 
@@ -58,7 +68,7 @@ npx skills add afinit-com/the-world-skills
 /the-world:start 매일 오전 9시에 이 레포 변경 사항 요약해줘
 ```
 
-Codex에서는 `$the-world:start …`입니다. 봇은 프로젝트 옆에 자기 폴더를 갖습니다
+Codex에서는 `$the-world:start …`입니다(`npx skills`로 설치했다면 `$start`). 봇은 프로젝트 옆에 자기 폴더를 갖습니다
 (`~/code/my-app` → `~/code/my-app-world`). 빈 폴더에서 시작하면 그 폴더에 만들고, 프로젝트는
 문장에 경로로 알려주면 됩니다. 에이전트는 캐릭터들이 사는 세계관을 묻고("해적단
 테마로"나 좋아하는 애니메이션 세계관처럼 미리 말하면 생략), 캐릭터마다 말투를 보여 주며 괜찮은지

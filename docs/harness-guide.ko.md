@@ -74,7 +74,7 @@ skills/help-my-world/
 
 ```bash
 cd <harness> && git status --short          # 반드시 clean이어야 합니다 — 아래 참고
-python3 <installed-skill>/scripts/install-kit.py .   # project-profile.json 유지. Windows에서는 `python`
+python3 <설치된 start 스킬>/scripts/install-kit.py .   # project-profile.json 유지. Windows에서는 `python`
 uv pip install -e .
 uv run python bin/smoke.py
 git diff                                    # 설치 스크립트가 출력하지 않는 유일한 보고서

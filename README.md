@@ -47,7 +47,17 @@ codex plugin add the-world@the-world
 npx skills add afinit-com/the-world-skills
 ```
 
-Then the skill is plain `/start`. More in the [plugin guide](docs/plugins.md).
+Then the skill is plain `/start` (`$start` in Codex). The names `start`, `audit` and `util`
+are shared with every other skill you install this way; if you already have one by that
+name, use the plugin instead. More in the [plugin guide](docs/plugins.md).
+
+Installed this way before 0.5.0? `npx skills update` does not follow the rename. Remove the
+old three and add again, in the same scope you used (add `-g` for a global install):
+
+```bash
+npx skills remove the-world-start the-world-audit the-world-util
+npx skills add afinit-com/the-world-skills
+```
 
 </details>
 
@@ -57,7 +67,7 @@ Then the skill is plain `/start`. More in the [plugin guide](docs/plugins.md).
 /the-world:start summarize this repo's changes every day at 9am
 ```
 
-In Codex it is `$the-world:start …`. The bot gets its own folder next to the project
+In Codex it is `$the-world:start …` (`$start` when installed with `npx skills`). The bot gets its own folder next to the project
 (`~/code/my-app` → `~/code/my-app-world`); started from an empty folder, it lives there
 instead and you name the project in the sentence. The agent asks which world the characters
 live in, unless you said it already ("as a pirate crew", or your favorite anime's world),
