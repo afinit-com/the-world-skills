@@ -83,9 +83,11 @@ def split_approval_request(reply: str) -> tuple[str, str | None]:
 # --- Slack-native formatting (code-enforced, not a prompt rule) -----------------
 # A cheap mention model reliably emits GitHub-flavored markdown; Slack mrkdwn is
 # NOT that. Two things leak as literal syntax and make a relay answer look broken:
-# ATX headers `## X` (Slack has no headers — the `##` shows verbatim) and `**bold**`
-# (Slack bold is ONE asterisk). Everything Slack already renders — `-`/`1.` lists,
-# `>` quotes, `<url|text>` links, `` `code` `` — is left alone. Fenced/inline code is
+# ATX headers `## X` (Slack has no headers — the `##` shows verbatim), `**bold**`
+# (Slack bold is ONE asterisk), and `-`/`*`/`+` list markers (sent through the API they
+# stay a literal dash; only the composer turns them into bullets), which become `•`,
+# nested ones `◦` under an indent. `1.` lists, `>` quotes, `<url|text>` links and
+# `` `code` `` are left alone. Fenced/inline code is
 # protected byte-for-byte so a `**` or `#` INSIDE a code sample is never rewritten.
 # Applied to model PROSE only (mention/relay replies), never to world's own structured
 # or HMAC-signed posts.
@@ -99,6 +101,15 @@ _SLACK_AMP = re.compile(r"&(?!(?:amp|lt|gt);)")
 _MD_HEADER = re.compile(r"^[ \t]{0,3}#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$", re.MULTILINE)
 _MD_BOLD_STAR = re.compile(r"(?<!\*)\*\*(?!\s)(.+?)(?<!\s)\*\*(?!\*)", re.DOTALL)
 _MD_BOLD_US = re.compile(r"(?<![\w_])__(?!\s)(.+?)(?<!\s)__(?![\w_])", re.DOTALL)
+# A marker needs whitespace after it, so `*bold*` or `**bold**` opening a line and a
+# `---` rule are not bullets.
+_MD_BULLET = re.compile(r"^([ \t]*)[-*+][ \t]+(?=\S)", re.MULTILINE)
+
+
+def _bullet(m: "re.Match") -> str:
+    """Two spaces (or a tab) of indent is one level: `•` at the top, `◦` below it."""
+    depth = len(m[1].expandtabs(4)) // 2
+    return "    " * depth + ("◦ " if depth else "• ")
 
 
 def _slack_escape(text: str) -> str:
@@ -128,6 +139,7 @@ def slack_mrkdwn(text: str) -> str:
 
     out = _MD_LINK.sub(link, out)
     out = _MD_HEADER.sub(r"*\1*", out)
+    out = _MD_BULLET.sub(_bullet, out)
     out = _MD_BOLD_STAR.sub(r"*\1*", out)
     out = _MD_BOLD_US.sub(r"*\1*", out)
     return re.sub(r"\x00(\d+)\x00", lambda m: spans[int(m.group(1))], out)

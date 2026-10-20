@@ -87,7 +87,8 @@ class AnnounceModeTests(unittest.IsolatedAsyncioTestCase):
         path = self.report("report.md", "# 아침 브리핑 2026-10-16\n\n## 요약\n- 회의 3건\n\n"
                                         "## 상세\nHidden")
         body = await self.card("file", [path])
-        self.assertEqual(["> *요약*", "> - 회의 3건"], body.splitlines()[2:])
+        # A report's `-` list reaches Slack as a bullet, not a literal dash.
+        self.assertEqual(["> *요약*", "> • 회의 3건"], body.splitlines()[2:])
 
     async def test_front_matter_is_not_the_opening(self):
         self.require_safe_open()

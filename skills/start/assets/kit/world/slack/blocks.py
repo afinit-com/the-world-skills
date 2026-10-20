@@ -44,7 +44,7 @@ MAX_BLOCKS = 50
 TEXT_CHARS = 3900
 
 _FENCE_LINE = re.compile(r"^\s{0,3}```")
-_LIST_ITEM = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+")
+_LIST_ITEM = re.compile(r"^\s*(?:[-*•◦]|\d+[.)])\s+")
 _BOLD_LINE = re.compile(r"^\*[^*\n]+\*:?$")
 # Characters that already carry mrkdwn meaning; a headline holding any of them is shown
 # as written rather than wrapped in another pair of asterisks.
