@@ -1,6 +1,6 @@
 ---
 name: audit
-description: Read-only risk review of an existing World harness. Reports, item by item, what is closed, what is open, and what could not be verified across bot authority, tool scope, outward actions and approval, content-borne manipulation, self-reconfiguration, secrets, and silent failure. It never fixes anything. Use for "the world audit", "하네스 점검", "하네스 보안 검토", "권한 감사", "is this harness safe", or before connecting a harness to Slack or giving a bot more authority.
+description: The World — Read-only risk review of an existing World harness. Reports, item by item, what is closed, what is open, and what could not be verified across bot authority, tool scope, outward actions and approval, content-borne manipulation, self-reconfiguration, secrets, and silent failure. It never fixes anything. Use for "the world audit", "하네스 점검", "하네스 보안 검토", "권한 감사", "is this harness safe", or before connecting a harness to Slack or giving a bot more authority.
 ---
 
 # audit

@@ -1,6 +1,6 @@
 ---
 name: dig-my-sessions
-description: Dig through this machine's past coding-agent sessions (Claude Code, Codex, opencode, Cursor, Antigravity CLI `agy`, and the legacy Gemini CLI) over a date range and projects you choose. Two uses. Find a past session — "그거 어느 세션이었지", "전에 ~하던 세션 찾아줘", "which session did X", a ticket id or branch name. And mine the history for chores the user keeps doing by hand, to hand to a World harness, a skill, or a one-line script — "자동화할 거 찾아줘", "위임할 거 찾아줘", "what should I automate", "내가 반복하는 일 뭐야". Read-only and offline; the optional Jev labelling sends redacted openers only with the user's yes.
+description: The World — Dig through this machine's past coding-agent sessions (Claude Code, Codex, opencode, Cursor, Antigravity CLI `agy`, and the legacy Gemini CLI) over a date range and projects you choose. Two uses. Find a past session — "그거 어느 세션이었지", "전에 ~하던 세션 찾아줘", "which session did X", a ticket id or branch name. And mine the history for chores the user keeps doing by hand, to hand to a World harness, a skill, or a one-line script — "자동화할 거 찾아줘", "위임할 거 찾아줘", "what should I automate", "내가 반복하는 일 뭐야". Read-only and offline; the optional Jev labelling sends redacted openers only with the user's yes.
 ---
 
 # dig-my-sessions

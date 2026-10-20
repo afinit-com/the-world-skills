@@ -5,7 +5,7 @@
   },
   "metadata": {
     "description": "Learn harnesses by building a world of collaborating bot characters and tools.",
-    "version": "0.5.0"
+    "version": "0.5.1"
   },
   "plugins": [
     {
