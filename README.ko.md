@@ -31,8 +31,10 @@ codex plugin add the-world@the-world
 
 </details>
 
-> **0.4.0 이전에 설치했다면:** 플러그인 이름이 `the-world-skills`에서 `the-world`로 바뀌어,
-> `/the-world-skills:the-world-start`는 이제 `/the-world:the-world-start`입니다. 한 번만 바꿔 주세요:
+> **0.5.0 이전에 설치했다면:** 이름이 짧아졌습니다. `/the-world-skills:the-world-start`(0.4.0 이전)와
+> `/the-world:the-world-start`(0.4.0)는 이제 `/the-world:start`이고, `audit`과 `util`도 같습니다.
+> 0.4.0이라면 평소처럼 플러그인을 업데이트하면 됩니다. 0.4.0 이전에는 플러그인 이름 자체가 달라서
+> 한 번만 바꿔 주세요:
 >
 > ```bash
 > claude plugin marketplace update the-world && claude plugin uninstall the-world-skills@the-world && claude plugin install the-world@the-world
@@ -46,17 +48,30 @@ codex plugin add the-world@the-world
 npx skills add afinit-com/the-world-skills
 ```
 
-이때 스킬 이름은 그냥 `/the-world-start`입니다. 자세한 내용은 [플러그인 문서](docs/plugins.ko.md).
+이때 스킬 이름은 그냥 `/start`(Codex에서는 `$start`)입니다. `start`, `audit`, `util`이라는 이름은
+이렇게 설치한 다른 스킬과 같은 공간을 쓰므로, 같은 이름의 스킬이 이미 있다면 플러그인으로 설치하세요.
+자세한 내용은 [플러그인 문서](docs/plugins.ko.md).
+
+0.5.0 이전에 이렇게 설치했다면 `npx skills update`가 바뀐 이름을 따라가지 않습니다. 설치했던 범위
+그대로 예전 세 개를 지우고 다시 추가하세요:
+
+```bash
+npx skills remove the-world-start the-world-audit the-world-util
+npx skills add afinit-com/the-world-skills
+# 전역 설치였다면:
+npx skills remove -g the-world-start the-world-audit the-world-util
+npx skills add -g afinit-com/the-world-skills
+```
 
 </details>
 
 **2. 맡길 일을 말하세요.** 봇이 일할 프로젝트 폴더에서:
 
 ```text
-/the-world:the-world-start 매일 오전 9시에 이 레포 변경 사항 요약해줘
+/the-world:start 매일 오전 9시에 이 레포 변경 사항 요약해줘
 ```
 
-Codex에서는 `$the-world-start …`입니다. 봇은 프로젝트 옆에 자기 폴더를 갖습니다
+Codex에서는 `$the-world:start …`입니다(`npx skills`로 설치했다면 `$start`). 봇은 프로젝트 옆에 자기 폴더를 갖습니다
 (`~/code/my-app` → `~/code/my-app-world`). 빈 폴더에서 시작하면 그 폴더에 만들고, 프로젝트는
 문장에 경로로 알려주면 됩니다. 에이전트는 캐릭터들이 사는 세계관을 묻고("해적단
 테마로"나 좋아하는 애니메이션 세계관처럼 미리 말하면 생략), 캐릭터마다 말투를 보여 주며 괜찮은지
@@ -88,18 +103,18 @@ macOS, Linux, 네이티브 Windows에서 동작합니다. 막히면 `/the-world:
 
 | 스킬 | 하는 일 |
 |---|---|
-| `the-world-start` | 맡길 프로젝트나 할 일을 알려줌(프로젝트만 주면 프로젝트와 로컬 Claude Code·Codex 세션 기록을 읽고 할 일을 제안) → 기본값으로 워커 하나 생성 → 로컬 검증 → 준비되면 Slack 연결과 커스터마이즈. 중단된 설정도 이어서 진행합니다. 키트를 `assets/kit/`에 담고 있습니다. |
-| `the-world-audit` | 이미 만든 하네스의 위험을 읽기만 하고 점검합니다. 봇 권한, tool 범위, 바깥으로 나가는 행동과 승인, 콘텐츠를 통한 조작, 자기 재설정, 비밀값, 조용한 실패를 항목마다 closed·open·not verified로 표시하고, open 항목에는 파일·줄과 재현 방법을 붙입니다. 고치지는 않습니다. |
+| `start` | 맡길 프로젝트나 할 일을 알려줌(프로젝트만 주면 프로젝트와 로컬 Claude Code·Codex 세션 기록을 읽고 할 일을 제안) → 기본값으로 워커 하나 생성 → 로컬 검증 → 준비되면 Slack 연결과 커스터마이즈. 중단된 설정도 이어서 진행합니다. 키트를 `assets/kit/`에 담고 있습니다. |
+| `audit` | 이미 만든 하네스의 위험을 읽기만 하고 점검합니다. 봇 권한, tool 범위, 바깥으로 나가는 행동과 승인, 콘텐츠를 통한 조작, 자기 재설정, 비밀값, 조용한 실패를 항목마다 closed·open·not verified로 표시하고, open 항목에는 파일·줄과 재현 방법을 붙입니다. 고치지는 않습니다. |
 | `dig-my-sessions` | 이 컴퓨터에 남은 Claude Code·Codex·opencode·Cursor·Antigravity CLI(`agy`)·구 Gemini CLI 세션 기록을 원하는 기간과 프로젝트로 골라 뒤집니다. 티켓·브랜치·주제를 다룬 세션을 이어서 열 명령과 함께 찾아 주고, 손으로 반복하는 잡무를 찾아 월드·스킬·한 줄 스크립트 중 어디로 넘길지 제안합니다. 프로그램이 띄운 세션은 뺍니다. 오프라인에서 읽기만 하고, 선택 모드 `--jev`는 동의를 받은 뒤에만 가린 첫 요청문을 TypeSafe Jev로 보내 분류합니다. |
-| `the-world-util` | 하네스 전제 조건이 없는 독립 유틸리티를 서브커맨드로 실행합니다. 현재는 `slack icon generate`. |
+| `util` | 하네스 전제 조건이 없는 독립 유틸리티를 서브커맨드로 실행합니다. 현재는 `slack icon generate`. |
 | `help-my-world` | 개발자가 아니어도 메인테이너에게 도움을 청할 수 있습니다. 하려던 일과 실제로 일어난 일만 말하면, 나머지(재현 과정, 가려서 모은 환경 정보, 내 월드의 캐릭터·트리거·도구 구성)는 에이전트가 저장소의 이슈 양식에 채웁니다. 필요하면 GitHub CLI 설치와 로그인을 한 단계씩 안내하고, 초안을 승인하기 전에는 아무것도 올리지 않습니다. |
 
-`the-world-start`는 `disable-model-invocation: true`입니다. git 저장소에 파일을 쓰므로,
-사람이 직접 입력해야만 실행됩니다. `help-my-world`도 바깥에 글을 올리므로 같습니다. `the-world-audit`과 `dig-my-sessions`는 읽기만 하므로 모델이
+`start`는 `disable-model-invocation: true`입니다. git 저장소에 파일을 쓰므로,
+사람이 직접 입력해야만 실행됩니다. `help-my-world`도 바깥에 글을 올리므로 같습니다. `audit`과 `dig-my-sessions`는 읽기만 하므로 모델이
 호출할 수도 있습니다.
 
 그 밖에 하네스에 필요한 것들 — 봇 추가, 범위가 정해진 능력 연결, 새 봇 검증, 플러그인
-레지스트리 연결 — 은 `/the-world-start`가 **하네스 안에 직접 설치**합니다. 그래서 하네스를
+레지스트리 연결 — 은 `/the-world:start`가 **하네스 안에 직접 설치**합니다. 그래서 하네스를
 다른 곳에 클론해도 그대로 동작합니다.
 
 ## 두 가지 철칙
@@ -114,7 +129,7 @@ macOS, Linux, 네이티브 Windows에서 동작합니다. 막히면 `/the-world:
 에이전트는 PreToolUse 훅이 모든 곳에서 쓰기를 막습니다. 범위는 서류가 아니라 집행 그
 자체입니다. 능력(capability)은 선택한 프로바이더의 MCP 어댑터로 노출되는 전용
 **`ToolSpec`**이며, 그 경계(cwd, 호스트, 저장소, "merge 동사 금지")는 생성 시점에
-묶입니다. 철학을 한 줄로 하면(모든 하네스에 설치되는 [`docs/philosophy.md`](skills/the-world-start/assets/kit/docs/philosophy.md)):
+묶입니다. 철학을 한 줄로 하면(모든 하네스에 설치되는 [`docs/philosophy.md`](skills/start/assets/kit/docs/philosophy.md)):
 *프롬프트에 적힌 약속은 집행이 아니다.*
 
 ## 캐릭터 관계도 보기
@@ -124,7 +139,7 @@ uv run python harness.py --world-map
 ```
 
 `WORLD.html`로 열립니다. 캐릭터별 tool, 역할, 쓰기 범위와 서로 어떻게 협력하는지 볼 수
-있습니다. [관계도 만들기](skills/the-world-start/assets/kit/docs/world-map.md).
+있습니다. [관계도 만들기](skills/start/assets/kit/docs/world-map.md).
 
 ## 하네스 운영하기
 
@@ -133,13 +148,13 @@ uv run python harness.py --world-map
 
 설치 스크립트가 무엇을 어디에 쓰는지, 업그레이드 방법, 프로바이더 모드, 런타임이 지키는
 규칙은 [하네스 가이드](docs/harness-guide.ko.md)에 있습니다. GitHub·Linear·Jira 연동은
-[레시피](skills/the-world-start/assets/kit/docs/integrations.md), Discord(실험적)는
-[문서](skills/the-world-start/assets/kit/docs/discord.md)를 보세요.
+[레시피](skills/start/assets/kit/docs/integrations.md), Discord(실험적)는
+[문서](skills/start/assets/kit/docs/discord.md)를 보세요.
 
 ## 라이선스
 
 [MIT](LICENSE). Copyright 2026 Afinit.
 
-`/the-world-start`가 하네스에 풀어놓는 키트(`world/`, `.claude/the-world/`, `templates/`, 가드 훅)는
+`/the-world:start`가 하네스에 풀어놓는 키트(`world/`, `.claude/the-world/`, `templates/`, 가드 훅)는
 이 라이선스를 함께 가지고 갑니다. 그 위에 당신이 만든 것 — `harness.py`, abilities,
 tools, 세계관 — 은 당신 것입니다.

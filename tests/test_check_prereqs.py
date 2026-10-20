@@ -1,4 +1,4 @@
-"""the-world-start's Step 0 prerequisite check, with every input injected.
+"""start's Step 0 prerequisite check, with every input injected.
 
 No real interpreter, PATH, or home directory is consulted: the version, `which`, the
 environment, and the filesystem probe are all handed in, so the too-old case is a tuple and
@@ -16,7 +16,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / "skills/the-world-start/scripts/check-prereqs.py"
+SCRIPT = ROOT / "skills/start/scripts/check-prereqs.py"
 
 spec = importlib.util.spec_from_file_location("check_prereqs", SCRIPT)
 prereqs = importlib.util.module_from_spec(spec)

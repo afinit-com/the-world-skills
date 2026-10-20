@@ -1,10 +1,10 @@
 ---
-name: the-world-start
+name: start
 description: Create or resume a World harness from Claude Code or Codex, which also runs the bots. Build collaborating characters, their tools and relationship map, verify locally, then connect Slack. Use for "the world start", "world init", "하네스 만들어", "감시 봇 만들어", or continuing this harness's setup; not for arbitrary Slack bot development.
 disable-model-invocation: true
 ---
 
-# the-world-start
+# start
 
 Turn a plain-language job into a harness: a process that runs agents on changes, on a
 schedule, or when mentioned in Slack. Respond in the language of the user's first message,

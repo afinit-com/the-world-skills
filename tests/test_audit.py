@@ -1,4 +1,4 @@
-"""the-world-audit's scanner against harnesses built by the-world-start's installer.
+"""audit's scanner against harnesses built by start's installer.
 
 Two fixtures: one built the way the kit intends, which must come back with nothing open,
 and one with a known open item planted in each of the audit's seven categories,
@@ -19,8 +19,8 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SCAN = ROOT / "skills/the-world-audit/scan.py"
-INSTALL = ROOT / "skills/the-world-start/scripts/install-kit.py"
+SCAN = ROOT / "skills/audit/scan.py"
+INSTALL = ROOT / "skills/start/scripts/install-kit.py"
 
 # Built from parts so no token-shaped literal sits in the repository.
 FAKE_SLACK_TOKEN = "xo" + "xb-" + "1234567890-" + "abcdefghijklmnop"

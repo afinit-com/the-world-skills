@@ -17,7 +17,7 @@ class PluginPackageTests(unittest.TestCase):
         portable = json.loads((ROOT / "plugin.json").read_text())
         self.assertEqual(portable["license"], "MIT")
         self.assertEqual(
-            (ROOT / "skills/the-world-start/assets/kit/world/LICENSE").read_text(),
+            (ROOT / "skills/start/assets/kit/world/LICENSE").read_text(),
             (ROOT / "LICENSE").read_text(),
         )
         for host in ("claude", "codex"):
@@ -32,9 +32,9 @@ class PluginPackageTests(unittest.TestCase):
         self.assertFalse((ROOT / "mcp.json").exists())
         self.assertEqual(
             sorted(path.parent.name for path in (ROOT / "skills").glob("*/SKILL.md")),
-            ["dig-my-sessions", "help-my-world", "the-world-audit", "the-world-start", "the-world-util"],
+            ["audit", "dig-my-sessions", "help-my-world", "start", "util"],
         )
-        for name in ("the-world-start", "help-my-world"):
+        for name in ("start", "help-my-world"):
             skill = ROOT / "skills" / name
             self.assertIn("disable-model-invocation: true", (skill / "SKILL.md").read_text())
             self.assertIn("allow_implicit_invocation: false", (skill / "agents/openai.yaml").read_text())
@@ -42,14 +42,14 @@ class PluginPackageTests(unittest.TestCase):
     def test_start_skill_and_readme_agree_on_where_the_harness_lives(self) -> None:
         # Without a rule the model improvised: one test install landed in the current
         # directory, another in a made-up sibling. One rule, said the same way everywhere.
-        skill = " ".join((ROOT / "skills/the-world-start/SKILL.md").read_text().split())
+        skill = " ".join((ROOT / "skills/start/SKILL.md").read_text().split())
         self.assertIn("goes beside it as `<project>-world` (`~/code/my-app` → `~/code/my-app-world`)", skill)
         for readme in ("README.md", "README.ko.md"):
             self.assertIn("`~/code/my-app` → `~/code/my-app-world`", (ROOT / readme).read_text(), readme)
         self.assertIn("nothing about the Slack plan", skill)  # LAB-323: one app, no app limit
 
     def test_start_skill_confirms_each_voice_and_keeps_facts_exact(self) -> None:
-        text = " ".join((ROOT / "skills/the-world-start/SKILL.md").read_text().split())
+        text = " ".join((ROOT / "skills/start/SKILL.md").read_text().split())
         self.assertIn("Write it to `Persona(voice=...)` only after the user edits or approves it", text)
         self.assertIn('Numbers, "unverified" markers, errors, and approval requests stay exact', text)
 
@@ -57,7 +57,7 @@ class PluginPackageTests(unittest.TestCase):
         # Issue #2: "Exit 0 is not completion" was a principle with no flow behind it, so
         # every harness improvised one. The flow is the kit's docs/verify.md; the skill
         # points there right after the principle, with the browser rules said in full.
-        text = " ".join((ROOT / "skills/the-world-start/SKILL.md").read_text().split())
+        text = " ".join((ROOT / "skills/start/SKILL.md").read_text().split())
         exit0 = text.index("**Exit 0 is not completion.**")
         pointer = text.index("**Verify past the dry run with `docs/verify.md`.**")
         self.assertLess(exit0, pointer)
@@ -66,7 +66,7 @@ class PluginPackageTests(unittest.TestCase):
         self.assertIn("never press an approve or deny button", text)
         self.assertIn("only when the user allowed it in this conversation", text)
         self.assertIn("with `verify` as the flow", text)
-        self.assertTrue((ROOT / "skills/the-world-start/assets/kit/docs/verify.md").is_file())
+        self.assertTrue((ROOT / "skills/start/assets/kit/docs/verify.md").is_file())
 
     def test_sync_restores_shared_fields_without_touching_app_specific_ones(self) -> None:
         # The three manifests cannot be one file or a symlink — each app reads its own and
@@ -140,7 +140,7 @@ class PluginPackageTests(unittest.TestCase):
         spec = importlib.util.spec_from_file_location("build_plugin", ROOT / "scripts/build-plugin.py")
         build = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(build)
-        template = ROOT / "skills/the-world-start/assets/kit/templates/gitignore.tmpl"
+        template = ROOT / "skills/start/assets/kit/templates/gitignore.tmpl"
         for line in template.read_text(encoding="utf-8").splitlines():
             line = line.strip()
             if not line or line.startswith(("#", "!")) or line == "env/*":  # env/ ships the example
@@ -165,11 +165,11 @@ class PluginPackageTests(unittest.TestCase):
                 self.assertNotIn(path.name, ("__pycache__", ".venv", ".pytest_cache", "harness.env"))
             target = temporary / "harness"
             subprocess.run([
-                sys.executable, str(plugin / "skills/the-world-start/scripts/install-kit.py"),
+                sys.executable, str(plugin / "skills/start/scripts/install-kit.py"),
                 str(target), "--provider", "codex",
             ], check=True, capture_output=True, cwd=temporary)
             prereqs = subprocess.run([
-                sys.executable, str(plugin / "skills/the-world-start/scripts/check-prereqs.py"),
+                sys.executable, str(plugin / "skills/start/scripts/check-prereqs.py"),
                 "--json",
             ], capture_output=True, text=True, cwd=temporary)
             self.assertIn(prereqs.returncode, (0, 1))
@@ -181,9 +181,9 @@ class PluginPackageTests(unittest.TestCase):
             self.assertTrue((plugin / "docs/plugins.ko.md").is_file())
             self.assertEqual((plugin / "LICENSE").read_text(), (ROOT / "LICENSE").read_text())
             self.assertFalse((plugin / "skills/the-world-delegate").exists())
-            self.assertTrue((plugin / "skills/the-world-audit/scan.py").is_file())
+            self.assertTrue((plugin / "skills/audit/scan.py").is_file())
             self.assertTrue((plugin / "skills/dig-my-sessions/dig.py").is_file())
-            self.assertTrue((plugin / "skills/the-world-start/scripts/check-prereqs.py").is_file())
+            self.assertTrue((plugin / "skills/start/scripts/check-prereqs.py").is_file())
             self.assertFalse((plugin / "docs/img").exists())
             self.assertFalse((plugin / "docs/index.html").exists())
             self.assertFalse((plugin / "skills/the-world-init").exists())
@@ -191,7 +191,7 @@ class PluginPackageTests(unittest.TestCase):
             rebuilt = temporary / "rebuilt"
             subprocess.run([sys.executable, str(plugin / "scripts/build-plugin.py"), str(rebuilt)],
                            check=True, capture_output=True, cwd=temporary)
-            self.assertTrue((rebuilt / "plugins/the-world/skills/the-world-start/SKILL.md").is_file())
+            self.assertTrue((rebuilt / "plugins/the-world/skills/start/SKILL.md").is_file())
             sentinel = output / "keep.txt"
             sentinel.write_text("mine")
             retry = subprocess.run(command, capture_output=True, cwd=temporary)

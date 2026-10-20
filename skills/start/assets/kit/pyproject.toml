@@ -1,4 +1,4 @@
-# This harness's install of the world runtime, which /the-world-start unpacked into world/ beside
+# This harness's install of the world runtime, which /the-world:start unpacked into world/ beside
 # this file. Install it editable into the harness's own venv and `from world import Harness`
 # resolves to that copy:
 #
@@ -8,14 +8,15 @@
 # A fix to world/ lands immediately — no reinstall. But world/ is kit-owned: re-running
 # install-kit.py replaces it, so fix the kit, not this copy.
 #
-# No `readme =` on purpose: a harness has no README.md when /the-world-start installs the kit,
+# No `readme =` on purpose: a harness has no README.md when /the-world:start installs the kit,
 # and a missing readme is a hard build error, not a warning.
 [project]
 name = "world"
-version = "0.3.0"
-description = "The World — Codex runner with Slack-native watchdog orchestration"
+version = "0.4.0"
+description = "The World — always-on, Slack-native multi-agent harness with themed bot personas"
 requires-python = ">=3.11"
 dependencies = [
+    "claude-agent-sdk>=0.1.0",
     # 3.41 is world's own floor (assistant_threads_setStatus, world/slack/post.py).
     "slack-sdk>=3.43.0",
     "aiohttp>=3.9.0",
@@ -32,6 +33,10 @@ dependencies = [
 # is deliberate: a minor release that adds a rule to a selected group turns this repo
 # red without a line of it changing. Raise it on purpose, read the new rules, raise again.
 dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff>=0.15,<0.16"]
+# EXPERIMENTAL Discord gateway (world/channels/discord.py, docs/discord.md). Optional:
+# `import world` never needs it; only a harness constructed with `discord=DiscordConfig()`
+# imports discord.py, and only when it starts.
+discord = ["discord.py>=2.4"]
 
 [build-system]
 requires = ["hatchling"]

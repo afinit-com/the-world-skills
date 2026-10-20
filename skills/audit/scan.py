@@ -1120,7 +1120,7 @@ def kit_integrity(h: Harness, out: list[Finding]) -> None:
                            "ships with — an older kit, or an edit in place. The kit's "
                            "guarantees are only as good as these files; the invariants "
                            "below are checked line by line either way.", changed[:12],
-                           "`diff -r <the-world-start>/assets/kit/world world`"))
+                           "`diff -r <start>/assets/kit/world world`"))
     else:
         out.append(Finding("self_config", "kit files unchanged", "closed",
                            "world/ and the guard hooks match the bundled kit byte for byte."))
@@ -1380,12 +1380,12 @@ def main() -> None:
     parser.add_argument("--json", action="store_true", help="print findings as JSON")
     parser.add_argument("--kit", type=Path, default=None,
                         help="the kit to compare world/ against (default: the one bundled "
-                             "with the-world-start next to this skill)")
+                             "with the start skill next to this one)")
     args = parser.parse_args()
     root = args.harness.expanduser().resolve()
     if not (root / "harness.py").is_file():
         parser.exit(2, f"{root} has no harness.py — point this at a World harness directory\n")
-    kit = args.kit or Path(__file__).resolve().parent.parent / "the-world-start/assets/kit"
+    kit = args.kit or Path(__file__).resolve().parent.parent / "start/assets/kit"
     h, findings = audit(root, kit.resolve() if kit.is_dir() else None)
     if args.json:
         print(json.dumps({"harness": str(root), "provider": h.provider,

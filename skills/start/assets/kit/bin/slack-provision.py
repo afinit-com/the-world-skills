@@ -28,7 +28,7 @@ SLACK_APP_TOKEN in its environment — the hooks reference documents this
 (docs.slack.dev/tools/slack-cli/reference/hooks/#deploy). The hook writes them into
 env/harness.env and exits; the CLI exits with it. harness.py then runs as before.
 
-THE SPEC — slack-app/slack-apps.json (written by /the-world-start, yours to edit)
+THE SPEC — slack-app/slack-apps.json (written by /the-world:start, yours to edit)
 
     {
       "prefix": "Obs",                       # app name = "<prefix>-<display>"

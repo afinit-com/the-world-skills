@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""check-prereqs — report what this machine is missing before the-world-start installs.
+"""check-prereqs — report what this machine is missing before the start skill installs.
 
     python3 check-prereqs.py [--runtime claude|codex|both] [--json]
     (on Windows: `python`, where `python3` may be absent or a Store stub)
@@ -193,7 +193,7 @@ def render(items):
 
 def main(argv=None, out=None, **injected):
     out = out or sys.stdout
-    parser = argparse.ArgumentParser(description="Check the-world-start prerequisites.")
+    parser = argparse.ArgumentParser(description="Check the start skill's prerequisites.")
     parser.add_argument("--runtime", choices=("claude", "codex", "both"), default="both",
                         help="bot runtime to check (default: both, until one is chosen)")
     parser.add_argument("--json", action="store_true", help="machine-readable output")

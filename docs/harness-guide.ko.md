@@ -9,10 +9,10 @@
 ## 런타임과 명령어가 하네스에 도달하는 방식
 
 `npx skills`는 저장소가 아니라 스킬 디렉터리를 설치합니다. 그래서 런타임이 프로젝트에
-"이미 있는" 상태가 될 수 없고, 런타임은 `the-world-start` 안에 실려 갑니다.
+"이미 있는" 상태가 될 수 없고, 런타임은 `start` 안에 실려 갑니다.
 
 ```
-skills/the-world-start/
+skills/start/
   SKILL.md
   scripts/install-kit.py     키트를 대상 디렉터리에 멱등하게 풀어놓음
   assets/kit/
@@ -30,10 +30,10 @@ skills/the-world-start/
     bin/slack-pair.py        @멘션 한 번으로 채널·승인자 ID 받기
     docs/world-map.md        초상화 · 관계 · tool 맵 가이드
     docs/integrations.md     GitHub · Linear · Jira 연동 레시피 (폴링 check + 승인 게이트 쓰기)
-skills/the-world-audit/
+skills/audit/
   SKILL.md                   감사가 지킬 것과 보고 형식
   scan.py                    읽기 전용 근거 수집기 (하네스를 파싱만 하고 import하지 않음)
-skills/the-world-util/
+skills/util/
   SKILL.md                   서브커맨드 라우터
   references/slack-icon.md
 skills/help-my-world/
@@ -41,7 +41,7 @@ skills/help-my-world/
   collect_env.py             가린 환경 보고서 (표준 라이브러리만)
 ```
 
-`/the-world-start`의 Phase 3 step 1이 설치 스크립트를 실행합니다. 하네스 디렉터리에
+`/the-world:start`의 Phase 3 step 1이 설치 스크립트를 실행합니다. 하네스 디렉터리에
 일어나는 일은 다음과 같습니다.
 
 | | 파일 | 재실행 시 |
@@ -70,11 +70,14 @@ skills/help-my-world/
 하네스를 연 사람은 어느 것이 진짜인지 알 수 없습니다.
 
 <a id="upgrading"></a>
-`npx skills update` 후 기존 하네스를 업그레이드하려면:
+기존 하네스를 업그레이드하려면 먼저 스킬을 설치한 방식대로 업데이트하세요. 플러그인은 평소처럼,
+`npx skills`는 `npx skills update`로 합니다. 0.5.0 이전에 `npx skills`로 설치했다면 update가
+`the-world-start` → `start` 이름 변경을 따라가지 않으니 [README](../README.ko.md)처럼 지우고 다시
+추가하세요. 이 과정 없이도 하네스는 그대로 돌아가며, 설치 스크립트 재실행은 키트 소유 트리만 새로 고칩니다. 그다음:
 
 ```bash
 cd <harness> && git status --short          # 반드시 clean이어야 합니다 — 아래 참고
-python3 <installed-skill>/scripts/install-kit.py .   # project-profile.json 유지. Windows에서는 `python`
+python3 <설치된 start 스킬>/scripts/install-kit.py .   # project-profile.json 유지. Windows에서는 `python`
 uv pip install -e .
 uv run python bin/smoke.py
 git diff                                    # 설치 스크립트가 출력하지 않는 유일한 보고서
@@ -134,7 +137,7 @@ Codex CLI 로그인으로 실제 읽기 전용 + 범위 지정 MCP 검증을 수
 Codex 전용 설치는 `claude-agent-sdk`를 제외하며, 이를 `both`로 바꿀 때는 프로젝트가
 소유한 `pyproject.toml`을 보존하고 해당 의존성을 추가하라는 조치를 명시적으로
 출력합니다. 구현 결정, 매트릭스, 남은 위험은
-[`docs/codex-compatibility.md`](../skills/the-world-start/assets/kit/docs/codex-compatibility.md)에
+[`docs/codex-compatibility.md`](../skills/start/assets/kit/docs/codex-compatibility.md)에
 기록되어 있습니다.
 
 ## 능력을 주는 길은 하나
@@ -167,7 +170,7 @@ Codex 전용 설치는 `claude-agent-sdk`를 제외하며, 이를 `both`로 바�
   것과 정말 공짜인 것이 같아 보여서는 안 되기 때문입니다.
 
 각 항목은 실제 사고에서 비롯됐습니다. 이유는
-[`docs/philosophy.md`](../skills/the-world-start/assets/kit/docs/philosophy.md)에 있습니다.
+[`docs/philosophy.md`](../skills/start/assets/kit/docs/philosophy.md)에 있습니다.
 
 > **환경 변수 이름 규칙.** 하네스의 설정 변수에는 키트 전역 접두사를 붙이지 않습니다.
 > 하네스 하나가 소유하는 것은 `<PROJECT>_THING`, 여러 하네스가 진짜로 공유하는 것은
@@ -186,5 +189,5 @@ Codex 전용 설치는 `claude-agent-sdk`를 제외하며, 이를 `both`로 바�
 
 ## 출처
 
-여기서 키트는 `the-world-start` 스킬 안에 실려 있습니다. 대상 디렉터리에 스캐폴딩하며,
+여기서 키트는 `start` 스킬 안에 실려 있습니다. 대상 디렉터리에 스캐폴딩하며,
 가드 훅과 `settings.json`은 이미 있다고 가정하지 않고 복사·병합합니다.

@@ -1,11 +1,11 @@
 ---
-name: the-world-audit
+name: audit
 description: Read-only risk review of an existing World harness. Reports, item by item, what is closed, what is open, and what could not be verified across bot authority, tool scope, outward actions and approval, content-borne manipulation, self-reconfiguration, secrets, and silent failure. It never fixes anything. Use for "the world audit", "하네스 점검", "하네스 보안 검토", "권한 감사", "is this harness safe", or before connecting a harness to Slack or giving a bot more authority.
 ---
 
-# the-world-audit
+# audit
 
-Review a harness that `the-world-start` built and say what is closed and what isn't.
+Review a harness that `start` built and say what is closed and what isn't.
 Respond in the user's language. The sentence the kit reduces to is "a promise written in a
 prompt is not enforcement", so every item here is judged by what the code does, never by
 what a prompt or a comment promises.
@@ -44,7 +44,7 @@ the first four characters of a token. Do the same, and say to rotate it.
    ```
 
    It parses the harness with `ast` and never imports it. It compares `world/` and the
-   guard hooks with the kit bundled in `the-world-start`, and it checks the kit lines
+   guard hooks with the kit bundled in `start`, and it checks the kit lines
    that carry each boundary. Its `closed` means "no pattern matched", which is evidence
    but not proof.
 

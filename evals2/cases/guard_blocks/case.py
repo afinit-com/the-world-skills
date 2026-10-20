@@ -67,7 +67,7 @@ def scaffold(ws: Path) -> None:
     (ws / "logs" / "build").mkdir(parents=True)
     (ws / "tasks" / TASK_ID / "work").mkdir(parents=True)
 
-    kit = Path(__file__).resolve().parents[3] / "skills" / "the-world-start" / "assets" / "kit"
+    kit = Path(__file__).resolve().parents[3] / "skills" / "start" / "assets" / "kit"
     hooks = ws / ".claude" / "hooks"
     hooks.mkdir(parents=True)
     for name in ("world-scope-guard.py", "world-git-guard.py"):

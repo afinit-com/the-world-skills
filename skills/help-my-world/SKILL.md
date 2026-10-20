@@ -1,12 +1,12 @@
 ---
 name: help-my-world
-description: Ask the-world-skills maintainers for help by filing a GitHub issue they can act on without asking back. Built for people who are not developers — they say what they wanted and what happened, in their own words; the agent fills in the rest from the session and the harness (plugin version, OS, runtime, install profile, the world's characters, triggers and tools, git state, recent logs), redacted by a bundled script, in the repository's own issue form. Walks the user through installing and logging in to the GitHub CLI if needed, shows the full draft, and files nothing until the user says to. Use for "help my world", "help me", "도와줘", "이거 이슈로 올려줘", "더월드 버그 제보", "봇이 이상해", or when the-world-start or a harness failed and the user wants the maintainers to know.
+description: Ask the-world-skills maintainers for help by filing a GitHub issue they can act on without asking back. Built for people who are not developers — they say what they wanted and what happened, in their own words; the agent fills in the rest from the session and the harness (plugin version, OS, runtime, install profile, the world's characters, triggers and tools, git state, recent logs), redacted by a bundled script, in the repository's own issue form. Walks the user through installing and logging in to the GitHub CLI if needed, shows the full draft, and files nothing until the user says to. Use for "help my world", "help me", "도와줘", "이거 이슈로 올려줘", "더월드 버그 제보", "봇이 이상해", or when start or a harness failed and the user wants the maintainers to know.
 disable-model-invocation: true
 ---
 
 # /help-my-world — ask the maintainers for help
 
-After `/the-world-start`, every world is different: its own characters, jobs, tools, and
+After the `start` skill builds it, every world is different: its own characters, jobs, tools, and
 schedule. The person asking for help is often not a developer and should not have to
 become one to be helped. So the user says what happened in their words, and you do the
 rest: the maintainer who reads the issue was not here, and gets everything they would
