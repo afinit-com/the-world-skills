@@ -71,3 +71,31 @@ class RelayReplyMarkdownTests(unittest.IsolatedAsyncioTestCase):
         await mixin._handle_relay_mention('ORIGIN', '1.0', 'hi', {'ts': '1.0'})
         body = mixin.post.await_args.args[0]
         self.assertTrue(body.endswith('<https://example.com/a?x=1&amp;notify=true|알림 설정>'), body)
+
+
+class MarkdownBulletTests(unittest.TestCase):
+    """`-`/`*`/`+` sent through chat.postMessage stay a literal dash; only Slack's
+    composer turns them into bullets. MESSAGE_FORMAT asks for bullets, so the layout
+    rule would have produced dashes."""
+
+    def test_markers_become_bullets_and_nested_ones_indent(self):
+        source = "결과\n- 배포 완료\n* 모델 v1\n+ 대기 중\n  - 하위 항목\n\t- 탭 하위\n    - 더 깊이"
+        self.assertEqual(
+            "결과\n• 배포 완료\n• 모델 v1\n• 대기 중\n    ◦ 하위 항목\n        ◦ 탭 하위\n"
+            "        ◦ 더 깊이",
+            slack_mrkdwn(source))
+
+    def test_bold_rules_and_numbers_are_not_bullets(self):
+        self.assertEqual("*굵게* 시작\n*정말 굵게*\n---\n1. 하나\n-붙은 대시\n-",
+                         slack_mrkdwn("*굵게* 시작\n**정말 굵게**\n---\n1. 하나\n-붙은 대시\n-"))
+        self.assertEqual("- - -\n* * *\n  - - -", slack_mrkdwn("- - -\n* * *\n  - - -"))
+
+    def test_code_keeps_its_dashes(self):
+        code = "`- inline`\n```\n- in a fence\n* also\n```"
+        self.assertEqual(code, slack_mrkdwn(code))
+        self.assertEqual("• `- a`", slack_mrkdwn("- `- a`"))
+
+    def test_bullets_are_idempotent_and_bold_inside_still_converts(self):
+        once = slack_mrkdwn("- **중요** 항목\n  - 하위")
+        self.assertEqual("• *중요* 항목\n    ◦ 하위", once)
+        self.assertEqual(once, slack_mrkdwn(once))

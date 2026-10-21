@@ -20,6 +20,12 @@ that leaves something outside writes through one function that only writes (not 
 `run_cmd` its reads also use), so `docs/verify.md` can stub that function and test the
 tool's boundary without writing. Keep speaking in {{universe_name}}'s vocabulary.
 
+Anything the new code posts to Slack by itself is built with `world.slack.blocks.card(title,
+fields=..., bullets=..., body=..., context=..., buttons=...)` and posted with
+`listener.post(text, blocks=blocks)`: a headline with the outcome, one fact per field or
+bullet, ids and paths in backticks, context last. Not a hand-built line joining facts with
+commas.
+
 ## Split the request, place each piece, then build
 
 A request is rarely one tool. "Brief me on my PRs every morning" is a read-only tool

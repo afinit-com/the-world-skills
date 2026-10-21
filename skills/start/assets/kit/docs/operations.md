@@ -58,6 +58,27 @@ alias recognition is therefore deferred; use the resolved home path on every pla
 The paths inside are resolved once, on the machine that rendered them. After moving the
 harness or changing its venv, render again with `--force`.
 
+## Checking it, and moving it
+
+```bash
+uv run python bin/ops-kit.py --check
+```
+
+writes nothing. It reports whether the scripts exist and were rendered for this folder,
+whether `.venv` was made here, whether the watchdog is registered and which script it
+runs, and whether the harness is running, then prints this harness's commands for each
+request (start, status, restart, logs, stop, register, unregister, take down). The
+harness's ops word (scaffolded by `/the-world:start`) runs it before every action.
+
+A moved harness keeps working only partly. The scripts and a registered watchdog still
+name the old folder. `.venv` keeps its old path in `bin/activate` and in its console
+scripts' first lines; `uv run` re-points the editable install but not those, and the
+harness itself still runs because it starts through the venv's python. `--check` then
+exits 2 with the fix in order: remove the old watchdog, stop what is running, recreate
+`.venv`, re-render with `--force` under the same `--name` and flags (so the launchd label
+or unit name stays the same), register again, start. The watchdog lines are for the
+person to run, like the rest of this kit's registration commands.
+
 ## What each one gets right
 
 Each of these was a bug in a hand-built launcher first.

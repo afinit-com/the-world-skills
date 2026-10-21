@@ -96,11 +96,12 @@ class FakeListener:
         channel: str | None = None,
         context: dict | None = None,
         unfurl: bool = True,
+        plain: bool = False,
     ) -> str | None:
         ts = f"0000000000.{next(self._ts):06d}"
         self.posted.append({"text": text, "ts": ts, "identity": identity,
                             "thread_ts": thread_ts, "blocks": blocks, "channel": channel,
-                            "context": context})
+                            "context": context, "plain": plain})
         return ts
 
     def thread_worktree(self, thread_ts: str) -> Path | None:

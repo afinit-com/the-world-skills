@@ -15,6 +15,12 @@ keeping what already holds for every other one here: authority declared in code 
 a scoped tool rather than a wider Bash allowlist, outward actions behind human approval, and
 a report that says what is still unverified. Keep speaking in {{universe_name}}'s vocabulary.
 
+Anything the new code posts to Slack by itself is built with `world.slack.blocks.card(title,
+fields=..., bullets=..., body=..., context=..., buttons=...)` and posted with
+`listener.post(text, blocks=blocks)`: a headline with the outcome, one fact per field or
+bullet, ids and paths in backticks, context last. Not a hand-built line joining facts with
+commas.
+
 This wrapper is yours. If `WORLD.md`'s Vocabulary entry changes, rename this skill's folder
 (the directory holding this `SKILL.md`) to match — it is a one-time scaffold, not read from
 `WORLD.md` at runtime.

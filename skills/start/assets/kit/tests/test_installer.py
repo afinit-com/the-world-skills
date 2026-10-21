@@ -118,6 +118,36 @@ class InstallerOwnershipTests(unittest.TestCase):
             self.assertIn("Never press an approve or deny", " ".join(body.split()))
             self.assertNotIn("{{", body)
 
+    def test_ops_word_scaffolds_the_running_flow(self) -> None:
+        # "켜줘 / 꺼줘 / 상태" used to be known only in the session that ran /the-world:start;
+        # a session opened in the harness had no word for running it.
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "harness"
+            self.run_installer(target, "claude")
+            self.assertTrue((target / "templates/ops-wrapper.md.tmpl").is_file())
+            subprocess.run(
+                ["python3", str(target / "bin/scaffold-world-skill.py"), "helm", "ops",
+                 "--universe", "Crew", "--description", "helm — 키를 잡다: 하네스를 켜고 끈다",
+                 "--extra-trigger-phrases", ', "켜줘", "꺼줘"'],
+                check=True, capture_output=True, env={**os.environ, "PYTHONUTF8": "1"},
+            )
+            body = (target / ".claude/skills/helm/SKILL.md").read_text(encoding="utf-8")
+            flat = " ".join(body.split())
+            self.assertTrue(body.startswith("---\nname: helm\n"))
+            self.assertNotIn("{{", body)
+            # The description is a quoted YAML string: the meaning and the wrapper's own
+            # text both hold ": ", which a strict loader rejects unquoted.
+            line = next(l for l in body.splitlines() if l.startswith("description: "))
+            description = json.loads(line[len("description: "):])
+            self.assertTrue(description.startswith("helm — 키를 잡다: 하네스를 켜고 끈다 — "))
+            self.assertIn('Use when the user says "helm", "켜줘", "꺼줘"', description)
+            self.assertIn("uv run python bin/ops-kit.py --check", body)
+            self.assertIn("remove the watchdog first, then stop", flat)
+            self.assertIn("Run them yourself only when the person asks you to", flat)
+            self.assertIn("--notify --prefix <PREFIX>", body)
+            self.assertIn("After the folder moved", body)
+            self.assertFalse((target / ".agents/skills/helm").exists())
+
     def test_installed_slack_provisioner_renders_from_the_installed_template(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "harness"
@@ -262,6 +292,9 @@ class InstallerOwnershipTests(unittest.TestCase):
             agent = (target / ".claude/skills/recruit/SKILL.md").read_text()
             self.assertNotIn("Where it goes", agent)
             self.assertIn("add the agent the user asked for", agent)
+            for body in (tool, agent):  # new harness code posts cards, not run-on lines
+                self.assertIn("world.slack.blocks.card(", body)
+                self.assertIn("listener.post(text, blocks=blocks)", body)
 
 
     @unittest.skipIf(os.name == "nt", "chmod cannot make a directory unwritable on Windows")

@@ -66,7 +66,7 @@ from ..slack.approvals import ApprovalMixin as _Grants
 from ..slack.rules import LAST_HOP_NOTE_UNATTENDED, pre_approved_clause, split_approval_request
 from ..slack.run_footer import format_run_footer, run_fields
 from ..toolkit import make_approval_gated, make_handoff_tool
-from ..types import Agent, MentionTrigger, voice_clause
+from ..types import MESSAGE_FORMAT, Agent, MentionTrigger, voice_clause
 
 if TYPE_CHECKING:
     from ..harness import Harness
@@ -171,12 +171,12 @@ Rules (non-negotiable):
 {handoff}
 - The harness is not yours to reconfigure: never propose changes to settings,
   allowlists, hooks, or harness code — not even via APPROVAL_REQUEST.
-- Your final text is posted verbatim to the thread. Write for a human skimming Discord:
-  outcome first, short, no giant dumps. Discord markdown (**bold**, `code`, lists) renders.
+- Your final text is posted verbatim to the thread, for a human skimming Discord.
+  {message_format} Discord markdown (**bold**, `code`, lists) renders.
 - Reply in the same language the human wrote in, whatever language this prompt, your
   persona, or the world description is written in. Keep tool names, code, and quoted
   text as they are.
-""".strip()
+""".strip().replace("{message_format}", MESSAGE_FORMAT)
 
 
 class DiscordGateway:

@@ -4,6 +4,7 @@
     uv run python bin/ops-kit.py                       # scripts/<name>-up, -watchdog, unit
     uv run python bin/ops-kit.py --notify --prefix OBS # also post restarts to Slack
     uv run python bin/ops-kit.py --keep-days 30        # delete rolled console logs after 30 days
+    uv run python bin/ops-kit.py --check               # what is rendered, registered, running
 
 The kit sets up no service: a harness runs while `harness.py` runs and a reboot stops it.
 This is for a harness that has to outlive that. It WRITES files only; it never loads,
@@ -20,7 +21,10 @@ and on Windows, in PowerShell 5.1 with nothing to install:
   scripts/<name>-up.ps1, scripts/<name>-watchdog.ps1   the same two scripts
   scripts/windows/<name>-watchdog.xml   a Task Scheduler task: every 120s from logon
 
-and prints the commands that would register the watchdog, for a person to run. The
+and prints the commands that would register the watchdog, for a person to run. `--check`
+writes nothing: it reports what is rendered, registered and running, and when the harness
+was moved after rendering (the scripts, the venv and a registered watchdog all hold the
+old path) it prints the fix, in order. The
 scripts and their pitfalls are in docs/operations.md. The paths in them are this
 machine's, so a profile for another OS is refused rather than rendered here.
 
@@ -33,6 +37,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import plistlib
 import re
 import shlex
 import shutil
@@ -309,52 +314,338 @@ def windows_command(script: str, *args: str) -> str:
     return " ".join(["powershell -NoProfile -ExecutionPolicy Bypass -File", script, *args])
 
 
-def next_steps(home: Path, name: str, os_name: str) -> list[str]:
+def ops_commands(name: str, os_name: str) -> dict[str, list[str]]:
+    """The exact command lines for each thing a person asks of a harness that runs all the
+    time, run from the harness's directory. One table, so `next_steps`, `--check` and the
+    ops word that reads them never drift apart."""
     name = slug(name)
-    up = f"scripts/{name}-up"
     if os_name == "windows":
-        up_ps1 = f"scripts\\{name}-up.ps1"
+        up = f"scripts\\{name}-up.ps1"
         task = task_name(name)
-        return [
-            f"Nothing is running or registered yet. From {home}, in PowerShell:",
-            f"  {windows_command(up_ps1)}            # start it in the background now",
-            f"  {windows_command(up_ps1, 'status')}",
-            "To have the watchdog restart it after a crash, and start it at logon:",
-            f"  schtasks /Create /TN {task} /XML scripts\\windows\\{name}-watchdog.xml",
-            "To stop it for a while (the watchdog leaves it down until `up`):",
-            f"  {windows_command(up_ps1, 'down')}",
-            "To take it down for good, remove the watchdog FIRST, then stop it:",
-            f"  schtasks /Delete /TN {task} /F",
-            f"  {windows_command(up_ps1, 'down')}",
-        ]
+        run = lambda *a: windows_command(up, *a)  # noqa: E731
+        register = [f"schtasks /Create /TN {task} /XML scripts\\windows\\{name}-watchdog.xml"]
+        unregister = [f"schtasks /Delete /TN {task} /F"]
+        inspect = [f"schtasks /Query /TN {task} /V /FO LIST"]
+    else:
+        up = f"scripts/{name}-up"
+        run = lambda *a: " ".join([up, *a])  # noqa: E731
+        if os_name == "macos":
+            label = f"local.the-world.{name}.watchdog"
+            register = [
+                f"cp scripts/launchd/{label}.plist ~/Library/LaunchAgents/",
+                f"launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/{label}.plist",
+            ]
+            unregister = [f"launchctl bootout gui/$(id -u)/{label}"]
+            inspect = [f"launchctl print gui/$(id -u)/{label}"]
+        else:
+            register = [
+                "mkdir -p ~/.config/systemd/user",
+                f"cp scripts/systemd/{name}-watchdog.* ~/.config/systemd/user/",
+                "systemctl --user daemon-reload",
+                f"systemctl --user enable --now {name}-watchdog.timer",
+                'loginctl enable-linger "$USER"   # keeps it running while logged out',
+            ]
+            unregister = [f"systemctl --user disable --now {name}-watchdog.timer"]
+            inspect = [f"systemctl --user status {name}-watchdog.timer"]
+    return {
+        "start": [run()],
+        "status": [run("status")],
+        "restart": [run("restart")],
+        "logs": [run("attach")],
+        "stop": [run("down")],
+        "register": register,
+        "unregister": unregister,
+        "watchdog": inspect,
+        "take-down": [*unregister, run("down")],
+    }
+
+
+def next_steps(home: Path, name: str, os_name: str) -> list[str]:
+    c = ops_commands(name, os_name)
+    shell = ", in PowerShell" if os_name == "windows" else ""
+    after = "a crash, and start it at logon" if os_name == "windows" else "a crash or a reboot"
+    return [
+        f"Nothing is running or registered yet. From {home}{shell}:",
+        f"  {c['start'][0]}            # start it in the background now",
+        f"  {c['status'][0]}",
+        f"To have the watchdog restart it after {after}:",
+        *[f"  {line}" for line in c["register"]],
+        "To stop it for a while (the watchdog leaves it down until `up`):",
+        f"  {c['stop'][0]}",
+        "To take it down for good, remove the watchdog FIRST, then stop it:",
+        *[f"  {line}" for line in c["take-down"]],
+    ]
+
+
+# --check: what is rendered, registered and running, and whether the harness moved since.
+# Read-only, so the ops word can run it before every action.
+
+def rendered_names(home: Path, os_name: str) -> list[str]:
+    suffix = "-up.ps1" if os_name == "windows" else "-up"
+    scripts = home / "scripts"
+    if not scripts.is_dir():
+        return []
+    return sorted(p.name[:-len(suffix)] for p in scripts.iterdir()
+                  if p.is_file() and p.name.endswith(suffix) and len(p.name) > len(suffix))
+
+
+def rendered_home(script: Path) -> Path | None:
+    """The home a rendered `<name>-up` was rendered for: its HOME_DIR line."""
+    try:
+        text = script.read_text(encoding="utf-8-sig")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        if line.startswith("HOME_DIR="):
+            try:
+                return Path(shlex.split(line[len("HOME_DIR="):], comments=True)[0])
+            except (ValueError, IndexError):
+                return None
+        m = re.match(r"^\$HomeDir = '(.*)'\s*(#.*)?$", line)
+        if m:
+            home = m.group(1)
+            for mark in ("'", "\u2018", "\u2019", "\u201a", "\u201b"):  # undo ps_quote
+                home = home.replace(mark * 2, mark)
+            return Path(home)
+    return None
+
+
+def rendered_flags(home: Path, name: str, os_name: str) -> list[str]:
+    """--notify --prefix and --keep-days as the scripts were rendered, so a re-render after
+    a move keeps them."""
+    ext = ".ps1" if os_name == "windows" else ""
+    flags: list[str] = []
+    try:
+        watchdog = (home / "scripts" / f"{name}-watchdog{ext}").read_text(encoding="utf-8-sig")
+    except OSError:
+        return flags
+    m = re.search(r"--token-env'?,?\s*'?([A-Za-z0-9_]+)_SLACK_BOT_TOKEN", watchdog)
+    if m:
+        flags += ["--notify", "--prefix", m.group(1)]
+    m = re.search(r"^\$?KEEP_?DAYS\s*=\s*'?(\d+)", watchdog, re.M | re.I)
+    if m:
+        flags += ["--keep-days", m.group(1)]
+    return flags
+
+
+def venv_home(home: Path) -> Path | None:
+    """Where .venv was created. `uv venv` writes its absolute path into the activate
+    scripts and the console scripts' first line; a venv does not follow a moved folder,
+    and `uv run` re-points only the editable install."""
+    for rel, pattern in ((".venv/bin/activate", r"^VIRTUAL_ENV=['\"]?([^'\"\n]+)"),
+                         (".venv/Scripts/activate.bat", r'^@?set "?VIRTUAL_ENV=([^"\r\n]+)')):
+        try:
+            text = (home / rel).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        m = re.search(pattern, text, re.M | re.I)
+        if m:
+            return Path(m.group(1).strip())
+    return None
+
+
+def same_place(a: Path, b: Path) -> bool:
+    norm = lambda p: os.path.normcase(str(p.resolve()))  # noqa: E731
+    return norm(a) == norm(b) or str(a) in path_spellings(b) or str(b) in path_spellings(a)
+
+
+def watchdog_registration(name: str, os_name: str, *, run=subprocess.run,
+                          user_home: Path | None = None) -> dict:
+    """{"registered": True/False/None (unknown), "target": the watchdog script it runs,
+    "detail": one line}. Asks the service manager; registers or changes nothing."""
+    name = slug(name)
+    user_home = user_home or Path.home()
+    out = {"registered": None, "target": None, "detail": ""}
+
+    def ask(cmd: list[str]):
+        try:
+            return run(cmd, capture_output=True, text=True, encoding="utf-8",
+                       errors="replace", timeout=20, stdin=subprocess.DEVNULL)
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+
     if os_name == "macos":
         label = f"local.the-world.{name}.watchdog"
-        register = [
-            f"cp scripts/launchd/{label}.plist ~/Library/LaunchAgents/",
-            f"launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/{label}.plist",
-        ]
-        unregister = f"launchctl bootout gui/$(id -u)/{label}"
+        plist = user_home / "Library" / "LaunchAgents" / f"{label}.plist"
+        if plist.is_file():
+            try:
+                args = plistlib.loads(plist.read_bytes()).get("ProgramArguments") or []
+                out["target"] = Path(args[-1]) if args else None
+            except Exception:  # noqa: BLE001 - a broken copy is reported, not fatal
+                pass
+        r = ask(["launchctl", "print", f"gui/{os.getuid()}/{label}"])
+        if r is None:
+            out["detail"] = "launchctl could not be asked"
+        elif r.returncode == 0:
+            m = re.search(r"^\s*state = (.+)$", r.stdout, re.M)
+            out["registered"] = True
+            out["detail"] = f"{label} is loaded in launchd" + (f" (state = {m.group(1)})" if m else "")
+        else:
+            out["registered"] = False
+            out["detail"] = (f"{label} is not loaded"
+                             + (f"; a copy sits in {plist}" if plist.is_file() else ""))
+    elif os_name == "linux":
+        unit = user_home / ".config" / "systemd" / "user" / f"{name}-watchdog.service"
+        try:
+            for line in unit.read_text(encoding="utf-8").splitlines():
+                if line.startswith("ExecStart="):
+                    out["target"] = Path(shlex.split(line[len("ExecStart="):])[-1])
+        except (OSError, ValueError, IndexError):
+            pass
+        r = ask(["systemctl", "--user", "is-enabled", f"{name}-watchdog.timer"])
+        if r is None:
+            out["detail"] = "systemctl --user could not be asked"
+        else:
+            state = r.stdout.strip() or "not found"
+            out["registered"] = state == "enabled"
+            out["detail"] = f"{name}-watchdog.timer is {state}"
     else:
-        register = [
-            "mkdir -p ~/.config/systemd/user",
-            f"cp scripts/systemd/{name}-watchdog.* ~/.config/systemd/user/",
-            "systemctl --user daemon-reload",
-            f"systemctl --user enable --now {name}-watchdog.timer",
-            'loginctl enable-linger "$USER"   # keeps it running while logged out',
-        ]
-        unregister = f"systemctl --user disable --now {name}-watchdog.timer"
-    return [
-        f"Nothing is running or registered yet. From {home}:",
-        f"  {up}            # start it in the background now",
-        f"  {up} status",
-        "To have the watchdog restart it after a crash or a reboot:",
-        *[f"  {line}" for line in register],
-        "To stop it for a while (the watchdog leaves it down until `up`):",
-        f"  {up} down",
-        "To take it down for good, remove the watchdog FIRST, then stop it:",
-        f"  {unregister}",
-        f"  {up} down",
-    ]
+        task = task_name(name)
+        r = ask(["schtasks", "/Query", "/TN", task, "/XML"])
+        if r is None:
+            out["detail"] = "schtasks could not be asked"
+        else:
+            out["registered"] = r.returncode == 0
+            m = re.search(r"-File\s+(?:&quot;|\")?([^<\"&]+?watchdog\.ps1)", r.stdout or "")
+            out["target"] = Path(m.group(1)) if m else None
+            out["detail"] = f"task {task} " + ("exists" if r.returncode == 0 else "is not registered")
+    return out
+
+
+def harness_pids(home: Path, *, run=subprocess.run) -> list[int] | None:
+    """Pids of a python running this home's harness.py by its absolute path (the
+    launcher's own match). None where that cannot be asked (Windows, no pgrep)."""
+    if os.name != "posix" or not shutil.which("pgrep"):
+        return None
+    try:
+        r = run(["pgrep", "-f", process_match(home)], capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=20)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if r.returncode > 1:
+        return None
+    return [int(p) for p in r.stdout.split() if p.isdigit() and int(p) != os.getpid()]
+
+
+def check(home: Path, os_name: str, *, registration=watchdog_registration,
+          pids=harness_pids) -> tuple[list[str], list[str], bool]:
+    """(report lines, fix commands in order, whether the harness moved). No fixes means
+    nothing is stale; fixes without a move mean only the venv holds the old path."""
+    names = rendered_names(home, os_name)
+    default = slug(home.name)
+    name = default if default in names else (names[0] if names else default)
+    ext = ".ps1" if os_name == "windows" else ""
+    c = ops_commands(name, os_name)
+    up = home / "scripts" / f"{name}-up{ext}"
+    watchdog = home / "scripts" / f"{name}-watchdog{ext}"
+    lines = [f"ops check: {home} ({os_name})"]
+    fixes: list[str] = []
+    person = "   # watchdog: for the person to run"
+
+    old_home = rendered_home(up) if names else None
+    scripts_stale = bool(names) and (old_home is None or not same_place(old_home, home))
+    if not names:
+        lines.append("  scripts:  none rendered (bin/ops-kit.py has not been run here)")
+    elif scripts_stale:
+        lines.append(f"  scripts:  {up.relative_to(home)} was rendered for "
+                     f"{old_home or 'an unreadable home'}; the harness has moved since")
+    else:
+        lines.append(f"  scripts:  {up.relative_to(home)}, rendered for this harness")
+    if len(names) > 1:
+        lines.append(f"            also rendered: {', '.join(n for n in names if n != name)}")
+
+    made_at = venv_home(home)
+    has_venv = (home / ".venv").is_dir()
+    venv_stale = has_venv and made_at is not None and not same_place(made_at.parent, home)
+    if not has_venv:
+        lines.append("  venv:     no .venv")
+    elif venv_stale:
+        lines.append(f"  venv:     made at {made_at}; its activate and console scripts still "
+                     "point there (the harness itself runs, through the venv's python)")
+    else:
+        lines.append("  venv:     .venv, made here")
+
+    reg = registration(name, os_name)
+    target = reg["target"]
+    points_here = target is not None and same_place(target, watchdog)
+    where = ("" if target is None else
+             "; it runs this harness's watchdog" if points_here else f"; it runs {target}")
+    lines.append(f"  watchdog: {reg['detail'] or 'unknown'}{where}")
+    wrong_target = bool(reg["registered"]) and target is not None and not points_here
+
+    here = pids(home)
+    there = (pids(old_home) if scripts_stale and old_home is not None else []) or []
+    if here is None:
+        lines.append(f"  harness:  not checked here; run `{c['status'][0]}`")
+    else:
+        lines.append("  harness:  " + (f"running (pid {', '.join(map(str, here))})" if here
+                                       else "not running from this folder"))
+    if there:
+        lines.append(f"            also running from {old_home} (pid {', '.join(map(str, there))})")
+
+    moved = scripts_stale or wrong_target or bool(there)
+    if not (moved or venv_stale):
+        return lines, fixes, False
+    venv_fix = ("Remove-Item -Recurse -Force .venv; uv venv .venv; uv pip install -e ."
+                if os_name == "windows" else
+                "rm -rf .venv && uv venv .venv && uv pip install -e .")
+    if scripts_stale and old_home is not None and (old_home / "harness.py").is_file():
+        # The old folder is still a harness: this one is a copy, not a move. The
+        # original keeps its scripts, its watchdog and its running process.
+        own = slug(home.name)
+        own = own if own not in (name, "") else f"{name}-copy"
+        lines.append(f"            {old_home} still holds a harness: this folder is a copy; "
+                     "leave the original running and give this one its own name")
+        if venv_stale:
+            fixes.append(venv_fix)
+        fixes.append(" ".join(["uv run python bin/ops-kit.py --force --name", own,
+                               *rendered_flags(home, name, os_name)]))
+        fixes += [line + person for line in ops_commands(own, os_name)["register"]]
+        return lines, fixes, True
+    if reg["registered"] and (scripts_stale or wrong_target):
+        fixes += [line + person for line in c["unregister"]]
+    running = (here or []) + there
+    if running:
+        if here and names and not scripts_stale:
+            fixes += c["stop"]
+            running = there
+        if running:
+            why = ("the copy the old scripts can no longer reach" if names else
+                   "there are no scripts to stop it with")
+            fixes.append(f"kill -TERM {' '.join(map(str, running))}   # {why}; it finishes "
+                         "its current run")
+    if venv_stale:
+        fixes.append(venv_fix)
+    if scripts_stale:
+        fixes.append(" ".join(["uv run python bin/ops-kit.py --force --name", name,
+                               *rendered_flags(home, name, os_name)]))
+    if reg["registered"] and (scripts_stale or wrong_target):
+        fixes += [line + person for line in c["register"]]
+    if (here or there) and names:
+        fixes += c["start"]
+    elif here or there:  # no scripts to start it with: render them first
+        fixes += ["uv run python bin/ops-kit.py", *c["start"]]
+    return lines, fixes, moved
+
+
+def print_check(home: Path, os_name: str) -> int:
+    lines, fixes, moved = check(home, os_name)
+    print("\n".join(lines))
+    if fixes and not moved:
+        print("\nOnly the venv holds the old path. Nothing fails because of it now; recreate "
+              f"it at a quiet moment, from {home}, in this order:")
+    elif fixes:
+        print(f"\nThe harness moved or was left half-moved. To fix, from {home}, in this order:")
+    if fixes:
+        print("\n".join(f"  {i}. {line}" for i, line in enumerate(fixes, 1)))
+    names = rendered_names(home, os_name)
+    if names and not fixes:
+        name = slug(home.name) if slug(home.name) in names else names[0]
+        print(f"\nCommands, from {home}:")
+        for key, cmds in ops_commands(name, os_name).items():
+            for i, cmd in enumerate(cmds):
+                print(f"  {(key + ':') if i == 0 else '':<11} {cmd}")
+    return 2 if fixes else 0
 
 
 def resolve_run_path(provider: str, shell: str | None = None) -> str:
@@ -461,6 +752,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--keep-days", type=int, help="delete rolled console logs older than this "
                     "(default: keep them all)")
     ap.add_argument("--force", action="store_true", help="replace scripts rendered earlier")
+    ap.add_argument("--check", action="store_true",
+                    help="write nothing: report what is rendered, registered and running, "
+                    "and the fix in order if the harness moved (exit 2)")
     args = ap.parse_args(argv)
 
     home = ROOT
@@ -468,6 +762,10 @@ def main(argv: list[str] | None = None) -> int:
         profile_path = home / "project-profile.json"
         profile = json.loads(profile_path.read_text(encoding="utf-8")) if profile_path.is_file() else {}
         os_name = profile.get("os") or host_os()
+        if args.check:
+            check_os(os_name)
+            check_host(os_name, host_os())
+            return print_check(home, os_name)
         notify = None
         if args.notify:
             if not args.prefix:

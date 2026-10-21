@@ -9,6 +9,7 @@ Windows (WindowsLauncherTest), where CI runs them on a throwaway VM.
 """
 
 import configparser
+import contextlib
 import gzip
 import importlib.util
 import io
@@ -338,6 +339,166 @@ class RenderTest(unittest.TestCase):
         env.write_text("OBS_SLACK_BOT_TOKEN = xoxb-real\n export OBS_SLACK_CHANNEL = C123  # chan\n",
                        encoding="utf-8")
         ops_kit.check_notify_env(env, keys)
+
+
+class CheckTest(unittest.TestCase):
+    """--check (the ops word's first step): a harness moved after install kept its
+    scripts, its venv and a registered watchdog on the old path, and nothing said so."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.old = Path(self.tmp.name) / "old place"
+        self.old.mkdir()
+
+    def install(self, home: Path, os_name: str = "macos", **kw) -> None:
+        ops_kit.write(home, _render(home, os_name, user="tester", **kw), force=False)
+        venv = home / ".venv" / "bin"
+        venv.mkdir(parents=True)
+        (venv / "activate").write_text(f"VIRTUAL_ENV='{home.resolve() / '.venv'}'\nexport VIRTUAL_ENV\n")
+
+    @staticmethod
+    def registration(registered, target=None):
+        return lambda name, os_name: {"registered": registered, "target": target,
+                                      "detail": "stub"}
+
+    def test_a_harness_left_where_it_was_rendered_needs_nothing(self):
+        self.install(self.old)
+        lines, fixes, moved = ops_kit.check(self.old, "macos", registration=self.registration(
+            True, self.old / "scripts" / "my-harness-watchdog"), pids=lambda home: [])
+        self.assertEqual([], fixes)
+        self.assertFalse(moved)
+        self.assertIn("rendered for this harness", "\n".join(lines))
+        self.assertIn("runs this harness's watchdog", "\n".join(lines))
+
+    def test_no_scripts_is_reported_not_fixed(self):
+        lines, fixes, _ = ops_kit.check(self.old, "macos", registration=self.registration(False),
+                                        pids=lambda home: [])
+        self.assertEqual([], fixes)
+        self.assertIn("none rendered", "\n".join(lines))
+
+    def test_a_moved_harness_gets_the_fix_in_order(self):
+        self.install(self.old, notify=("OBS_SLACK_BOT_TOKEN", "OBS_SLACK_CHANNEL"), keep_days=30)
+        new = Path(self.tmp.name) / "a & b"
+        old_resolved = self.old.resolve()
+        self.old.rename(new)
+        old_watchdog = self.old / "scripts" / "my-harness-watchdog"
+        running = {str(old_resolved): [4242]}
+        lines, fixes, moved = ops_kit.check(
+            new, "macos", registration=self.registration(True, old_watchdog),
+            pids=lambda home: running.get(str(home.resolve()), []))
+        report = "\n".join(lines)
+        self.assertTrue(moved)
+        self.assertIn(f"rendered for {old_resolved}", report)
+        self.assertIn(f"made at {old_resolved / '.venv'}", report)
+        self.assertIn(f"it runs {old_watchdog}", report)
+        self.assertIn("also running from", report)
+        steps = [next(i for i, f in enumerate(fixes) if needle in f) for needle in (
+            "launchctl bootout", "kill -TERM 4242", "rm -rf .venv",
+            "ops-kit.py --force --name my-harness --notify --prefix OBS --keep-days 30",
+            "launchctl bootstrap")]
+        self.assertEqual(steps, sorted(steps), fixes)
+        self.assertEqual("scripts/my-harness-up", fixes[-1])
+        self.assertTrue(all("for the person to run" in f for f in fixes if "launchctl" in f))
+
+    def test_a_venv_only_move_restarts_without_touching_the_watchdog(self):
+        self.install(self.old)
+        (self.old / ".venv/bin/activate").write_text("VIRTUAL_ENV='/somewhere/else/.venv'\n")
+        _, fixes, moved = ops_kit.check(self.old, "linux", registration=self.registration(
+            True, self.old / "scripts" / "my-harness-watchdog"), pids=lambda home: [99])
+        self.assertFalse(moved)
+        self.assertEqual(["scripts/my-harness-up down",
+                          "rm -rf .venv && uv venv .venv && uv pip install -e .",
+                          "scripts/my-harness-up"], fixes)
+
+    def test_a_venv_only_finding_prints_its_steps(self):
+        self.install(self.old)
+        (self.old / ".venv/bin/activate").write_text("VIRTUAL_ENV='/somewhere/else/.venv'\n")
+        real = ops_kit.check
+        out = io.StringIO()
+        with unittest.mock.patch.object(ops_kit, "check", lambda home, os_name: real(
+                home, os_name, registration=self.registration(False), pids=lambda home: [])), \
+                contextlib.redirect_stdout(out):
+            self.assertEqual(2, ops_kit.print_check(self.old, "linux"))
+        self.assertIn("1. rm -rf .venv && uv venv .venv && uv pip install -e .", out.getvalue())
+
+    def test_without_scripts_the_fix_never_names_a_script_that_is_not_there(self):
+        (self.old / ".venv/bin").mkdir(parents=True)
+        (self.old / ".venv/bin/activate").write_text("VIRTUAL_ENV='/somewhere/else/.venv'\n")
+        _, fixes, _ = ops_kit.check(self.old, "linux", registration=self.registration(False),
+                                    pids=lambda home: [123])
+        self.assertEqual("kill -TERM 123", fixes[0].split("   #")[0])
+        self.assertIn("uv run python bin/ops-kit.py", fixes)
+        self.assertLess(fixes.index("uv run python bin/ops-kit.py"), len(fixes) - 1)
+        self.assertNotIn("scripts/old-place-up down", fixes)
+
+    def test_a_copy_leaves_the_original_alone(self):
+        # `cp -r` of a live harness: the original still runs from its own folder.
+        self.install(self.old)
+        (self.old / "harness.py").write_text("")
+        copy = Path(self.tmp.name) / "second"
+        shutil.copytree(self.old, copy)
+        watchdog = self.old / "scripts" / "my-harness-watchdog"
+        lines, fixes, moved = ops_kit.check(
+            copy, "macos", registration=self.registration(True, watchdog),
+            pids=lambda home: [4242] if home.resolve() == self.old.resolve() else [])
+        self.assertTrue(moved)
+        self.assertIn("this folder is a copy", "\n".join(lines))
+        self.assertFalse(any("kill" in f or "bootout" in f or "-up down" in f for f in fixes), fixes)
+        self.assertIn("uv run python bin/ops-kit.py --force --name second", fixes)
+
+    def test_a_windows_home_with_a_curly_quote_reads_back_unchanged(self):
+        home = Path(self.tmp.name) / "O\u2019Brien"
+        home.mkdir()
+        up = home / "up.ps1"
+        up.write_text(f"$HomeDir = {ops_kit.ps_quote(str(home))}\n", encoding="utf-8")
+        self.assertEqual(home, ops_kit.rendered_home(up))
+
+    def test_windows_scripts_are_read_back(self):
+        files = _render(self.old, "windows", user="tester",
+                        notify=("OBS_SLACK_BOT_TOKEN", "OBS_SLACK_CHANNEL"), keep_days=7)
+        ops_kit.write(self.old, files, force=False)
+        up = self.old / "scripts" / "my-harness-up.ps1"
+        self.assertEqual(self.old.resolve(), ops_kit.rendered_home(up))
+        self.assertEqual(["my-harness"], ops_kit.rendered_names(self.old, "windows"))
+        self.assertEqual(["--notify", "--prefix", "OBS", "--keep-days", "7"],
+                         ops_kit.rendered_flags(self.old, "my-harness", "windows"))
+        bat = self.old / ".venv" / "Scripts"
+        bat.mkdir(parents=True)
+        (bat / "activate.bat").write_text('@set "VIRTUAL_ENV=C:\\Users\\me\\old\\.venv"\r\n')
+        self.assertEqual(Path("C:\\Users\\me\\old\\.venv"), ops_kit.venv_home(self.old))
+
+    def test_commands_put_the_watchdog_first_when_taking_it_down(self):
+        for os_name in ("macos", "linux", "windows"):
+            c = ops_kit.ops_commands("my harness", os_name)
+            self.assertEqual(c["take-down"], c["unregister"] + c["stop"], os_name)
+            self.assertTrue(c["stop"][0].endswith("down"), os_name)
+
+    def test_registration_reads_what_the_service_manager_runs(self):
+        home = Path(self.tmp.name)
+        agents = home / "Library" / "LaunchAgents"
+        agents.mkdir(parents=True)
+        (agents / "local.the-world.kw.watchdog.plist").write_bytes(plistlib.dumps(
+            {"Label": "x", "ProgramArguments": ["/bin/bash", "/old/scripts/kw-watchdog"]}))
+        loaded = unittest.mock.Mock(return_value=subprocess.CompletedProcess(
+            [], 0, stdout="gui/501/x = {\n\tstate = not running\n}\n", stderr=""))
+        with unittest.mock.patch.object(ops_kit.os, "getuid", create=True, return_value=501):
+            reg = ops_kit.watchdog_registration("kw", "macos", run=loaded, user_home=home)
+        self.assertEqual((True, Path("/old/scripts/kw-watchdog")), (reg["registered"], reg["target"]))
+        self.assertIn("state = not running", reg["detail"])
+
+        units = home / ".config" / "systemd" / "user"
+        units.mkdir(parents=True)
+        (units / "kw-watchdog.service").write_text(
+            '[Service]\nExecStart=/bin/bash "/old place/scripts/kw-watchdog"\n')
+        enabled = unittest.mock.Mock(return_value=subprocess.CompletedProcess(
+            [], 0, stdout="enabled\n", stderr=""))
+        reg = ops_kit.watchdog_registration("kw", "linux", run=enabled, user_home=home)
+        self.assertEqual((True, Path("/old place/scripts/kw-watchdog")),
+                         (reg["registered"], reg["target"]))
+        missing = unittest.mock.Mock(side_effect=FileNotFoundError)
+        self.assertIsNone(ops_kit.watchdog_registration(
+            "kw", "linux", run=missing, user_home=home)["registered"])
 
 
 class NotifyTest(unittest.TestCase):

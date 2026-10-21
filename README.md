@@ -122,11 +122,14 @@ bot, connecting a plugin registry — is **installed into the harness itself** b
 
 ## The two hard rules
 
-**1. A harness carries its own creation commands.** Quick start uses an exploration crew
-with `recruit` and `equip`; you can choose your own universe and words when ready, or ask
-for plain names. A pirate crew can recruit an agent and forge a tool; a dog-lover's bots
-can adopt and train. Each word becomes a project-local skill command. You can also
-describe the job in ordinary language.
+**1. A harness carries its own commands, in its world's words.** Once you pick a world,
+`/the-world:start` proposes four words from it, for adding a bot, equipping the cast,
+checking the harness, and running it (start, stop, restart, status, the watchdog). A
+pirate crew can enlist a hand, rig a tool, drill the crew and take the helm; a dog-lover's
+bots can adopt and train. Without a world, or if you'd rather have plain names, they are
+`recruit`, `equip`, `verify` and `ops`. Each word becomes a project-local skill command
+that works in a session opened in the harness directory. You can also describe the job in
+ordinary language.
 
 **2. Every agent and tool declares an explicit scope, fixed in code.** An agent with no
 `write_scope` is write-blocked everywhere by a PreToolUse hook — scope isn't paperwork, it's

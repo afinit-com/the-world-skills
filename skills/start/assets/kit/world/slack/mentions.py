@@ -18,6 +18,8 @@ from typing import TYPE_CHECKING, NamedTuple
 
 from ..channels.base import task_card_lines
 from .as_human import normalize_message, safe_text
+from .blocks import context as context_block
+from .blocks import divider, fields, header, quiet_broadcasts, section, text_blocks
 from .rules import RULES_TEMPLATE, pre_approved_clause, slack_mrkdwn, split_approval_request
 from .run_footer import footer_context, run_fields
 from .ui import EMOJI_DONE, EMOJI_ERROR, EMOJI_QUEUED, EMOJI_WORKING, ToolTrail
@@ -124,6 +126,37 @@ def task_buttons(agent, task_id: str, primary: str) -> list[dict]:
     return out
 
 
+def _task_card_blocks(record, body: str) -> list[dict]:
+    """A task card as Block Kit: the title as a header, the task's facts as fields,
+    then what the run said, then its completion evidence in small print. `body` is the
+    card's plain text (task_card_lines under the headline), the notification fallback;
+    the blocks are cut from the same lines, so both say the same thing."""
+    lines = body.splitlines()
+    replay = lines[:1] == ["♻️ *운영자 재처리 요청*"]
+    # The headline line is `*<title>*`, already defused of broadcasts; it becomes the
+    # header, so it is taken from there rather than from record.title.
+    title = lines[replay] if len(lines) > replay else record.title
+    title = title[1:-1] if len(title) > 1 and title[0] == title[-1] == "*" else title
+    lines = lines[1 + replay:]
+    status, excerpt = (lines[0], lines[1:]) if lines else ("", [])
+    # status: "`<id>` · <status> · <agent>[ · <evidence>]", built by task_card_lines.
+    parts = status.split(" · ", 3)
+    evidence = parts[3] if len(parts) > 3 else ""
+    blocks: list[dict] = []
+    if replay:
+        blocks.append(section("♻️ *운영자 재처리 요청*"))
+    blocks.append(header(title))
+    blocks += fields([("작업", parts[0] if parts else f"`{record.id}`"),
+                      ("상태", parts[1] if len(parts) > 1 else record.status),
+                      ("담당", parts[2] if len(parts) > 2 else record.agent)])
+    if any(line.strip() for line in excerpt):
+        blocks.append(divider())
+        blocks += text_blocks("\n".join(excerpt), headline=False)
+    if evidence:
+        blocks.append(context_block(f"근거 · {evidence}"))
+    return blocks
+
+
 def _agent_of(rel_path: str) -> str:
     """The producing agent, read off the finding path: findings/<agent>/… → <agent>."""
     parts = rel_path.split("/")
@@ -136,38 +169,10 @@ def _defuse_broadcasts(text: str) -> str:
     title nobody reviewed before it posted; a poll that summarised outside text (a PR
     body) could otherwise page everyone. Discord has its allowed_mentions for this.
 
-    Slack also turns plain @channel, @here and @everyone in a section into those
-    commands, so a word joiner (U+2060, invisible) goes after the @: the card reads
-    the same and notifies no one. Only visible prose and link labels get the
-    joiner; link destinations and code keep their original @ characters."""
-    def visible(part: str) -> str:
-        return _PLAIN_BROADCAST.sub("@\u2060", part)
-
-    def protected(match: re.Match) -> str:
-        part = match.group(0)
-        if part.startswith("<") and "|" in part:
-            destination, label = part[1:-1].split("|", 1)
-            return "<" + destination + "|" + _defuse_broadcasts(label) + ">"
-        return part
-
+    Plain @channel, @here and @everyone are quieted too (blocks.quiet_broadcasts):
+    the card reads the same and notifies no one."""
     # Keep the existing escaping of Slack commands, including unknown commands.
-    text = text.replace("<!", "&lt;!")
-    out = []
-    end = 0
-    for match in _BROADCAST_PROTECTED.finditer(text):
-        out.extend((visible(text[end:match.start()]), protected(match)))
-        end = match.end()
-    out.append(visible(text[end:]))
-    return "".join(out)
-
-
-_PLAIN_BROADCAST = re.compile(r"(?i)(?<![\w@])@(?=(?:channel|here|everyone)\b)")
-# Slack code and <scheme:destination|label> links, after slack_mrkdwn conversion.
-# As in slack_mrkdwn, an unclosed fenced block protects the rest of the text.
-_BROADCAST_PROTECTED = re.compile(
-    r"```(?:.*?```|.*\Z)|`[^`\n]+`|<[a-zA-Z][a-zA-Z0-9+.-]*:[^<>\s|]+(?:\|[^<>\n]*)?>",
-    re.DOTALL,
-)
+    return quiet_broadcasts(text.replace("<!", "&lt;!"))
 
 
 class MentionTurn(NamedTuple):
@@ -245,8 +250,11 @@ class MentionMixin:
             await self.post(f"`{rel_path}` 가 더는 없습니다 (지워졌거나 이동됨).", thread_ts=thread_ts)
             return
         body = target.read_text(errors="replace", encoding="utf-8")[:FINDING_MAX_BYTES]
-        # post() chunks anything over Slack's ~4k limit into follow-ups in this thread.
-        await self.post(f"📄 *`{rel_path}`*\n\n{body}", thread_ts=thread_ts)
+        # A report is GitHub markdown; Slack shows it as sections, and post() continues
+        # past 50 blocks in follow-ups in this thread.
+        await self.post(f"📄 *`{rel_path}`*\n\n{body}", thread_ts=thread_ts,
+                        blocks=[section(f"📄 *`{rel_path}`*"), divider(),
+                                *text_blocks(slack_mrkdwn(body), headline=False)])
 
     async def promote_to_knowledge(self, rel_path: str, thread_ts: str) -> None:
         """Copy a configured proposal finding into knowledge/.
@@ -359,7 +367,7 @@ class MentionMixin:
         ))
 
         primary = result.artifacts[0] if (result and result.artifacts) else ""
-        blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": body}}]
+        blocks = _task_card_blocks(record, body)
         if primary and self._is_knowledge_proposal(primary):
             elements = _report_actions(primary, knowledge_proposal=True)
         else:
@@ -600,9 +608,11 @@ class MentionMixin:
                 to_name = self.identities.get(handoff["to"], {}).get("display", handoff["to"])
                 # Mentions stripped: this line is a record, and a <@id> left in it would
                 # come back as a bot-authored mention and dispatch the teammate twice.
-                shown = re.sub(r"<@[A-Z0-9]+>", "", handoff["text"]).strip()
-                await self.post(f"→ {to_name}: {shown[:1500]}",
-                                identity=handoff["from"], thread_ts=thread_ts)
+                shown = re.sub(r"<@[A-Z0-9]+>", "", handoff["text"]).strip()[:1500]
+                await self.post(f"→ {to_name}: {shown}",
+                                identity=handoff["from"], thread_ts=thread_ts,
+                                blocks=[section(f"*→ {to_name}*"),
+                                        *text_blocks(slack_mrkdwn(shown), headline=False)])
             try:
                 await self._dispatch_bot_hop(
                     thread_ts, handoff["text"], {"ts": "", "user": ""},
@@ -862,7 +872,9 @@ class MentionMixin:
         author = event.get("user", "")
         who = f"<@{author}>님의 요청" if author else "요청"
         line = self.harness.approval_phrases.escalated.format(interface=f"<@{interface}>", who=who)
-        await self.post(f"{line}\n\n<@{interface}> {text}", identity=main, thread_ts=thread_ts)
+        # Plain on purpose: the face's relay watcher reads this message's raw text.
+        await self.post(f"{line}\n\n<@{interface}> {text}", identity=main, thread_ts=thread_ts,
+                        plain=True)
         await self._react(msg_ts, add=EMOJI_DONE, remove=EMOJI_QUEUED, identity=main)
         self.harness.log(f"escalated human mention in thread {thread_ts} -> {interface}")
 
