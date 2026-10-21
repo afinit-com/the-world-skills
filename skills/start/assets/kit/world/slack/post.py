@@ -12,7 +12,7 @@ import contextlib
 from typing import TYPE_CHECKING
 
 from .as_human import safe_payload, safe_text
-from .blocks import MAX_BLOCKS, TEXT_CHARS, has_text, plain_text, split_messages, text_blocks
+from .blocks import MAX_BLOCKS, fallback_text, has_text, plain_text, split_messages, text_blocks
 from ..channels.base import posting_icon
 
 if TYPE_CHECKING:
@@ -111,7 +111,8 @@ class PostingMixin:
         # the headline. Buttons alone get the text above them, so a long text with an
         # actions block is no longer cut to its first chunk.
         rendered = list(blocks or [])
-        if not has_text(rendered):
+        from_text = not has_text(rendered)
+        if from_text:
             rendered = text_blocks(text) + rendered
         messages = split_messages(rendered or text_blocks("(empty)"))
         if context and len(messages[-1]) >= MAX_BLOCKS:  # the footer needs one more
@@ -122,14 +123,20 @@ class PostingMixin:
             # split it goes under the END, not above the rest.
             if context and n == len(messages) - 1:
                 group = [*group, context]
-            # `text` is the notification and screen-reader fallback: the caller's own
-            # words on the first message, the continuation's words after it.
-            fallback = text if n == 0 and text.strip() else plain_text(group)
+            # `text` is the notification and screen-reader fallback, and the only field
+            # a message event carries (bot hops are routed off the mentions in it). Each
+            # message's fallback holds its own words, so a mention is neither lost past
+            # the cut nor seen twice. One message, or a caller's own summary of the
+            # blocks it built, keeps the caller's words.
+            if n == 0 and text.strip() and (len(messages) == 1 or not from_text):
+                fallback = fallback_text(text)
+            else:
+                fallback = plain_text(group)
             kwargs: dict = {"blocks": group}
             if not unfurl:
                 kwargs.update(unfurl_links=False, unfurl_media=False)
             resp = await slack_call(web, "chat_postMessage",
-                channel=channel, text=fallback[:TEXT_CHARS] or "(empty)", thread_ts=thread_ts,
+                channel=channel, text=fallback or "(empty)", thread_ts=thread_ts,
                 **kwargs, **self._face(identity),
             )
             first_ts = first_ts or resp["ts"]

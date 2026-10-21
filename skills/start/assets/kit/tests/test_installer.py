@@ -135,7 +135,12 @@ class InstallerOwnershipTests(unittest.TestCase):
             flat = " ".join(body.split())
             self.assertTrue(body.startswith("---\nname: helm\n"))
             self.assertNotIn("{{", body)
-            self.assertIn('Use when the user says "helm", "켜줘", "꺼줘"', body)
+            # The description is a quoted YAML string: the meaning and the wrapper's own
+            # text both hold ": ", which a strict loader rejects unquoted.
+            line = next(l for l in body.splitlines() if l.startswith("description: "))
+            description = json.loads(line[len("description: "):])
+            self.assertTrue(description.startswith("helm — 키를 잡다: 하네스를 켜고 끈다 — "))
+            self.assertIn('Use when the user says "helm", "켜줘", "꺼줘"', description)
             self.assertIn("uv run python bin/ops-kit.py --check", body)
             self.assertIn("remove the watchdog first, then stop", flat)
             self.assertIn("Run them yourself only when the person asks you to", flat)

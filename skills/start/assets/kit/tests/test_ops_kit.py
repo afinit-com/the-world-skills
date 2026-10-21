@@ -9,6 +9,7 @@ Windows (WindowsLauncherTest), where CI runs them on a throwaway VM.
 """
 
 import configparser
+import contextlib
 import gzip
 import importlib.util
 import io
@@ -409,6 +410,49 @@ class CheckTest(unittest.TestCase):
         self.assertEqual(["scripts/my-harness-up down",
                           "rm -rf .venv && uv venv .venv && uv pip install -e .",
                           "scripts/my-harness-up"], fixes)
+
+    def test_a_venv_only_finding_prints_its_steps(self):
+        self.install(self.old)
+        (self.old / ".venv/bin/activate").write_text("VIRTUAL_ENV='/somewhere/else/.venv'\n")
+        real = ops_kit.check
+        out = io.StringIO()
+        with unittest.mock.patch.object(ops_kit, "check", lambda home, os_name: real(
+                home, os_name, registration=self.registration(False), pids=lambda home: [])), \
+                contextlib.redirect_stdout(out):
+            self.assertEqual(2, ops_kit.print_check(self.old, "linux"))
+        self.assertIn("1. rm -rf .venv && uv venv .venv && uv pip install -e .", out.getvalue())
+
+    def test_without_scripts_the_fix_never_names_a_script_that_is_not_there(self):
+        (self.old / ".venv/bin").mkdir(parents=True)
+        (self.old / ".venv/bin/activate").write_text("VIRTUAL_ENV='/somewhere/else/.venv'\n")
+        _, fixes, _ = ops_kit.check(self.old, "linux", registration=self.registration(False),
+                                    pids=lambda home: [123])
+        self.assertEqual("kill -TERM 123", fixes[0].split("   #")[0])
+        self.assertIn("uv run python bin/ops-kit.py", fixes)
+        self.assertLess(fixes.index("uv run python bin/ops-kit.py"), len(fixes) - 1)
+        self.assertNotIn("scripts/old-place-up down", fixes)
+
+    def test_a_copy_leaves_the_original_alone(self):
+        # `cp -r` of a live harness: the original still runs from its own folder.
+        self.install(self.old)
+        (self.old / "harness.py").write_text("")
+        copy = Path(self.tmp.name) / "second"
+        shutil.copytree(self.old, copy)
+        watchdog = self.old / "scripts" / "my-harness-watchdog"
+        lines, fixes, moved = ops_kit.check(
+            copy, "macos", registration=self.registration(True, watchdog),
+            pids=lambda home: [4242] if home.resolve() == self.old.resolve() else [])
+        self.assertTrue(moved)
+        self.assertIn("this folder is a copy", "\n".join(lines))
+        self.assertFalse(any("kill" in f or "bootout" in f or "-up down" in f for f in fixes), fixes)
+        self.assertIn("uv run python bin/ops-kit.py --force --name second", fixes)
+
+    def test_a_windows_home_with_a_curly_quote_reads_back_unchanged(self):
+        home = Path(self.tmp.name) / "O\u2019Brien"
+        home.mkdir()
+        up = home / "up.ps1"
+        up.write_text(f"$HomeDir = {ops_kit.ps_quote(str(home))}\n", encoding="utf-8")
+        self.assertEqual(home, ops_kit.rendered_home(up))
 
     def test_windows_scripts_are_read_back(self):
         files = _render(self.old, "windows", user="tester",

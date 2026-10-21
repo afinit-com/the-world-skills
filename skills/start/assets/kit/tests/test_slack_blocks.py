@@ -120,6 +120,25 @@ class TextBlocksTests(unittest.TestCase):
         self.assertEqual(50, len(first))
         self.assertEqual([bk.section("50")], second)
 
+    def test_plain_broadcasts_in_free_text_notify_no_one(self):
+        # A plain @channel inside a section pages the channel, where plain `text` never
+        # did; a report quoting a PR body must not.
+        [block] = bk.text_blocks("PR says @channel please review, `@here` <https://x.io/@here|@here>",
+                                 headline=False)
+        shown = block["text"]["text"]
+        self.assertIn("@\u2060channel", shown)
+        self.assertIn("`@here`", shown)
+        self.assertIn("<https://x.io/@here|@\u2060here>", shown)
+        self.assertNotIn("<@U", bk.quiet_broadcasts("hi"))
+        self.assertEqual("<@U0TEAM> 부탁해", bk.quiet_broadcasts("<@U0TEAM> 부탁해"))
+
+    def test_a_cut_fallback_keeps_the_mentions_past_the_cut(self):
+        long = "가" * 4000 + "\n\n<@U0TEAMMATE> 이어서 부탁해"
+        cut = bk.fallback_text(long)
+        self.assertLessEqual(len(cut), bk.TEXT_CHARS)
+        self.assertIn("<@U0TEAMMATE>", cut)
+        self.assertEqual("짧다 <@U1>", bk.fallback_text("짧다 <@U1>"))
+
     def test_plain_text_reads_sections_fields_and_context(self):
         _, blocks = bk.card("제목", fields={"상태": "ok"}, context="footer")
         self.assertEqual("제목\n*상태*: ok\nfooter", bk.plain_text(blocks))
@@ -149,6 +168,21 @@ class PostTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(reply, call["text"])
         self.assertEqual(["section", "section", "context"], kinds(call["blocks"]))
         self.assertEqual("*승인 받았다*", call["blocks"][0]["text"]["text"])
+
+    async def test_a_mention_past_the_cut_reaches_the_event_text(self):
+        # Bot hops are routed off the event's `text`, which is this fallback.
+        poster = self.poster()
+        await poster.post("가" * 4000 + "\n\n<@U0TEAMMATE> 이어서 부탁해")
+        [call] = self.calls(poster)
+        self.assertIn("<@U0TEAMMATE>", call["text"])
+
+    async def test_a_split_reply_names_each_mention_in_one_message_only(self):
+        poster = self.poster()
+        reply = "\n\n".join(f"줄 {i}" for i in range(55)) + "\n\n<@U0TEAMMATE> 이어서 부탁해"
+        await poster.post(reply)
+        calls = self.calls(poster)
+        self.assertEqual(2, len(calls))
+        self.assertEqual(1, sum("<@U0TEAMMATE>" in c["text"] for c in calls))
 
     async def test_a_card_is_posted_as_built(self):
         poster = self.poster()

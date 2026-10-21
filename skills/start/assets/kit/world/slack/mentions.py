@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, NamedTuple
 from ..channels.base import task_card_lines
 from .as_human import normalize_message, safe_text
 from .blocks import context as context_block
-from .blocks import divider, fields, header, section, text_blocks
+from .blocks import divider, fields, header, quiet_broadcasts, section, text_blocks
 from .rules import RULES_TEMPLATE, pre_approved_clause, slack_mrkdwn, split_approval_request
 from .run_footer import footer_context, run_fields
 from .ui import EMOJI_DONE, EMOJI_ERROR, EMOJI_QUEUED, EMOJI_WORKING, ToolTrail
@@ -169,38 +169,10 @@ def _defuse_broadcasts(text: str) -> str:
     title nobody reviewed before it posted; a poll that summarised outside text (a PR
     body) could otherwise page everyone. Discord has its allowed_mentions for this.
 
-    Slack also turns plain @channel, @here and @everyone in a section into those
-    commands, so a word joiner (U+2060, invisible) goes after the @: the card reads
-    the same and notifies no one. Only visible prose and link labels get the
-    joiner; link destinations and code keep their original @ characters."""
-    def visible(part: str) -> str:
-        return _PLAIN_BROADCAST.sub("@\u2060", part)
-
-    def protected(match: re.Match) -> str:
-        part = match.group(0)
-        if part.startswith("<") and "|" in part:
-            destination, label = part[1:-1].split("|", 1)
-            return "<" + destination + "|" + _defuse_broadcasts(label) + ">"
-        return part
-
+    Plain @channel, @here and @everyone are quieted too (blocks.quiet_broadcasts):
+    the card reads the same and notifies no one."""
     # Keep the existing escaping of Slack commands, including unknown commands.
-    text = text.replace("<!", "&lt;!")
-    out = []
-    end = 0
-    for match in _BROADCAST_PROTECTED.finditer(text):
-        out.extend((visible(text[end:match.start()]), protected(match)))
-        end = match.end()
-    out.append(visible(text[end:]))
-    return "".join(out)
-
-
-_PLAIN_BROADCAST = re.compile(r"(?i)(?<![\w@])@(?=(?:channel|here|everyone)\b)")
-# Slack code and <scheme:destination|label> links, after slack_mrkdwn conversion.
-# As in slack_mrkdwn, an unclosed fenced block protects the rest of the text.
-_BROADCAST_PROTECTED = re.compile(
-    r"```(?:.*?```|.*\Z)|`[^`\n]+`|<[a-zA-Z][a-zA-Z0-9+.-]*:[^<>\s|]+(?:\|[^<>\n]*)?>",
-    re.DOTALL,
-)
+    return quiet_broadcasts(text.replace("<!", "&lt;!"))
 
 
 class MentionTurn(NamedTuple):

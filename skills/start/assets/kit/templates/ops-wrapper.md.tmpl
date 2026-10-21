@@ -79,6 +79,8 @@ The scripts, `.venv`, and a registered watchdog all hold the path they were made
 running, recreate `.venv`, re-render with `--force` keeping the same `--name` and flags,
 register again, start. Show the whole list and run it after the person says yes, leaving
 the watchdog lines to them as above. Re-run `--check` afterwards and report what it says.
+If the old folder still holds a harness, `--check` calls this one a copy: the original keeps
+its scripts, watchdog and process, and the fix only renders this folder under its own name.
 A venv-only finding needs no hurry: the harness still runs through the venv's python, so
 offer to recreate it at a quiet moment.
 

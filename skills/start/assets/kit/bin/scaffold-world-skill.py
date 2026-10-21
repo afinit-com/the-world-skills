@@ -54,6 +54,22 @@ def profile_provider(root: Path) -> str:
         return "both"
 
 
+def quote_description(body: str) -> str:
+    """The frontmatter's `description:` as a double-quoted YAML string. The world's
+    meaning (`helm — 키를 잡다: …`), the wrapper's own text and the trigger phrases
+    carry `: ` and quotes, which a strict YAML loader rejects in a plain value; JSON's
+    string escaping is valid YAML."""
+    head, sep, rest = body.partition("\n---\n")
+    lines = [json_line(line) for line in head.splitlines()]
+    return "\n".join(lines) + sep + rest
+
+
+def json_line(line: str) -> str:
+    if line.startswith("description: ") and not line[len("description: "):].startswith('"'):
+        return "description: " + json.dumps(line[len("description: "):], ensure_ascii=False)
+    return line
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("word")
@@ -86,6 +102,7 @@ def main() -> None:
     }
     for key, value in values.items():
         body = body.replace("{{" + key + "}}", value)
+    body = quote_description(body)
 
     providers = ("claude", "codex") if args.provider == "both" else (args.provider,)
     if args.host:

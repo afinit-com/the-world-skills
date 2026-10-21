@@ -403,7 +403,10 @@ def rendered_home(script: Path) -> Path | None:
                 return None
         m = re.match(r"^\$HomeDir = '(.*)'\s*(#.*)?$", line)
         if m:
-            return Path(m.group(1).replace("''", "'"))
+            home = m.group(1)
+            for mark in ("'", "\u2018", "\u2019", "\u201a", "\u201b"):  # undo ps_quote
+                home = home.replace(mark * 2, mark)
+            return Path(home)
     return None
 
 
@@ -583,27 +586,45 @@ def check(home: Path, os_name: str, *, registration=watchdog_registration,
     moved = scripts_stale or wrong_target or bool(there)
     if not (moved or venv_stale):
         return lines, fixes, False
+    venv_fix = ("Remove-Item -Recurse -Force .venv; uv venv .venv; uv pip install -e ."
+                if os_name == "windows" else
+                "rm -rf .venv && uv venv .venv && uv pip install -e .")
+    if scripts_stale and old_home is not None and (old_home / "harness.py").is_file():
+        # The old folder is still a harness: this one is a copy, not a move. The
+        # original keeps its scripts, its watchdog and its running process.
+        own = slug(home.name)
+        own = own if own not in (name, "") else f"{name}-copy"
+        lines.append(f"            {old_home} still holds a harness: this folder is a copy; "
+                     "leave the original running and give this one its own name")
+        if venv_stale:
+            fixes.append(venv_fix)
+        fixes.append(" ".join(["uv run python bin/ops-kit.py --force --name", own,
+                               *rendered_flags(home, name, os_name)]))
+        fixes += [line + person for line in ops_commands(own, os_name)["register"]]
+        return lines, fixes, True
     if reg["registered"] and (scripts_stale or wrong_target):
         fixes += [line + person for line in c["unregister"]]
     running = (here or []) + there
     if running:
-        if here and not scripts_stale:
+        if here and names and not scripts_stale:
             fixes += c["stop"]
             running = there
         if running:
-            fixes.append(f"kill -TERM {' '.join(map(str, running))}   # stop the copy the "
-                         "old scripts can no longer reach; it finishes its current run")
+            why = ("the copy the old scripts can no longer reach" if names else
+                   "there are no scripts to stop it with")
+            fixes.append(f"kill -TERM {' '.join(map(str, running))}   # {why}; it finishes "
+                         "its current run")
     if venv_stale:
-        fixes.append("Remove-Item -Recurse -Force .venv; uv venv .venv; uv pip install -e ."
-                     if os_name == "windows" else
-                     "rm -rf .venv && uv venv .venv && uv pip install -e .")
+        fixes.append(venv_fix)
     if scripts_stale:
         fixes.append(" ".join(["uv run python bin/ops-kit.py --force --name", name,
                                *rendered_flags(home, name, os_name)]))
     if reg["registered"] and (scripts_stale or wrong_target):
         fixes += [line + person for line in c["register"]]
-    if here or there:
+    if (here or there) and names:
         fixes += c["start"]
+    elif here or there:  # no scripts to start it with: render them first
+        fixes += ["uv run python bin/ops-kit.py", *c["start"]]
     return lines, fixes, moved
 
 
@@ -615,6 +636,7 @@ def print_check(home: Path, os_name: str) -> int:
               f"it at a quiet moment, from {home}, in this order:")
     elif fixes:
         print(f"\nThe harness moved or was left half-moved. To fix, from {home}, in this order:")
+    if fixes:
         print("\n".join(f"  {i}. {line}" for i, line in enumerate(fixes, 1)))
     names = rendered_names(home, os_name)
     if names and not fixes:

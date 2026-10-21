@@ -103,7 +103,8 @@ _MD_BOLD_STAR = re.compile(r"(?<!\*)\*\*(?!\s)(.+?)(?<!\s)\*\*(?!\*)", re.DOTALL
 _MD_BOLD_US = re.compile(r"(?<![\w_])__(?!\s)(.+?)(?<!\s)__(?![\w_])", re.DOTALL)
 # A marker needs whitespace after it, so `*bold*` or `**bold**` opening a line and a
 # `---` rule are not bullets.
-_MD_BULLET = re.compile(r"^([ \t]*)[-*+][ \t]+(?=\S)", re.MULTILINE)
+# A spaced rule (`- - -`, `* * *`) is a separator, not a list item.
+_MD_BULLET = re.compile(r"^([ \t]*)[-*+][ \t]+(?=\S)(?!(?:[-*_][ \t]*){2,}$)", re.MULTILINE)
 
 
 def _bullet(m: "re.Match") -> str:

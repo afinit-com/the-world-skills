@@ -88,6 +88,7 @@ class MarkdownBulletTests(unittest.TestCase):
     def test_bold_rules_and_numbers_are_not_bullets(self):
         self.assertEqual("*굵게* 시작\n*정말 굵게*\n---\n1. 하나\n-붙은 대시\n-",
                          slack_mrkdwn("*굵게* 시작\n**정말 굵게**\n---\n1. 하나\n-붙은 대시\n-"))
+        self.assertEqual("- - -\n* * *\n  - - -", slack_mrkdwn("- - -\n* * *\n  - - -"))
 
     def test_code_keeps_its_dashes(self):
         code = "`- inline`\n```\n- in a fence\n* also\n```"

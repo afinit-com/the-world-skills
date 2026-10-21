@@ -51,6 +51,39 @@ _BOLD_LINE = re.compile(r"^\*[^*\n]+\*:?$")
 _MARKUP = re.compile(r"[*_`~<>]")
 
 
+_PLAIN_BROADCAST = re.compile(r"(?i)(?<![\w@])@(?=(?:channel|here|everyone)\b)")
+# Slack code and <scheme:destination|label> links, after slack_mrkdwn conversion.
+# As in slack_mrkdwn, an unclosed fenced block protects the rest of the text.
+_BROADCAST_PROTECTED = re.compile(
+    r"```(?:.*?```|.*\Z)|`[^`\n]+`|<[a-zA-Z][a-zA-Z0-9+.-]*:[^<>\s|]+(?:\|[^<>\n]*)?>",
+    re.DOTALL,
+)
+
+
+def quiet_broadcasts(text: str) -> str:
+    """Plain @channel, @here and @everyone as words that notify no one.
+
+    Slack turns them into broadcasts inside a mrkdwn section, which plain `text`
+    never did, so a reply or report quoting a PR body would page the channel. A word
+    joiner (U+2060, invisible) goes after the @ in visible prose and link labels; code
+    and link destinations keep their original characters. `<!here>` written as a
+    command is left alone here (see mentions._defuse_broadcasts for cards)."""
+    def protected(match: re.Match) -> str:
+        part = match.group(0)
+        if part.startswith("<") and "|" in part:
+            destination, label = part[1:-1].split("|", 1)
+            return "<" + destination + "|" + quiet_broadcasts(label) + ">"
+        return part
+
+    out = []
+    end = 0
+    for match in _BROADCAST_PROTECTED.finditer(text):
+        out.extend((_PLAIN_BROADCAST.sub("@\u2060", text[end:match.start()]), protected(match)))
+        end = match.end()
+    out.append(_PLAIN_BROADCAST.sub("@\u2060", text[end:]))
+    return "".join(out)
+
+
 def _cut(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
@@ -199,8 +232,9 @@ def text_blocks(text: str, *, headline: bool = True) -> list[dict]:
     line boundaries, and a fenced code block stays whole. With `headline`, a short first
     line followed by more is set apart in bold as the message's one-line outcome. A
     paragraph that opens with a bold heading line (`*Heading*`, which is what
-    `slack_mrkdwn` makes of `## Heading`) gets a divider above it."""
-    paragraphs = _paragraphs(text or "")
+    `slack_mrkdwn` makes of `## Heading`) gets a divider above it. Plain @channel,
+    @here and @everyone are quieted (`quiet_broadcasts`)."""
+    paragraphs = _paragraphs(quiet_broadcasts(text or ""))
     if not paragraphs:
         return []
     if headline:
@@ -287,7 +321,22 @@ def plain_text(blocks: Sequence[dict]) -> str:
             lines += [cell.get("text", "").replace("\n", ": ", 1) for cell in block.get("fields", [])]
         elif kind == "context":
             lines += [e.get("text", "") for e in block.get("elements", []) if e.get("text")]
-    return _cut("\n".join(line for line in lines if line.strip()), TEXT_CHARS)
+    return fallback_text("\n".join(line for line in lines if line.strip()))
+
+
+_USER_MENTION = re.compile(r"<@[A-Z0-9]+(?:\|[^>]*)?>")
+
+
+def fallback_text(text: str, limit: int = TEXT_CHARS) -> str:
+    """`text` cut to a message's `text` fallback, keeping the user mentions past the cut.
+
+    Slack's message event carries only this field, and the listener routes a teammate
+    hop off the mentions in it, so a mention at the end of a long reply must survive."""
+    if len(text) <= limit:
+        return text
+    tail = list(dict.fromkeys(_USER_MENTION.findall(text[limit // 2:])))
+    keep = " ".join(m for m in tail if m not in text[: limit // 2])
+    return _cut(text, max(limit - len(keep) - 1, limit // 2)) + (" " + keep if keep else "")
 
 
 def split_messages(blocks: Sequence[dict], limit: int = MAX_BLOCKS) -> list[list[dict]]:
