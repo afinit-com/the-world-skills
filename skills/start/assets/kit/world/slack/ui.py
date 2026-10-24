@@ -221,4 +221,5 @@ class ToolTrail:
         with contextlib.suppress(Exception):
             await slack_call(web, "chat_update", channel=channel, ts=self.ts, text=first)
             for text in rest:
-                await slack_call(web, "chat_postMessage", channel=channel, thread_ts=self.thread_ts, text=text)
+                await slack_call(web, "chat_postMessage", channel=channel, thread_ts=self.thread_ts, text=text,
+                                 **self.listener._face(self.identity))
