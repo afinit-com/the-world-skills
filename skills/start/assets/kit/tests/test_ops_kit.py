@@ -17,6 +17,7 @@ import json
 import os
 import plistlib
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -716,13 +717,26 @@ class ConsoleWriterTest(unittest.TestCase):
                 capture_output=True, text=True, timeout=60)
             self.assertEqual(started.returncode, 0, started.stderr)
             self.assertTrue(started.stdout.strip().isdigit(), started.stdout)
-            lines: list[str] = []
-            for _ in range(600):
-                lines = _read_rolled(Path(tmp), "console", ".out")
-                if len(lines) >= 3000 and ops_log.writer_pid(out) is None:
-                    break
-                time.sleep(0.1)
-            self.assertIsNone(ops_log.writer_pid(out), "the writer outlived its command")
+            try:
+                for _ in range(600):
+                    # mid-roll the file can be missing or half-gzipped: that is "not yet"
+                    with contextlib.suppress(OSError, EOFError):
+                        if (len(_read_rolled(Path(tmp), "console", ".out")) >= 3000
+                                and ops_log.writer_pid(out) is None):
+                            break
+                    time.sleep(0.1)
+                self.assertIsNone(ops_log.writer_pid(out), "the writer outlived its command")
+            finally:
+                # a writer still rolling would race the temp dir's cleanup
+                if ops_log.writer_pid(out) is not None:
+                    with contextlib.suppress(OSError):
+                        os.kill(int(started.stdout), signal.SIGTERM)
+                    for _ in range(50):
+                        if ops_log.writer_pid(out) is None:
+                            break
+                        time.sleep(0.1)
+            # judge on one read taken after the writer is gone
+            lines = _read_rolled(Path(tmp), "console", ".out")
             self.assertGreater(len(list(Path(tmp).glob("console.*.out.gz"))), 10, "never rolled")
             self.assertEqual([int(line.rsplit(" ", 1)[1]) for line in lines], list(range(3000)))
 
