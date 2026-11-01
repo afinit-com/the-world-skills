@@ -866,6 +866,49 @@ class ToolAuditTests(unittest.TestCase):
         self.assertEqual(2, msg.count("```"))
 
 
+class ToolAuditFaceTests(unittest.IsolatedAsyncioTestCase):
+    """A sub-persona's audit that splits into several messages keeps its name and icon
+    on every chunk. The overflow chunks used to go out bare, so the last calls of a long
+    turn showed up under the main app's name."""
+
+    async def test_overflow_chunks_post_as_the_persona(self) -> None:
+        from world.slack import ui
+
+        posts: list[dict] = []
+
+        class Web:
+            async def chat_postMessage(self, **kw):
+                posts.append(kw)
+                return {"ts": "1.0"}
+
+            async def chat_update(self, **kw):
+                return {}
+
+        class Listener:
+            harness = SimpleNamespace(slack=SimpleNamespace(channel="C"))
+
+            def _web_for(self, identity):
+                return Web()
+
+            def _face(self, identity):
+                return {"username": "Scout"} if identity == "scout" else {}
+
+            async def _react(self, *a, **kw):
+                pass
+
+            async def _set_thread_status(self, *a, **kw):
+                pass
+
+        phrases = SimpleNamespace(stall_soft="…", stall_hard="…", tool_text=lambda label: label)
+        trail = ui.ToolTrail(Listener(), "scout", "T", "M", phrases)
+        for i in range(3):
+            await trail.tool(f"write_note_{i}", {"content": "가" * 3000})
+        await trail.finish(True)
+        trail._disarm_stall_timers()
+        self.assertGreater(len(posts), 1, "the audit should have split")
+        self.assertTrue(all(p.get("username") == "Scout" for p in posts), posts)
+
+
 class PersonaVoiceTests(unittest.TestCase):
     """Persona.voice reaches both prompt paths, carries the fact guard, and is a no-op
     when empty so flavor-only harnesses render byte-for-byte as before."""
