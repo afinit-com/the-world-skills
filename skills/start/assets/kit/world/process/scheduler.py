@@ -292,7 +292,8 @@ class Scheduler:
         What is worth announcing is decided by the completion contract and the task's
         state, not by an agent choosing which directory to write to. `done` means the
         contract was met; `blocked` means a human is needed. A run that neither finished
-        nor blocked is still in progress and says nothing.
+        nor blocked is still in progress and says nothing. The one opt-out is
+        Agent.quiet_done, for a `done` run with no thread of its own.
 
         Once per task, keyed on the "announced" event rather than on `record.thread`: a
         task started from a conversation already carries that conversation's thread, and
@@ -306,6 +307,13 @@ class Scheduler:
             return
         listener = self.listener
         if not (listener and getattr(listener, "enabled", False)):
+            return
+        if record.status == "done" and not record.thread and getattr(agent, "quiet_done", False):
+            # Agent.quiet_done: the run was its own announcement. Said in the record and
+            # the log, so a missing card is a decision someone can find, not a gap.
+            tasks.append_event(self.harness.home, record.id, "announce_skipped",
+                               reason="quiet_done")
+            self.harness.log(f"{record.id} done, no card posted (quiet_done)")
             return
         persona = self.harness.persona_for_agent(agent.name)
         try:

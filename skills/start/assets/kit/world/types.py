@@ -609,6 +609,14 @@ class Agent:
     announce_file: str = ""         # announce="file" only: the report to show, a path
                                     # or glob relative to the task's work/ ("briefing.md",
                                     # "reports/*.md"). Empty → the first .md, then .txt.
+    quiet_done: bool = False        # True → a polled or scheduled run that ends `done`
+                                    # posts no task card. For an agent whose run is its
+                                    # own announcement (it posts a reminder, it writes
+                                    # to another system), where the card only repeats
+                                    # it. A blocked run still posts, since a human is
+                                    # needed, and so does a task asked for in a thread,
+                                    # where someone is waiting. The task record and the
+                                    # run log are written either way.
 
     def __post_init__(self) -> None:
         if self.announce not in ("result", "evidence", "file"):

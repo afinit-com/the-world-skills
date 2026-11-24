@@ -356,6 +356,10 @@ worker whose prompt opens with an instruction to the model a `title=` a person c
   Selection uses artifacts and modification times (mtime), so preserved mtimes or clock
   changes can select an older report or cause `"result"` fallback.
 
+`Agent(quiet_done=True)` posts no card for a run that ends done. Use it for a worker
+whose run is its own announcement (it posts a reminder, it writes to another system); a
+blocked run still gets its card.
+
 Every mode keeps the 300-character excerpt and mention handling. A `file` excerpt also
 masks common token shapes, `token=`-style values and secret env values, but it quotes
 the report into the channel and masking is not complete: never point it at raw logs or

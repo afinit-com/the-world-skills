@@ -622,3 +622,66 @@ class AnnounceTests(unittest.IsolatedAsyncioTestCase):
                         produces=_producing(harness.home, made.id))
         self.assertEqual("done", tasks.read(harness.home, made.id).status)
         self.assertEqual("", tasks.read(harness.home, made.id).thread)
+
+
+class QuietDoneTests(unittest.IsolatedAsyncioTestCase):
+    """Agent.quiet_done: a run that is its own announcement posts no card when done."""
+
+    # The same fake listener and run loop, without inheriting AnnounceTests' tests.
+    _listener = AnnounceTests._listener
+    _run = AnnounceTests._run
+
+    def _harness(self, *, quiet: bool, writes_report: bool = False):
+        harness = _harness("reminder", writes_report=writes_report)
+        harness.agents[0].quiet_done = quiet
+        harness.persona_for_agent = lambda _n: SimpleNamespace(key="main")
+        logs: list[str] = []
+        harness.log = logs.append
+        return harness, logs
+
+    async def test_by_default_a_done_run_still_posts_its_card(self) -> None:
+        self.assertFalse(Agent("reminder", PollTrigger(lambda *_: None)).quiet_done)
+        harness, _logs = self._harness(quiet=False)
+        made = _queue(harness, "reminder")
+        listener, posted = self._listener()
+        await self._run(harness, _state(), RunResult("ok", "posted the reminder"), listener)
+        self.assertEqual([(made.id, "done")], [(a, b) for a, b, _ in posted])
+
+    async def test_a_quiet_agents_done_run_posts_nothing_and_says_so_in_the_record(self) -> None:
+        harness, logs = self._harness(quiet=True)
+        made = _queue(harness, "reminder")
+        listener, posted = self._listener()
+        await self._run(harness, _state(), RunResult("ok", "posted the reminder"), listener)
+
+        self.assertEqual([], posted)
+        final = tasks.read(harness.home, made.id)
+        self.assertEqual("done", final.status)
+        self.assertEqual("", final.thread)
+        events = tasks.read_events(harness.home, made.id)
+        skipped = [e for e in events if e["kind"] == "announce_skipped"]
+        self.assertEqual(["quiet_done"], [e["reason"] for e in skipped])
+        self.assertNotIn("announced", [e["kind"] for e in events])
+        self.assertTrue(any(made.id in line and "quiet_done" in line for line in logs), logs)
+
+    async def test_a_quiet_agents_blocked_run_still_posts(self) -> None:
+        harness, _logs = self._harness(quiet=True)
+        _queue(harness, "reminder", retry_budget=1)
+        listener, posted = self._listener()
+        await self._run(harness, _state(), RunResult("blocked", "permission denials"), listener)
+        self.assertEqual(["blocked"], [status for _id, status, _r in posted])
+
+    async def test_a_quiet_agent_that_never_verifies_still_posts_when_it_blocks(self) -> None:
+        harness, _logs = self._harness(quiet=True, writes_report=True)
+        _queue(harness, "reminder", retry_budget=1)
+        listener, posted = self._listener()
+        await self._run(harness, _state(), RunResult("ok", "wrote nothing"), listener)
+        self.assertEqual(["blocked"], [status for _id, status, _r in posted])
+
+    async def test_a_quiet_agent_still_answers_a_task_asked_for_in_a_thread(self) -> None:
+        harness, _logs = self._harness(quiet=True)
+        made = _queue(harness, "reminder")
+        made.thread = "1699999999.0001"
+        tasks.save(harness.home, made)
+        listener, posted = self._listener()
+        await self._run(harness, _state(), RunResult("ok", "posted the reminder"), listener)
+        self.assertEqual([(made.id, "done")], [(a, b) for a, b, _ in posted])
