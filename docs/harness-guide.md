@@ -154,7 +154,9 @@ The implementation decision, matrix, and residual risks are recorded in
 ## Inherited invariants (don't relax without deciding to)
 
 - **Single human approver** for anything outward. A bot co-approver may only *relay* a
-  human decision (HMAC-signed), never originate one.
+  human decision (HMAC-signed), never originate one. A team that cannot hang on one
+  person opts in with `SlackConfig(approvers_env=...)`: the humans listed there may also
+  accept, while every ask still pings the one approver.
 - **Claude subscription billing only.** `ClaudeRunner` refuses `ANTHROPIC_API_KEY`; Codex
   authentication is independent and uses the saved Codex CLI login.
 - **exit-0 ≠ completion.** A `writes_report` agent's real completion is a file under its

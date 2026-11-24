@@ -150,7 +150,7 @@ class SlackListener(PostingMixin, ApprovalMixin, MentionMixin):
         await self.socket.connect()
         self.ready.set()
         slack = self.harness.slack
-        approver = ("set" if slack.approver or slack.co_approver
+        approver = ("set" if slack.approvers or slack.co_approver
                     else f"NOT SET ({slack.approver_env}) — every approval click is refused")
         self.harness.log(f"slack listener connected on {slack.channel}, approver {approver}")
         if "process" in self.state:

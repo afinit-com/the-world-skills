@@ -136,6 +136,10 @@ def verify_plan(harness) -> str:
             slack = harness.slack
             out += [f"- home channel: {_env(slack.channel_env, slack.channel)}",
                     f"- approver: {_env(slack.approver_env, slack.approver)}"]
+            if slack.approvers_env:
+                extra = [a for a in slack.approvers if a != slack.approver]
+                out.append("- more approvers, whose click also counts: "
+                           f"{_env(slack.approvers_env, ', '.join(extra))}")
             if slack.co_approver_env:
                 out.append("- co-approver, whose decision also counts (a bot one answers "
                            f"with a message, not a button): "

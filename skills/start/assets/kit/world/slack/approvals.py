@@ -8,7 +8,8 @@ from there.
 Two invariants worth keeping straight, because they are deliberately asymmetric:
   ASK   — SlackConfig.addressee. One addressee: the co_approver (a relay/proxy
           bot) when configured, else the primary approver. Every ping goes there.
-  ACCEPT — SlackConfig.is_approver. EITHER identity's click counts, whichever one
+  ACCEPT — SlackConfig.is_approver. EITHER identity's click counts (and that of
+          anyone listed in approvers_env), whichever one
           we happened to address. Broader than the ask on purpose.
 """
 
@@ -40,6 +41,18 @@ _TASK_ID = re.compile(r"\d{8}-[0-9a-f]{4}")
 # Told only to whoever clicked a button with no open ask behind it. Same words as the
 # Discord gateway's: the clicker needs to know the click did nothing, the thread does not.
 APPROVAL_STALE = "이 승인 요청은 이미 처리됐거나 더는 유효하지 않습니다."
+
+
+def _valid_approvers(slack, phrases) -> str:
+    """Who may click, for the notice a non-approver gets. Only the primary approver and
+    the co_approver are @-mentioned, as before approvers_env existed; everyone the list
+    adds is a number. Each <@id> pings, and a wrong click must not page a whole team."""
+    named = list(dict.fromkeys(a for a in (slack.approver, slack.co_approver) if a))
+    others = len(set(getattr(slack, "approvers", ())) - set(named))
+    if not named:
+        return phrases.approver_count.format(n=others) if others else ""
+    valid = ", ".join(f"<@{a}>" for a in named)
+    return valid + (phrases.more_approvers.format(n=others) if others else "")
 
 
 class ApprovalMixin:
@@ -586,13 +599,14 @@ class ApprovalMixin:
             return
 
         slack = self.harness.slack
-        # The ACCEPT gate: either the primary approver or the co_approver. It fails
+        # The ACCEPT gate: the primary approver, the co_approver, or someone listed in
+        # approvers_env. It fails
         # closed: this handler only runs with Slack connected, so an empty approver is
         # a misconfigured harness, not a local dry-run, and skipping the check there let
         # anyone in the channel approve an outward action into the ledger.
         if not slack.is_approver(clicker):
-            valid = ", ".join(f"<@{a}>" for a in (slack.approver, slack.co_approver) if a)
             phrases = self.harness.approval_phrases
+            valid = _valid_approvers(slack, phrases)
             text = (phrases.not_approver.format(who=clicker, valid=valid) if valid
                     else phrases.no_approver.format(env=slack.approver_env))
             await self.post(text, thread_ts=thread_ts)

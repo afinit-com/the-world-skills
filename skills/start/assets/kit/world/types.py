@@ -204,6 +204,11 @@ class ApprovalPhrases:
     resolved_approved: str = "✅ 승인됨 — <@{who}>"
     resolved_rejected: str = "❌ 거부됨 — <@{who}>"
     not_approver: str = "<@{who}> 이 버튼은 승인권자({valid})만 누를 수 있어요."
+    # Appended to {valid} when SlackConfig.approvers_env adds people: they are counted,
+    # never @-mentioned, so a wrong click does not page the whole list.
+    more_approvers: str = " 외 {n}명"
+    # {valid} when nobody can be named (no primary approver, only the list).
+    approver_count: str = "등록된 {n}명"
     # Slack is connected but no approver is configured: nobody's click counts, so the
     # operator is told what to set instead of a stranger being told off.
     no_approver: str = (
@@ -570,6 +575,16 @@ class SlackConfig:
     # slack_approvals.decision_from_text recognizes. Both paths grant the same
     # thing; do not "fix" the button gate by assuming every approver can click.
     co_approver_env: str | None = None
+    # More HUMAN approvers: the name of an env var holding comma-separated Slack user
+    # IDs, each honored exactly like approver_env. A second explicit widening of the
+    # single-approver invariant, off unless set, for a team where one person being away
+    # must not stall every outward action.
+    #
+    # It widens ACCEPT only. Every ask still pings one addressee (`addressee`), and the
+    # "only approvers can click" notice names that one and counts the rest, so a list
+    # of ten is never paged. A bot's id here gains nothing: a bot cannot click, and its
+    # typed decision is believed only with a relay signature (approval_text.py).
+    approvers_env: str | None = None
     # Comma-separated channel IDs (env var name) beyond the dedicated channel
     # where the harness should still react to an app_mention — e.g. a sibling
     # sibling harness's own channel, once that harness starts @-mentioning US
@@ -616,6 +631,14 @@ class SlackConfig:
         return os.environ.get(self.co_approver_env) if self.co_approver_env else None
 
     @property
+    def approvers(self) -> tuple[str, ...]:
+        """Every human whose decision counts: the primary approver first, then the IDs
+        in approvers_env, without duplicates. The co_approver is not in here."""
+        extra = os.environ.get(self.approvers_env, "") if self.approvers_env else ""
+        ids = [self.approver or "", *(part.strip() for part in extra.split(","))]
+        return tuple(dict.fromkeys(i for i in ids if i))
+
+    @property
     def relay_channels(self) -> list[str]:
         if not self.relay_channels_env:
             return []
@@ -642,16 +665,16 @@ class SlackConfig:
         pinged the human directly while the buttons pinged the relay).
 
         This is the ASK side only. The ACCEPT side is `is_approver`, which stays
-        broader on purpose — a decision from either identity counts, whichever
-        one we happened to address.
+        broader on purpose — a decision from either identity, or from anyone in
+        `approvers`, counts, whichever one we happened to address.
         """
         return self.co_approver or self.approver
 
     def is_approver(self, slack_id: str) -> bool:
-        """True for the primary approver OR the co-approver (if configured).
-        The one check every approve/deny click must pass — see
-        listener.py's _on_interactive."""
-        return bool(slack_id) and slack_id in (self.approver, self.co_approver)
+        """True for the primary approver, anyone in approvers_env, or the co-approver.
+        The one check every approve/deny click and typed decision must pass — see
+        approvals.py's _on_interactive and listener.py's _on_request."""
+        return bool(slack_id) and slack_id in (*self.approvers, self.co_approver)
 
 
 @dataclass
