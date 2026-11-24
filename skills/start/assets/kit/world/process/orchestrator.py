@@ -121,12 +121,16 @@ def _apply_agent_result(harness: "Harness", state: dict, agent, agent_state: dic
     if result.status == "ok":
         if signal.on_done:
             signal.on_done(result)
-        record_report(state, agent.name, result.result_text[:300])
+        # Only a writes_report agent's run is news for the committed watchboard; any
+        # other ok run is routine and is shown in STATUS.md (heartbeat.BOARD_KINDS).
+        kind = "report" if getattr(agent, "writes_report", False) else "run"
+        record_report(state, agent.name, result.result_text[:300], kind=kind)
         harness.log(f"{agent.name} done in {result.duration_s:.0f}s")
     elif result.status == "blocked":
         agent_state["blocked_until"] = now + BLOCKED_BACKOFF_SECONDS
         harness.log(f"{agent.name} BLOCKED (incomplete run, retry in 1h): {result.result_text[:300]}")
-        record_report(state, agent.name, f"⚠️ blocked run: {result.result_text[:250]}")
+        record_report(state, agent.name, f"⚠️ blocked run: {result.result_text[:250]}",
+                      kind="blocked")
     elif result.status == "error":
         harness.log(f"{agent.name} errored: {result.result_text[:300]}")
 

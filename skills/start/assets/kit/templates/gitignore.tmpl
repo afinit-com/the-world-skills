@@ -11,7 +11,8 @@ env/*
 !env/harness.env.example
 # bin/slack-provision.py's temp files hold tokens mid-write
 env/.harness.env.*
-# runtime state the harness rewrites; HEARTBEAT.md is the one view that is committed
+# runtime state the harness rewrites; HEARTBEAT.md is the one view that is committed,
+# and it changes only for a report, a blocked run or a notice (routine runs: STATUS.md)
 ledger.jsonl
 .the-world/
 state.json

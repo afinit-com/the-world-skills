@@ -262,7 +262,8 @@ class Harness:
         self.state_path = self.home / "state.json"
         # HEARTBEAT.md is the committed watchboard — subscriptions, what awaits the
         # approver, what is open, what was found. It changes only when one of those
-        # changes. STATUS.md is the volatile view (liveness, spend, live threads),
+        # changes: a writes_report agent's report, a blocked run, a notice. STATUS.md
+        # is the volatile view (liveness, spend, live threads, routine ok runs),
         # regenerated every tick and gitignored. Splitting them is what makes the first
         # one committable at all: a file carrying a clock is dirty a minute after every
         # commit, forever.

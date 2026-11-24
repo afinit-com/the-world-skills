@@ -6,8 +6,11 @@ because the two files answer different questions and have opposite git contracts
 
   - HEARTBEAT.md is COMMITTED. It may hold only things that change when something
     happens — what is pending, what is open, what was found. A clock reading here makes
-    the working tree dirty a minute after every commit, forever.
-  - STATUS.md is GITIGNORED and regenerated every tick. Clocks, spend, live threads.
+    the working tree dirty a minute after every commit, forever. So does a routine
+    run: of recent_reports it shows only reports, blocked runs and notices
+    (BOARD_KINDS below).
+  - STATUS.md is GITIGNORED and regenerated every tick. Clocks, spend, live threads,
+    and the routine ok runs HEARTBEAT.md leaves out.
 
 Both are regenerated wholesale on every save (state.save_state), so neither can drift
 from state.json — there is no separate write path. Never hand-edit either.
@@ -26,6 +29,22 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from ..harness import Harness
+
+
+# What an entry in recent_reports is, which decides where it is shown:
+#   report   an ok run of a writes_report agent: it found or produced something
+#   blocked  a run that needs a human
+#   notice   something the harness itself must tell a watcher (origin-sync divergence)
+#   run      a routine ok run of an agent that promised no file
+# The first three are the watchboard (HEARTBEAT.md, committed). `run`, and an entry
+# written before kinds existed, shows in STATUS.md only: HEARTBEAT.md may change only
+# when a watcher has something to read, and a daily reminder finishing is not that.
+BOARD_KINDS = ("report", "blocked", "notice")
+REPORT_KINDS = (*BOARD_KINDS, "run")
+
+
+def on_board(entry: dict) -> bool:
+    return entry.get("kind") in BOARD_KINDS
 
 
 def _ago(ts: float, now: float) -> str:
@@ -118,8 +137,11 @@ def render_heartbeat(harness: "Harness", state: dict) -> str:
         for name, w in watched:
             lines.append(f"- **{name}** — {w}")
 
+    # Not every recent_reports entry: a routine ok run (a reminder posted, a job ran)
+    # is in STATUS.md. Listed here, each one rewrote this committed file, and a
+    # deployed checkout was dirty after every scheduled run.
     lines += ["", "## Recent reports", ""]
-    findings = list(reversed(state.get("recent_reports", [])))
+    findings = [f for f in reversed(state.get("recent_reports", [])) if on_board(f)]
     if not findings:
         lines.append("(none yet)")
     for f in findings:
@@ -177,6 +199,13 @@ def render_status(harness: "Harness", state: dict) -> str:
         total_cost = sum(s.get("total_cost_usd", 0) for _, s in usage_rows)
         dollars = "미제공" if harness.provider == "codex" else f"${total_cost:.2f}"
         lines.append(f"| **total** | | **{dollars}** | | | | |")
+
+    routine = [f for f in reversed(state.get("recent_reports", [])) if not on_board(f)]
+    if routine:
+        lines += ["", "## Recent runs", "",
+                  "Routine ok runs. Reports, blocked runs and notices are in HEARTBEAT.md.", ""]
+        for f in routine:
+            lines.append(f"- `{_utc(f['ts'])}` **[{f['agent']}]** {_headline(f['summary'])}")
 
     threads = state.get("threads", {})
     if threads:
