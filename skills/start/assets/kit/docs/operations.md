@@ -147,7 +147,9 @@ a library's own print) and leaves the rest alone, so no line carries two. Every 
 `logs/watchdog.log` starts the same way, including what `<name>-up` printed during the
 round, and so does the `down` marker. Each `logs/harness.jsonl` entry keeps its
 epoch-seconds `ts` for compatibility and also carries `time`, the same moment in ISO 8601
-with the local UTC offset.
+with the local UTC offset. An entry for a polled or scheduled run also lists `tools`, the
+names of the tools it called in order (the first 200), and `tool_calls`, how many calls
+that was. An `ok` run with `tool_calls: 0` did nothing but answer.
 
 Rolling is by date. The first write of a day moves what came before to
 `<stem>.<YYYY-MM-DD><ext>.gz`, so "the log from the 13th" is found by name. Past 10MB

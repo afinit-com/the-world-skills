@@ -313,6 +313,52 @@ class OkWithoutArtifactTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("pending", predicate(made).state)
 
 
+class RunLogToolsTests(unittest.IsolatedAsyncioTestCase):
+    """A queued run's log entry says which tools it called."""
+
+    async def _entry(self, calls: list[str], status: str = "ok") -> dict:
+        harness = _harness("reminder")
+        _queue(harness, "reminder")
+
+        async def run(_harness_, _agent, _prompt, *, on_tool=None, **_kwargs):
+            for name in calls:
+                await on_tool(name, {"q": "x"})
+            return RunResult(status, "posted")
+
+        scheduler = _scheduler(harness, _state())
+        with (
+            patch.object(sched, "run_agent_oneshot", new=run),
+            patch.object(sched, "append_run_log") as logged,
+            patch.object(sched, "save_state"),
+        ):
+            await scheduler.drain()
+            await scheduler.drain_inflight()
+        logged.assert_called_once()
+        return logged.call_args.args[1]
+
+    async def test_the_entry_lists_the_tools_in_call_order(self) -> None:
+        entry = await self._entry(["mcp__world__post_message", "Read", "mcp__world__post_message"])
+        self.assertEqual(
+            ["mcp__world__post_message", "Read", "mcp__world__post_message"], entry["tools"])
+        self.assertEqual(3, entry["tool_calls"])
+        self.assertEqual("reminder", entry["agent"])
+
+    async def test_a_run_that_called_nothing_says_so(self) -> None:
+        entry = await self._entry([])
+        self.assertEqual([], entry["tools"])
+        self.assertEqual(0, entry["tool_calls"])
+
+    async def test_a_failed_run_still_records_what_it_called(self) -> None:
+        entry = await self._entry(["Read"], status="blocked")
+        self.assertEqual(["Read"], entry["tools"])
+        self.assertEqual("blocked", entry["status"])
+
+    async def test_a_long_run_lists_the_first_names_and_counts_them_all(self) -> None:
+        entry = await self._entry(["Read"] * (sched.RUN_LOG_TOOLS_MAX + 5))
+        self.assertEqual(sched.RUN_LOG_TOOLS_MAX, len(entry["tools"]))
+        self.assertEqual(sched.RUN_LOG_TOOLS_MAX + 5, entry["tool_calls"])
+
+
 class EnqueueTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_refiring_trigger_does_not_pile_up_duplicates(self) -> None:
         from world.process import orchestrator

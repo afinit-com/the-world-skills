@@ -48,6 +48,9 @@ if TYPE_CHECKING:
 
 SCHEDULER_INTERVAL_S = 2
 DEFAULT_MAX_CONCURRENT = 2
+# How many tool names one run-log entry lists. `tool_calls` beside it is the full count,
+# so a longer run is visibly cut rather than quietly short.
+RUN_LOG_TOOLS_MAX = 200
 
 # The completion contract for a plain agent run, and the kit's existing one: a run is
 # complete when it finished AND left what its agent promised. For a writes_report agent
@@ -194,11 +197,20 @@ class Scheduler:
         # `tasks/{task}/work` from here, and the runners pass the same id to the guard
         # hooks as WORLD_TASK — one id, two enforcement layers, neither of them the agent.
         token = set_current_task(record.id)
+        # Which tools the run called, in order. A mention turn shows this in its thread
+        # (ToolTrail); a queued run had no record at all, so a run that did the work and
+        # one that read its instructions and stopped left the same "ok" line.
+        used: list[str] = []
+
+        async def on_tool(name: str, _tool_input: dict) -> None:
+            used.append(name)
+
         try:
             # state goes along so a mutates:true agent's worktree is recorded where the
             # sweep and the keep/remove buttons look (spawn.py refuses the run without it).
             result = await run_agent_oneshot(
-                self.harness, agent, self._prompt(record, agent), state=self.state
+                self.harness, agent, self._prompt(record, agent), state=self.state,
+                on_tool=on_tool,
             )
         except asyncio.CancelledError:
             tasks.append_event(home, record.id, "cancelled")
@@ -229,6 +241,7 @@ class Scheduler:
             "task": record.id, "agent": agent.name, "status": result.status,
             "duration_s": round(result.duration_s, 1), "cost_usd": round(result.cost_usd, 4),
             "input_tokens": result.input_tokens, "output_tokens": result.output_tokens,
+            "tools": used[:RUN_LOG_TOOLS_MAX], "tool_calls": len(used),
         })
         tasks.record_attempt(
             home, record, outcome=result.status, summary=result.result_text[:500],
