@@ -489,9 +489,10 @@ class Agent:
                                     # lane).
     task_type: str = ""             # name of the TaskType whose completion predicate
                                     # decides when this agent's work is DONE. Empty →
-                                    # "agent-run": finished and left an artifact, which
-                                    # is the contract spawn.enforce_completion already
-                                    # applies. Set it when finishing means something the
+                                    # "agent-run": the run ended ok and, for a
+                                    # writes_report agent, left a file under work/ (the
+                                    # contract spawn.enforce_completion already applies).
+                                    # Set it when finishing means something the
                                     # harness must go and check (a DDL task is not done
                                     # because a PR opened).
     task_allowed: bool = False      # may this agent spawn sub-agents? default False —

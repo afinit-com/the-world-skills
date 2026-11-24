@@ -14,10 +14,11 @@ from world.process import task as tasks
 from world.types import Agent, PollTrigger, RunResult, Schedule, ScheduleTrigger, Signal
 
 
-def _harness(*names: str, limit: int = 2) -> SimpleNamespace:
+def _harness(*names: str, limit: int = 2, writes_report: bool = False) -> SimpleNamespace:
     home = Path(tempfile.mkdtemp())
     (home / "logs").mkdir()
-    agents = [Agent(name, PollTrigger(lambda *_: None)) for name in names]
+    agents = [Agent(name, PollTrigger(lambda *_: None), writes_report=writes_report)
+              for name in names]
     return SimpleNamespace(
         home=home,
         logs_dir=home / "logs",
@@ -163,7 +164,7 @@ class OutcomeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_an_ok_run_that_writes_nothing_is_not_done(self) -> None:
         """exit-0 is not completion, now checked against the artifact itself."""
-        harness = _harness("watch")
+        harness = _harness("watch", writes_report=True)
         state = _state()
         made = _queue(harness, "watch")
         await self._run_one(harness, state, RunResult("ok", "아무것도 안 씀"))
@@ -243,6 +244,73 @@ class OutcomeTests(unittest.IsolatedAsyncioTestCase):
             await scheduler.drain()
             await scheduler.drain_inflight()
         self.assertEqual([], fired)
+
+
+class OkWithoutArtifactTests(unittest.IsolatedAsyncioTestCase):
+    """An ok run that left no file. Whether that is finished depends on what the agent
+    promised, and either way the queue must not run it without end."""
+
+    async def _passes(self, harness, state, result: RunResult, passes: int = 6) -> int:
+        runs = AsyncMock(return_value=result)
+        scheduler = _scheduler(harness, state)
+        with (
+            patch.object(sched, "run_agent_oneshot", new=runs),
+            patch.object(sched, "save_state"),
+        ):
+            for _ in range(passes):
+                await scheduler.drain()
+                await scheduler.drain_inflight()
+        return runs.await_count
+
+    async def test_an_agent_that_promised_no_file_runs_once_and_is_done(self) -> None:
+        # A reminder that only posts, or a job whose effect is elsewhere: there is
+        # nothing to find under work/, and asking for it re-ran the agent every pass.
+        harness = _harness("reminder")
+        made = _queue(harness, "reminder")
+        runs = await self._passes(harness, _state(), RunResult("ok", "posted"))
+
+        final = tasks.read(harness.home, made.id)
+        self.assertEqual(1, runs)
+        self.assertEqual("done", final.status)
+        self.assertEqual(1, final.attempts)
+        # Still reached through verify(), never assigned.
+        self.assertIn("verify", [e["kind"] for e in tasks.read_events(harness.home, made.id)])
+
+    async def test_a_report_agent_without_its_file_stops_at_the_retry_budget(self) -> None:
+        harness = _harness("watch", writes_report=True)
+        made = _queue(harness, "watch", retry_budget=2)
+        runs = await self._passes(harness, _state(), RunResult("ok", "wrote nothing"))
+
+        final = tasks.read(harness.home, made.id)
+        self.assertEqual(2, runs)
+        self.assertEqual("blocked", final.status)
+        self.assertEqual(2, final.attempts)
+
+    async def test_a_task_type_that_never_verifies_stops_at_the_retry_budget(self) -> None:
+        harness = _harness("migrate")
+        harness.task_types = {"migration": tasks.TaskType(
+            "migration", completion=lambda _task: tasks.Verdict.pending("not merged yet"))}
+        made = tasks.create(
+            harness.home, type="migration", title="migrate", slug="migrate",
+            agent="migrate", body="run", retry_budget=3,
+        )
+        runs = await self._passes(harness, _state(), RunResult("ok", "opened a PR"))
+
+        final = tasks.read(harness.home, made.id)
+        self.assertEqual(3, runs)
+        self.assertEqual("blocked", final.status)
+        reasons = [e.get("reason", "") for e in tasks.read_events(harness.home, made.id)
+                   if e.get("kind") == "transition" and e.get("to") == "blocked"]
+        self.assertTrue(reasons and "not merged yet" in reasons[-1], reasons)
+
+    async def test_an_unknown_agent_name_still_needs_a_file(self) -> None:
+        # The completion cannot see what an unregistered agent promised, so it keeps
+        # the stricter reading.
+        harness = _harness("watch")
+        predicate = sched.default_task_type(harness.home).completion
+        made = _queue(harness, "watch")
+        tasks.record_attempt(harness.home, made, outcome="ok")
+        self.assertEqual("pending", predicate(made).state)
 
 
 class EnqueueTests(unittest.IsolatedAsyncioTestCase):

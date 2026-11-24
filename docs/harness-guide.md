@@ -158,7 +158,9 @@ The implementation decision, matrix, and residual risks are recorded in
 - **Claude subscription billing only.** `ClaudeRunner` refuses `ANTHROPIC_API_KEY`; Codex
   authentication is independent and uses the saved Codex CLI login.
 - **exit-0 ≠ completion.** A `writes_report` agent's real completion is a file under its
-  task's `work/`; exit-0 with no file is recorded blocked and refires. What "finished"
+  task's `work/`; exit-0 with no file is recorded blocked and refires. An agent that
+  promised no file is complete when its run ends ok, and a run that keeps ending ok
+  without meeting its completion stops at the retry budget, blocked. What "finished"
   means per kind of work is a `TaskType` completion predicate, not a status anyone assigns.
 - **Boundaries in code, not prompts.** Spawned agents get an empty base tool set (no Bash,
   no Write) and only the scoped tools you hand them.
