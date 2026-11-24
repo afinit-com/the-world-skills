@@ -28,6 +28,7 @@ from ..env import redact
 from ..process import task
 from ..process.spawn import run_agent_oneshot
 from ..process.state import pending_approvals_snippet, record_result_usage
+from ..runners.base import reports_tool_done
 from ..toolkit import make_approval_gated, make_handoff_tool, make_mention_tool
 from ..types import Agent, MentionTrigger, RunResult, voice_clause
 
@@ -702,6 +703,7 @@ class MentionMixin:
         *,
         tools: list,
         on_tool=None,
+        on_tool_done=None,
     ) -> MentionTurn:
         """Spawn the ad-hoc mention agent, bank what the call cost, and split its reply.
 
@@ -735,7 +737,10 @@ class MentionMixin:
             # can then reach the harness's installed plugin skills. Poll agents stay opt-in.
             allow_plugins=self.harness.mention_plugins and bool(self.harness.plugins),
         )
-        result = await run_agent_oneshot(self.harness, mention_agent, safe_text(prompt), on_tool=on_tool)
+        result = await run_agent_oneshot(
+            self.harness, mention_agent, safe_text(prompt),
+            on_tool=on_tool, on_tool_done=on_tool_done,
+        )
         if record_result_usage(self.state, identity, result):
             self.save_state()
         reply, approval_summary = split_approval_request(result.result_text)
@@ -805,9 +810,14 @@ class MentionMixin:
         """The run-and-post half of _handle_mention."""
         await self._react(msg_ts, add=EMOJI_WORKING, remove=EMOJI_QUEUED, identity=identity)  # 🤔
         await self._set_thread_status(thread_ts, phrases.thinking, identity=identity)
-        trail = ToolTrail(self, identity, thread_ts, msg_ts, phrases)
+        # Only a runner that reports when a call returns can time one; with any other
+        # the trail keeps its untimed behaviour instead of waiting on a signal that
+        # never comes.
+        timed = reports_tool_done(self.harness.agent_runner())
+        trail = ToolTrail(self, identity, thread_ts, msg_ts, phrases, timed=timed)
         turn = await self._run_mention_turn(
-            identity, persona, prompt, tools=tools, on_tool=trail.tool
+            identity, persona, prompt, tools=tools, on_tool=trail.tool,
+            on_tool_done=trail.tool_done if timed else None,
         )
 
         ok = turn.result.status == "ok"

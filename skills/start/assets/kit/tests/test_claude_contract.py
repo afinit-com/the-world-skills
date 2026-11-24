@@ -39,6 +39,8 @@ def install_fake_sdk() -> None:
     module.AssistantMessage = type("AssistantMessage", (), {})
     module.ResultMessage = type("ResultMessage", (), {})
     module.ToolUseBlock = type("ToolUseBlock", (), {})
+    module.ToolResultBlock = type("ToolResultBlock", (), {})
+    module.UserMessage = type("UserMessage", (), {})
     module.ClaudeAgentOptions = FakeOptions
     module.create_sdk_mcp_server = lambda **kwargs: kwargs
     module.query = lambda **_kwargs: None

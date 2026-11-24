@@ -34,6 +34,11 @@ STATUS_UPDATE_MIN_S = 2.0  # avoid excessive chat_update calls
 # for STALL_SOFT_S -> 🥱 + a softer status line; STALL_HARD_S -> 😨 + a more
 # urgent one (both the reaction AND assistant.threads.setStatus). Reset by
 # every tool call (proof of life); cancelled on finish().
+#
+# The ladder measures the MODEL going quiet, not a tool taking its time. With a runner
+# that reports when a call returns (ToolTrail(timed=True)), both timers stay down while
+# any call is in flight and restart when the last one returns. Resetting them only at
+# tool start made a healthy tool that ran for minutes read exactly like a dead turn.
 EMOJI_STALL_SOFT = "yawning_face"  # 🥱 no update in a while
 EMOJI_STALL_HARD = "fearful"       # 😨 no update in a long while
 STALL_SOFT_S = 10.0
@@ -57,17 +62,53 @@ def _tool_args(tool_input: dict) -> str:
     return text.replace("```", "`\u200b``")
 
 
+def format_duration(seconds: float) -> str:
+    if seconds < 10:
+        return f"{seconds:.1f}초"
+    if seconds < 60:
+        return f"{seconds:.0f}초"
+    minutes, rest = divmod(int(seconds), 60)
+    return f"{minutes}분 {rest}초" if rest else f"{minutes}분"
+
+
+SKILL_TOOL = "Skill"  # loads a plugin skill's instructions; the name the CLI gives it
+
+
+def skill_only_note(calls: list[tuple[str, dict]]) -> str:
+    """One line for a turn that loaded a skill and called nothing else.
+
+    Loading a skill returns its instructions. It runs nothing, and a mention turn has
+    no shell, so whatever the skill describes can only happen through another tool.
+    The reply beside such a turn can still read like finished work, because the model
+    has just been handed a confident list of steps.
+
+    Read off the tool trail alone, never off the reply's wording: what ran is a fact,
+    and guessing whether prose "claims" completion is a heuristic that a differently
+    phrased sentence walks past. The line says what the turn did and leaves the
+    judgement to the reader. Answering from a skill's text is a fair use of one."""
+    names = {label for label, _input in calls}
+    if names != {SKILL_TOOL}:
+        return ""
+    return (f"ℹ️ 이 턴은 스킬 문서만 불러왔고(`{SKILL_TOOL}`) 다른 툴은 실행하지 않았습니다. "
+            "스킬을 읽은 것이지 실행한 것은 아닙니다.")
+
+
 def audit_messages(head: str, calls: list[tuple[str, dict]],
-                   limit: int = TRAIL_TEXT_LIMIT) -> list[str]:
+                   limit: int = TRAIL_TEXT_LIMIT, *,
+                   marks: list[str] | None = None, note: str = "") -> list[str]:
     """The end-of-turn audit as Slack messages, each at most `limit` chars: every tool
     call in order with its FULL arguments, so a reviewer can read from the thread what
     the agent actually did. Nothing is dropped. Calls are packed into as few messages as
     fit, and one whose arguments alone are too long is split across messages, each
-    piece in its own code block."""
+    piece in its own code block.
+
+    `marks[i]` is appended to call i's title (its duration, a failure flag). `note` is
+    one closing line after the last call, kept whole and moved to a message of its own
+    when it does not fit."""
     messages: list[str] = []
     current = head
     for i, (label, tool_input) in enumerate(calls, 1):
-        title = f"{i}. `{label}`"
+        title = f"{i}. `{label}`" + (marks[i - 1] if marks and i <= len(marks) else "")
         body = _tool_args(tool_input) if tool_input else ""
         entry = title + (f"\n```{body}```" if body else "")
         if len(current) + 1 + len(entry) <= limit:
@@ -84,6 +125,12 @@ def audit_messages(head: str, calls: list[tuple[str, dict]],
             piece = body[start:start + room]
             messages.append(f"{title}{' (계속)' if n else ''}\n```{piece}```")
         current = messages.pop()
+    if note:
+        if len(current) + 1 + len(note) <= limit:
+            current += "\n" + note
+        else:
+            messages.append(current)
+            current = note[:limit]
     messages.append(current)
     return messages
 
@@ -99,7 +146,14 @@ class ToolTrail:
     No tool call for STALL_SOFT_S escalates
     the reaction + thread status to 🥱, STALL_HARD_S to 😨. Any tool call is
     proof of life — it cancels + restarts both timers and, if a stall emoji is
-    currently showing, swaps the reaction back to "working" first."""
+    currently showing, swaps the reaction back to "working" first.
+
+    `timed=True` says the runner also reports when each call returns (tool_done). The
+    audit then shows how long each call took and names the slowest in its head line,
+    and the stall timers stay down while a call is in flight. Without it the trail
+    behaves as it always did: no durations, timers restarted at each tool start. A call
+    whose return is never reported shows no duration, and keeps the timers down until
+    the turn ends."""
 
     def __init__(
         self,
@@ -108,6 +162,8 @@ class ToolTrail:
         thread_ts: str,
         msg_ts: str,
         phrases: "StatusPhrases",
+        *,
+        timed: bool = False,
     ) -> None:
         self.listener = listener
         self.identity = identity
@@ -118,6 +174,13 @@ class ToolTrail:
         self.count = 0
         self.last_update = 0.0
         self.calls: list[tuple[str, dict]] = []  # (tool name, full input)
+        self.timed = timed
+        # Parallel to `calls`: seconds each took (None until it returns) and whether it
+        # came back as an error.
+        self.durations: list[float | None] = []
+        self.failed: list[bool] = []
+        self._started: list[float] = []
+        self._in_flight: set[int] = set()
         self._finished = False
         self._stalled_emoji: str | None = None
         self._stall_soft: asyncio.Task | None = None
@@ -142,14 +205,17 @@ class ToolTrail:
 
     async def _reset_stall(self) -> None:
         """Called on every tool call — a call in flight is proof the turn isn't
-        actually stuck, so cancel/restart the timers and undo any escalation."""
+        actually stuck, so cancel the timers and undo any escalation. They restart at
+        once, or, on a timed trail with a call in flight, when that call returns
+        (tool_done)."""
         self._disarm_stall_timers()
         if self._stalled_emoji:
             await self.listener._react(
                 self.msg_ts, add=EMOJI_WORKING, remove=self._stalled_emoji, identity=self.identity,
             )
             self._stalled_emoji = None
-        self._arm_stall_timers()
+        if not self._in_flight:
+            self._arm_stall_timers()
 
     async def _stall(self, delay: float, emoji: str, status: str) -> None:
         try:
@@ -179,6 +245,11 @@ class ToolTrail:
         label = name.split("__")[-1] if name.startswith("mcp__") else name
         preview = _tool_preview(tool_input)
         self.calls.append((label, dict(tool_input)))
+        self.durations.append(None)
+        self.failed.append(False)
+        self._started.append(time.monotonic())
+        if self.timed:
+            self._in_flight.add(len(self.calls) - 1)
         line = f"⚙️ 작업 중 (#{self.count}) — `{label}`" + (f" `{preview}`" if preview else "")
         await self._reset_stall()
         await self.listener._set_thread_status(
@@ -203,16 +274,47 @@ class ToolTrail:
         except Exception:
             pass  # progress display only — never fail the turn over it
 
+    async def tool_done(self, number: int, ok: bool = True) -> None:
+        """Call `number` (its position among this turn's tool() calls) returned. Records
+        how long it took and, once nothing is in flight, restarts the stall timers: from
+        here on a silence is the model's again."""
+        if not 0 <= number < len(self.calls) or self.durations[number] is not None:
+            return
+        self.durations[number] = time.monotonic() - self._started[number]
+        self.failed[number] = not ok
+        self._in_flight.discard(number)
+        if not self._in_flight and not self._finished:
+            self._disarm_stall_timers()
+            self._arm_stall_timers()
+
+    def _head(self, ok: bool) -> str:
+        icon, outcome = ("🛠", "") if ok else ("⚠️", " (실패로 종료)")
+        head = f"{icon} 툴 {self.count}회 사용{outcome}"
+        timed = [(d, i) for i, d in enumerate(self.durations) if d is not None]
+        if len(timed) > 1:
+            # With one call there is nothing to compare; its own line has the time.
+            longest, at = max(timed)
+            head += f" · 가장 오래 걸린 호출 {at + 1}. `{self.calls[at][0]}` {format_duration(longest)}"
+        return head + ":"
+
+    def _marks(self) -> list[str]:
+        return [
+            (f" · {format_duration(took)}" if took is not None else "")
+            + (" · 오류" if failed else "")
+            for took, failed in zip(self.durations, self.failed)
+        ]
+
     async def finish(self, ok: bool) -> None:
         self._finished = True
+        self._in_flight.clear()
         self._disarm_stall_timers()
         if self.ts is None or self.count == 0:
             return
         # The final message becomes the in-thread audit — which tools ran, in order,
         # with their full arguments. Outputs never leave the agent process.
-        icon, outcome = ("🛠", "") if ok else ("⚠️", " (실패로 종료)")
-        head = f"{icon} 툴 {self.count}회 사용{outcome}:"
-        first, *rest = audit_messages(head, self.calls)
+        first, *rest = audit_messages(
+            self._head(ok), self.calls, marks=self._marks(), note=skill_only_note(self.calls),
+        )
         web = self.listener._web_for(self.identity)
         channel = self.listener.harness.slack.channel
         if not web:
