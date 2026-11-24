@@ -698,6 +698,18 @@ class SlackConfig:
     # Opt in to human plaintext in the dedicated channel only. Relay channels
     # still require a mention, and bot messages retain the existing hop rules.
     respond_to_channel_messages: bool = False
+    # A trusted DRIVER bot: the name of an env var holding one bot's Slack user ID.
+    # When that bot @-mentions one of this harness's identities in the home channel,
+    # the mention is answered as a person's would be: same turn, same tools, same
+    # approval gates. For an end-to-end probe (does a mention still get an answer?) and
+    # for another system's bot asking this harness for something.
+    #
+    # It is the one foreign bot besides the co_approver that is heard, and it gets
+    # less than the co_approver does. It can NEVER approve: is_approver refuses this
+    # ID even when it is also listed as an approver, so a gated tool still waits for a
+    # human. Its mentions spend the per-thread bot-hop budget instead of resetting it,
+    # so two bots cannot keep each other going. Home channel only.
+    driver_env: str | None = None
     # Name of an env var holding a channel ID that gets one message per plugin
     # marketplace sync (startup and each refresh): sha, how many enabled plugins
     # resolved, and what went wrong. None, the default, posts nothing; the same lines
@@ -723,6 +735,10 @@ class SlackConfig:
     @property
     def co_approver(self) -> str | None:
         return os.environ.get(self.co_approver_env) if self.co_approver_env else None
+
+    @property
+    def driver(self) -> str | None:
+        return (os.environ.get(self.driver_env) or None) if self.driver_env else None
 
     @property
     def approvers(self) -> tuple[str, ...]:
@@ -773,8 +789,13 @@ class SlackConfig:
     def is_approver(self, slack_id: str) -> bool:
         """True for the primary approver, anyone in approvers_env, or the co-approver.
         The one check every approve/deny click and typed decision must pass — see
-        approvals.py's _on_interactive and listener.py's _on_request."""
-        return bool(slack_id) and slack_id in (*self.approvers, self.co_approver)
+        approvals.py's _on_interactive and listener.py's _on_request.
+
+        Never true for the driver bot, whatever else its ID is listed as: the bot that
+        can ask for work must not be able to approve it."""
+        if not slack_id or slack_id == self.driver:
+            return False
+        return slack_id in (*self.approvers, self.co_approver)
 
 
 @dataclass

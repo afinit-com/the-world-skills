@@ -748,13 +748,15 @@ class MentionMixin:
 
     async def _handle_mention(
         self, thread_ts: str, text: str, event: dict, identity: str | None = None,
-        *, note: str = "",
+        *, note: str = "", bot_hop: bool = False,
     ) -> None:
         """identity is the bot persona this turn answers as — the mentioned
         sub-persona for a bot-to-bot hop, or whatever a human addressed/the
         thread's existing owner. Falls back to main_persona for anything
         unrecognized (e.g. a stale identity key after a WORLD.md edit).
-        note goes into the prompt as-is (see _build_prompt)."""
+        note goes into the prompt as-is (see _build_prompt).
+        bot_hop counts this turn against the thread's bot-hop budget, here because
+        this is where a new thread's record is made (listener._dispatch_driver)."""
         identity = identity if identity in self.harness.personas else self.harness.main_persona.key
         persona = self.harness.personas[identity]
         msg_ts = event.get("ts", "")
@@ -766,6 +768,8 @@ class MentionMixin:
             "created": time.time(),
         })
         meta["last_message_ts"] = time.time()
+        if bot_hop:
+            meta["bot_hops"] = meta.get("bot_hops", 0) + 1
         self.save_state()
         phrases = self.harness.status_phrases_for(identity)
         await self._react(msg_ts, add=EMOJI_QUEUED, identity=identity)  # 👀 queued

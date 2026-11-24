@@ -24,7 +24,9 @@ hop, and any handoff released past the cap, gets one line in its prompt saying s
 handoff is parked in the thread's `pending_hop` and the approver is asked whether it may go
 through (approvals.post_hop_buttons); with no addressee configured there is no one
 to ask, so the thread just gets the stop notice. Foreign bots (not one of ours)
-are ignored entirely.
+are ignored entirely, with two configured exceptions, each exactly one bot ID: the
+co_approver, and the driver (SlackConfig.driver_env, see _dispatch_driver). Neither
+opens the door to bots in general.
 
 🔒 If you ever revisit that last rule: Slack does NOT deliver `app_mention` for a
 bot-authored message. Only `message` arrives, with bot_id set and no subtype
@@ -32,7 +34,9 @@ bot-authored message. Only `message` arrives, with bot_id set and no subtype
 reused for foreign bots — the proof of address has to be MENTION_RE finding one of
 our user_ids in the text. An attempt to accept foreign bots was built and reverted
 (the consumer stopped needing it); this is the part of it worth
-keeping, because it is a Slack fact, not a design choice.
+keeping, because it is a Slack fact, not a design choice. The driver path is built on
+it: a driver's message counts only when its text mentions one of our identities, and
+the event type is never consulted.
 
 Deliberately not implemented:
   - Session-per-thread (ClaudeSDKClient + session_id resume) — every mention
@@ -153,6 +157,11 @@ class SlackListener(PostingMixin, ApprovalMixin, MentionMixin):
         approver = ("set" if slack.approvers or slack.co_approver
                     else f"NOT SET ({slack.approver_env}) — every approval click is refused")
         self.harness.log(f"slack listener connected on {slack.channel}, approver {approver}")
+        driver = getattr(slack, "driver", None)
+        if driver and driver in (*slack.approvers, slack.co_approver):
+            self.harness.log(
+                f"⚠️  {slack.driver_env} names an ID that is also an approver. The driver "
+                "bot never approves, so that ID's decisions are refused; use two IDs.")
         if "process" in self.state:
             self.state["process"]["channel"] = f"slack: connected on {slack.channel}"
             self.save_state()
@@ -228,6 +237,49 @@ class SlackListener(PostingMixin, ApprovalMixin, MentionMixin):
         co_approver, explicitly @-mentioning one of this harness's own identities."""
         co = self.harness.slack.co_approver
         return bool(co and author == co and mentioned)
+
+    async def _dispatch_driver(
+        self, thread_ts: str, text: str, event: dict, msg_ts: str, mentioned: list[str]
+    ) -> None:
+        """A message from the trusted driver bot (SlackConfig.driver_env).
+
+        Answered like a person's mention: the ordinary mention turn, with the same
+        tools and the same approval gates. What differs from a person is everything
+        that would let a bot keep itself going:
+
+          - it must @-mention one of our identities every time, in a tracked thread
+            too. A bot's message arrives as `message`, never `app_mention` (see the
+            module docstring), so finding our user id in the text is the only proof
+            it was talking to us.
+          - it spends the thread's bot-hop budget instead of resetting it. Past
+            MAX_BOT_HOPS the thread gets the stop notice once and waits for a person.
+          - it is never an approver (SlackConfig.is_approver), so it cannot answer the
+            approval its own request raised.
+          - it is answered here even when escalate_human_mentions hands people to the
+            face: that rule is about who a person talks to, and a probe is asking
+            whether THIS harness answers.
+
+        Home channel only: _on_request returns for a relay channel before this runs.
+        """
+        if not mentioned:
+            return
+        meta = self.state["threads"].get(thread_ts) or {}
+        if meta.get("bot_hops", 0) >= MAX_BOT_HOPS:
+            if not meta.get("hop_limit_notified"):
+                meta["hop_limit_notified"] = True
+                self._mark_handled(msg_ts)
+                self.save_state()
+                ph = self.harness.approval_phrases
+                addressee = self.harness.slack.addressee
+                await self.post(
+                    ph.hop_limit.format(
+                        n=MAX_BOT_HOPS,
+                        who=f"<@{addressee}>" if addressee else ph.hop_limit_human),
+                    thread_ts=thread_ts,
+                )
+            return
+        self._mark_handled(msg_ts)
+        await self._handle_mention(thread_ts, text, event, mentioned[0], bot_hop=True)
 
     async def _dispatch_human(
         self, thread_ts: str, text: str, event: dict, etype: str, msg_ts: str,
@@ -404,6 +456,15 @@ class SlackListener(PostingMixin, ApprovalMixin, MentionMixin):
             # reaches every `return False` before its first await), and whichever delivery
             # actually dispatches will mark it again.
             self._unmark_handled(msg_ts)
+
+        # The driver is recognised by its ID, before the human/bot split: whether or not
+        # Slack marked the message as a bot's, it gets the driver's rules and never a
+        # person's (which would reset the hop budget it is meant to spend). One of our
+        # own identities is never the driver.
+        driver = getattr(self.harness.slack, "driver", None)
+        if driver and author == driver and author_identity is None and not simulated:
+            await self._dispatch_driver(thread_ts, text, event, msg_ts, mentioned)
+            return
 
         if not is_bot:
             # Bot-authored mentions arrive as message events, never app_mention.

@@ -144,6 +144,9 @@ def verify_plan(harness) -> str:
                 out.append("- co-approver, whose decision also counts (a bot one answers "
                            f"with a message, not a button): "
                            f"{_env(slack.co_approver_env, slack.co_approver)}")
+            if getattr(slack, "driver_env", None):
+                out.append("- driver bot, whose @-mention is answered like a person's "
+                           f"and which can never approve: {_env(slack.driver_env, slack.driver)}")
             if not slack.channel:
                 out.append("- the channel is not set, so this step cannot run yet")
         out.append(f"- [ ] {main.display} (`{main.key}`) answers a mention in the thread")
