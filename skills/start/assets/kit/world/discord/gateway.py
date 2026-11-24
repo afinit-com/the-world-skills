@@ -63,7 +63,12 @@ from ..process.spawn import run_agent_oneshot
 from ..process.state import pending_approvals_snippet, record_result_usage
 from ..slack.approvals import MAX_PENDING_APPROVALS
 from ..slack.approvals import ApprovalMixin as _Grants
-from ..slack.rules import LAST_HOP_NOTE_UNATTENDED, pre_approved_clause, split_approval_request
+from ..slack.rules import (
+    LAST_HOP_NOTE_UNATTENDED,
+    SKILL_RULE,
+    pre_approved_clause,
+    split_approval_request,
+)
 from ..slack.run_footer import format_run_footer, run_fields
 from ..toolkit import make_approval_gated, make_handoff_tool
 from ..types import MESSAGE_FORMAT, Agent, MentionTrigger, voice_clause
@@ -171,12 +176,13 @@ Rules (non-negotiable):
 {handoff}
 - The harness is not yours to reconfigure: never propose changes to settings,
   allowlists, hooks, or harness code — not even via APPROVAL_REQUEST.
+{skill_rule}
 - Your final text is posted verbatim to the thread, for a human skimming Discord.
   {message_format} Discord markdown (**bold**, `code`, lists) renders.
 - Reply in the same language the human wrote in, whatever language this prompt, your
   persona, or the world description is written in. Keep tool names, code, and quoted
   text as they are.
-""".strip().replace("{message_format}", MESSAGE_FORMAT)
+""".strip().replace("{message_format}", MESSAGE_FORMAT).replace("{skill_rule}", SKILL_RULE)
 
 
 class DiscordGateway:

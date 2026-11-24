@@ -888,6 +888,36 @@ class PersonaVoiceTests(unittest.TestCase):
         agent = SimpleNamespace(prompt_file=None, persona=persona)
         return compose_prompt(SimpleNamespace(home=Path(".")), agent, "TRIGGER", "CONTEXT")
 
+    def test_the_skill_tool_is_for_the_harness_own_skills_only(self) -> None:
+        """Both channels' mention rules keep `Skill` to marketplace skills and away
+        from the session's built-in commands."""
+        from world.slack.rules import RULES_TEMPLATE, SKILL_RULE
+        from world.types import Persona
+
+        self.assertIn("`Skill`", SKILL_RULE)
+        for word in ("plugin marketplaces", "built into the session", "scheduling", "loop",
+                     "never used here"):
+            self.assertIn(word, SKILL_RULE)
+        # A scheduling request goes to the harness's own scheduling tool first; the
+        # operator is only the fallback when the turn has no such tool.
+        own_tool = SKILL_RULE.index("this harness's own scheduling tool")
+        fallback = SKILL_RULE.index("Only when it has none")
+        self.assertLess(own_tool, fallback)
+        self.assertLess(fallback, SKILL_RULE.index("the operator"))
+        self.assertEqual(1, SKILL_RULE.count("operator"))
+        rules = self._rules(Persona(key="lumen", display="Lumen"))
+        self.assertIn(SKILL_RULE, rules)
+        # A rule among the rules, not a trailing note, and no unfilled placeholder.
+        self.assertLess(rules.index("Rules (non-negotiable)"), rules.index(SKILL_RULE))
+        self.assertLess(rules.index(SKILL_RULE), rules.index("Teammates you can hand off to"))
+        self.assertNotIn("{skill_rule}", RULES_TEMPLATE)
+        try:
+            from world.discord.gateway import DISCORD_RULES
+        except ImportError:      # discord.py is an optional dependency
+            return
+        self.assertIn(SKILL_RULE, DISCORD_RULES)
+        self.assertNotIn("{skill_rule}", DISCORD_RULES)
+
     def test_voice_reaches_mention_and_spawned_prompts_with_the_guard(self) -> None:
         from world.types import VOICE_GUARD, Persona
 
