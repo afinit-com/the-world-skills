@@ -331,7 +331,10 @@ differ. Put the main persona in its own folder too, and the values a person will
 A poll `check(state, now)` is non-LLM and returns `Signal(prompt=..., on_done=...)` to
 spawn or `None` to stay idle; per-worker bookkeeping lives in `state["agents"][name]` so it
 survives restarts, and `on_done` runs only after a verified-complete run.
-`ScheduleTrigger(Schedule.daily(9, 0, "Asia/Seoul"))` is the wall-clock alternative. On a
+`ScheduleTrigger(Schedule.daily(9, 0, "Asia/Seoul"))` is the wall-clock alternative;
+`weekdays=range(5)` keeps it to Monday through Friday, and
+`AnySchedule(Schedule.daily(9, ...), Schedule.daily(18, ...))` runs one worker at several
+times. On a
 harness's first start it adopts the current occurrence as already done and waits for the
 next one, so a dry run is not a first real run and the report should say when that is.
 A scheduled or polled run is announced as a card whose headline is the task title: the

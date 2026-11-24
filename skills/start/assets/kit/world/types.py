@@ -13,7 +13,7 @@ import os
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path, PureWindowsPath
-from typing import Any, Awaitable, Callable, Union
+from typing import Any, Awaitable, Callable, Iterable, Union
 from zoneinfo import ZoneInfo
 
 
@@ -58,6 +58,8 @@ class Schedule:
 
     This is NOT an interval ('every 6h' is a tick_task or a poll cooldown). It is
     'every day at 18:00 Asia/Seoul', 'every Monday 09:00', 'the 1st of each month 08:00'.
+    A daily schedule may name its days: `Schedule.daily(9, 0, tz, weekdays=range(5))` is
+    Monday to Friday. Several times for one agent is AnySchedule.
 
     The safety property the whole thing exists for: dedup is by OCCURRENCE, not interval.
     `previous_occurrence(now)` returns the most recent scheduled datetime <= now; the
@@ -76,10 +78,28 @@ class Schedule:
     weekday: int | None = None      # weekly: 0=Mon … 6=Sun (matches datetime.weekday())
     day: int | None = None          # monthly: 1..31, clamped to the month's last day
     tz: str = "UTC"                 # IANA name, e.g. "Asia/Seoul" (no dep — stdlib zoneinfo)
+    weekdays: tuple[int, ...] = ()  # daily only: the days it runs, 0=Mon … 6=Sun, read in
+                                    # `tz`. () is every day.
+
+    def __post_init__(self) -> None:
+        days = tuple(sorted(set(self.weekdays)))
+        if days and self.kind != "daily":
+            raise ValueError(f"weekdays belongs to a daily schedule, not {self.kind!r}")
+        if any(not isinstance(d, int) or not 0 <= d <= 6 for d in days):
+            raise ValueError(f"weekdays are 0 (Mon) to 6 (Sun), got {self.weekdays!r}")
+        object.__setattr__(self, "weekdays", days)
 
     @classmethod
-    def daily(cls, hour: int, minute: int = 0, tz: str = "UTC") -> "Schedule":
-        return cls("daily", hour, minute, tz=tz)
+    def daily(cls, hour: int, minute: int = 0, tz: str = "UTC", *,
+              weekdays: Iterable[int] | None = None) -> "Schedule":
+        if weekdays is None:
+            return cls("daily", hour, minute, tz=tz)
+        days = tuple(weekdays)
+        if not days:
+            # None means every day. An empty list is a schedule that never runs, and
+            # reading it as "every day" would hide whatever produced the empty list.
+            raise ValueError("weekdays is empty: leave it out to run every day")
+        return cls("daily", hour, minute, tz=tz, weekdays=days)
 
     @classmethod
     def weekly(cls, weekday: int, hour: int, minute: int = 0, tz: str = "UTC") -> "Schedule":
@@ -96,6 +116,8 @@ class Schedule:
         if self.kind == "daily":
             cand = local.replace(hour=self.hour, minute=self.minute, second=0, microsecond=0)
             if cand > local:
+                cand -= timedelta(days=1)
+            while self.weekdays and cand.weekday() not in self.weekdays:
                 cand -= timedelta(days=1)
             return cand
         if self.kind == "weekly":
@@ -119,7 +141,16 @@ class Schedule:
         Display only (STATUS.md, dry-run) — firing is decided by previous_occurrence."""
         prev = self.previous_occurrence(now)
         if self.kind == "daily":
-            return prev + timedelta(days=1)
+            if not self.weekdays:
+                return prev + timedelta(days=1)
+            # Not from `prev`: on a Sunday that is Friday, and Friday + 1 day is behind us.
+            local = now.astimezone(ZoneInfo(self.tz))
+            cand = local.replace(hour=self.hour, minute=self.minute, second=0, microsecond=0)
+            if cand <= local:
+                cand += timedelta(days=1)
+            while cand.weekday() not in self.weekdays:
+                cand += timedelta(days=1)
+            return cand
         if self.kind == "weekly":
             return prev + timedelta(days=7)
         y, m = (prev.year, prev.month + 1) if prev.month < 12 else (prev.year + 1, 1)
@@ -133,7 +164,57 @@ class Schedule:
             return f"weekly {calendar.day_abbr[self.weekday or 0]} {at}"
         if self.kind == "monthly":
             return f"monthly day {self.day or 1} {at}"
+        if self.weekdays:
+            return f"{self.kind} {self.weekday_text(calendar.day_abbr, '-', ',')} {at}"
         return f"{self.kind} {at}"
+
+    def weekday_text(self, names, span: str, sep: str) -> str:
+        """The weekdays as text: neighbouring days as first-last ("Mon-Fri"), anything
+        else listed ("Mon,Wed,Fri"). `names` is indexed 0=Mon … 6=Sun."""
+        days = self.weekdays
+        if len(days) >= 2 and days[-1] - days[0] == len(days) - 1:
+            return f"{names[days[0]]}{span}{names[days[-1]]}"
+        return sep.join(names[d] for d in days)
+
+
+@dataclass(frozen=True, init=False)
+class AnySchedule:
+    """One agent, several times: `AnySchedule(Schedule.daily(9, 0, tz), Schedule.daily(18,
+    0, tz))`. It is due whenever any of its parts is, so the most recent occurrence is
+    the latest of theirs and the next one the earliest.
+
+    Dedup stays by occurrence, exactly as for one Schedule: each time fires once, and
+    downtime across several of them catches up with a single run for the latest. The
+    parts may differ in kind, weekdays and time zone; occurrences are compared as
+    instants. There is no `tz` here because the parts need not share one. A datetime
+    this returns carries the zone of the part it came from.
+    """
+
+    parts: tuple[Schedule, ...]
+
+    def __init__(self, *parts: "Schedule | AnySchedule") -> None:
+        flat: list[Schedule] = []
+        for part in parts:
+            if isinstance(part, AnySchedule):
+                flat.extend(part.parts)
+            elif isinstance(part, Schedule):
+                flat.append(part)
+            else:
+                raise TypeError(f"AnySchedule takes Schedule values, got {part!r}")
+        if not flat:
+            raise ValueError("AnySchedule needs at least one Schedule")
+        object.__setattr__(self, "parts", tuple(flat))
+
+    def previous_occurrence(self, now: datetime) -> datetime:
+        """Most recent scheduled datetime <= `now` across every part."""
+        return max(part.previous_occurrence(now) for part in self.parts)
+
+    def next_occurrence(self, now: datetime) -> datetime:
+        """First scheduled datetime strictly after `now` across every part."""
+        return min(part.next_occurrence(now) for part in self.parts)
+
+    def describe(self) -> str:
+        return " + ".join(part.describe() for part in self.parts)
 
 
 @dataclass
@@ -146,7 +227,7 @@ class ScheduleTrigger:
     from the agent's prompt_file). Override it to say what the scheduled run should do.
     `title` is the card headline, as on Signal; empty means the prompt's first line."""
 
-    schedule: Schedule
+    schedule: Schedule | AnySchedule
     prompt: str = "정기 실행 시각입니다. 표준 지침(prompt.md)에 따라 이번 회차를 수행하세요."
     title: str = ""
 

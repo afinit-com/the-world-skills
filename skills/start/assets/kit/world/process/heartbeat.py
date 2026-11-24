@@ -20,7 +20,7 @@ import time
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
-from ..types import Schedule, ScheduleTrigger
+from ..types import AnySchedule, Schedule, ScheduleTrigger
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -39,9 +39,10 @@ def _ago(ts: float, now: float) -> str:
     return f"{delta / 3600:.1f}h ago"
 
 
-def _cadence(schedule: Schedule, now: float) -> str:
+def _cadence(schedule: Schedule | AnySchedule, now: float) -> str:
     """A scheduled agent's pulse: its fixed cadence and when it next fires, in the
-    schedule's own zone (the zone its author wrote the time in)."""
+    schedule's own zone (the zone its author wrote the time in). For an AnySchedule
+    that is the zone of whichever part fires next."""
     nxt = schedule.next_occurrence(datetime.fromtimestamp(now, tz=timezone.utc))
     return f"{schedule.describe()} (next {nxt:%Y-%m-%d %H:%M})"
 

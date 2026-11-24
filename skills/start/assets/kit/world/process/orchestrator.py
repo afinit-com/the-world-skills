@@ -192,8 +192,9 @@ async def _enqueue_due_agent(harness: "Harness", state: dict, agent, now: float,
         if signal is None and dry_run:
             schedule = agent.trigger.schedule
             nxt = schedule.next_occurrence(datetime.fromtimestamp(now, tz=timezone.utc))
+            # nxt's own zone, not schedule.tz: an AnySchedule's parts need not share one.
             harness.log(f"[dry-run] {agent.name} not due — next run {nxt:%Y-%m-%d %H:%M} "
-                        f"{schedule.tz}")
+                        f"{nxt.tzinfo}")
         origin_kind = "schedule"
     else:
         check = agent.trigger.check  # type: ignore[union-attr] — else-branch is PollTrigger
