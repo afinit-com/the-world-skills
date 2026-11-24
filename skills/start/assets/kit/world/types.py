@@ -690,6 +690,11 @@ class SlackConfig:
     # Opt in to human plaintext in the dedicated channel only. Relay channels
     # still require a mention, and bot messages retain the existing hop rules.
     respond_to_channel_messages: bool = False
+    # Name of an env var holding a channel ID that gets one message per plugin
+    # marketplace sync (startup and each refresh): sha, how many enabled plugins
+    # resolved, and what went wrong. None, the default, posts nothing; the same lines
+    # are in the log either way. The bot must be in that channel.
+    sync_log_channel_env: str | None = None
 
     @property
     def bot_token(self) -> str | None:
@@ -725,6 +730,12 @@ class SlackConfig:
             return []
         raw = os.environ.get(self.relay_channels_env, "")
         return [c.strip() for c in raw.split(",") if c.strip()]
+
+    @property
+    def sync_log_channel(self) -> str | None:
+        if not self.sync_log_channel_env:
+            return None
+        return os.environ.get(self.sync_log_channel_env) or None
 
     @property
     def escalate_to(self) -> str | None:

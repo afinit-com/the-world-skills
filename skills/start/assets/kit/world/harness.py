@@ -571,9 +571,33 @@ class Harness:
         from .process import plugins as _plugins
 
         async def refresh_plugins(state, listener) -> None:
-            await _plugins.sync_all(self)
+            summaries = await _plugins.sync_all(self)
+            await self._post_sync_summary(listener, summaries, when="refresh")
 
         self.tick_tasks.append(TickTask("plugin_refresh", self.plugin_refresh_s, refresh_plugins))
+
+    async def _post_sync_summary(self, listener, summaries, *, when: str) -> None:
+        """Post what a marketplace sync came to into SlackConfig.sync_log_channel, when
+        one is configured and Slack is on. Off by default. The log already has every
+        line, so a post that fails is logged and nothing else: it must not fail startup
+        or the refresh tick."""
+        channel = self.slack.sync_log_channel
+        if not (channel and summaries and listener is not None
+                and getattr(listener, "enabled", False)):
+            return
+        if self.discord is not None and self.channel is None:
+            return  # a Slack channel id means nothing to the Discord gateway
+        lines = [f"🔄 plugin sync ({when})"]
+        for summary in summaries:
+            lines.append(f"• {'' if summary.ok else '⚠️ '}{summary.line()}")
+            lines += [f"    {error[:300]}" for error in summary.errors[:5]]
+            if len(summary.errors) > 5:
+                lines.append(f"    … {len(summary.errors) - 5} more in the log")
+        try:
+            await listener.post("\n".join(lines), channel=channel)
+        except Exception as exc:  # noqa: BLE001 — a report about the sync, not the sync
+            self.log(f"plugin sync summary not posted to {channel} ({exc!r}); "
+                     "the lines above are the same report")
 
     def _init_schedules(self, state: dict) -> None:
         """First-sight adoption for ScheduleTrigger agents: one with no recorded
@@ -612,10 +636,11 @@ class Harness:
         # Sync plugin marketplaces once at startup so the very first tick already has them,
         # then let the refresh tick_task keep them current. Non-fatal: a failed sync logs
         # and leaves any prior clone in place (dry-run skips the network entirely).
+        startup_sync: list = []
         if self.plugins and not args.dry_run:
             from .process import plugins as _plugins
 
-            await _plugins.sync_all(self)
+            startup_sync = await _plugins.sync_all(self)
         if self.plugins:
             self._register_plugin_refresh()
 
@@ -666,6 +691,10 @@ class Harness:
             listener_task = None
         else:
             listener_task = asyncio.create_task(listener.start(stop))
+        if use_slack:
+            # Held until now because the sync runs before there is a listener. post()
+            # needs the bot token, not the socket, so it does not wait for the connect.
+            await self._post_sync_summary(listener, startup_sync, when="startup")
         if not args.dry_run:
             # STATUS.md renders this, so "is it running, and is Slack on?" has a written
             # answer that cannot go stale the way a sentence in WORLD.md does.
