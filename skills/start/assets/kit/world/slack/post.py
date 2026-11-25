@@ -32,6 +32,59 @@ async def slack_call(web, method: str, **kwargs):
     return await getattr(web, method)(**safe_payload(kwargs, posting=True))
 
 
+GUEST_TS_KEPT = 500  # messages in guest channels whose channel is remembered
+
+
+def remember_channel(listener, ts: str | None, channel: str) -> None:
+    """Remember that a message is in a guest channel, for the reactions put on it
+    (thread_channel). In memory only, and the oldest go first: a reaction on a message
+    that has been forgotten is tried in the home channel and fails quietly."""
+    if not ts:
+        return
+    kept = getattr(listener, "_guest_ts", None)
+    if kept is None:
+        kept = listener._guest_ts = {}
+    kept[ts] = channel
+    while len(kept) > GUEST_TS_KEPT:
+        kept.pop(next(iter(kept)))
+
+
+def note_guest_thread(listener, meta: dict, event: dict) -> None:
+    """Record on a thread's state record that it lives in a guest channel, and remember
+    the message that is being answered.
+
+    A thread first answered in a guest channel stays there: thread_channel reads the
+    record for every later post, status, transcript read and approval card. A home
+    thread records nothing. The message is remembered on every turn of a guest thread,
+    because a turn resumed by an approval or a button carries a message the listener
+    never routed, and its reactions belong in the thread's channel too."""
+    origin = event.get("channel")
+    if (origin and "channel" not in meta
+            and origin in getattr(listener.harness.slack, "guest_channels", ())):
+        meta["channel"] = origin
+    if meta.get("channel"):
+        remember_channel(listener, event.get("ts"), meta["channel"])
+
+
+def thread_channel(listener, ts: str | None) -> str | None:
+    """The channel a thread, or a message that mentioned us, is in.
+
+    The home channel unless the ts belongs to a guest channel (SlackConfig.
+    guest_channels_env): a thread answered there has its channel in its state record,
+    and a mention that arrived there is remembered until its turn is over. Every post,
+    reaction, status, transcript read and approval card for a thread goes through
+    here, so a guest thread is answered where it was asked.
+
+    Keyed by ts alone, like state["threads"]. Two channels can in theory hold the same
+    ts; the harness would then treat them as one thread."""
+    if ts:
+        meta = (getattr(listener, "state", None) or {}).get("threads", {}).get(ts) or {}
+        channel = meta.get("channel") or getattr(listener, "_guest_ts", {}).get(ts)
+        if channel:
+            return channel
+    return listener.harness.slack.channel
+
+
 class PostingMixin:
     harness: "Harness"
     web: "AsyncWebClient | None"
@@ -39,6 +92,10 @@ class PostingMixin:
     # Class-level on purpose: "once per process", not once per listener. A broken
     # indicator is a standing condition, and one line about it is the whole point.
     _warned_once: set[str] = set()
+
+    def channel_of(self, ts: str | None) -> str | None:
+        """The channel a thread, or a message that mentioned us, is in (thread_channel)."""
+        return thread_channel(self, ts)
 
     def _web_for(self, identity: str) -> AsyncWebClient | None:
         ident = self.identities.get(identity)
@@ -75,7 +132,8 @@ class PostingMixin:
         unfurl: bool = True,
         plain: bool = False,
     ) -> str | None:
-        """Posts to the dedicated channel (optionally into a thread) AS the given
+        """Posts to the dedicated channel, or into a thread wherever that thread is
+        (channel_of), AS the given
         bot identity; returns the message ts. Unknown/tokenless identity falls back to
         the main bot.
 
@@ -102,7 +160,7 @@ class PostingMixin:
         if not web:
             return None
         text = safe_text(text, posting=True)
-        channel = channel or self.harness.slack.channel
+        channel = channel or self.channel_of(thread_ts)
         if plain:
             return await self._post_chunks(web, text, identity=identity, thread_ts=thread_ts,
                                            channel=channel, unfurl=unfurl)
@@ -204,7 +262,7 @@ class PostingMixin:
         web = self._web_for(identity or self.harness.main_persona.key)
         if not web or not msg_ts:
             return
-        channel = self.harness.slack.channel
+        channel = self.channel_of(msg_ts)
         for label, name, call in (
             ("remove", remove, web.reactions_remove),
             ("add", add, web.reactions_add),
@@ -231,6 +289,6 @@ class PostingMixin:
         await self._best_effort(
             "assistant.threads.setStatus",
             slack_call(web, "assistant_threads_setStatus",
-                channel_id=self.harness.slack.channel, thread_ts=thread_ts, status=status,
+                channel_id=self.channel_of(thread_ts), thread_ts=thread_ts, status=status,
             ),
         )

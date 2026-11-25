@@ -154,11 +154,20 @@ The implementation decision, matrix, and residual risks are recorded in
 ## Inherited invariants (don't relax without deciding to)
 
 - **Single human approver** for anything outward. A bot co-approver may only *relay* a
-  human decision (HMAC-signed), never originate one.
+  human decision (HMAC-signed), never originate one. A team that cannot hang on one
+  person opts in with `SlackConfig(approvers_env=...)`: the humans listed there may also
+  accept, while every ask still pings the one approver. A trusted driver bot
+  (`SlackConfig(driver_env=...)`, for end-to-end probes and requests from another bot)
+  is answered like a person in the home channel, spends the bot-hop budget, and can
+  never approve. `guest_bots_env` names more bots under the same rules, and
+  `guest_channels_env` names channels where a mention is answered in its own thread,
+  approval card included; neither changes who can approve.
 - **Claude subscription billing only.** `ClaudeRunner` refuses `ANTHROPIC_API_KEY`; Codex
   authentication is independent and uses the saved Codex CLI login.
 - **exit-0 ≠ completion.** A `writes_report` agent's real completion is a file under its
-  task's `work/`; exit-0 with no file is recorded blocked and refires. What "finished"
+  task's `work/`; exit-0 with no file is recorded blocked and refires. An agent that
+  promised no file is complete when its run ends ok, and a run that keeps ending ok
+  without meeting its completion stops at the retry budget, blocked. What "finished"
   means per kind of work is a `TaskType` completion predicate, not a status anyone assigns.
 - **Boundaries in code, not prompts.** Spawned agents get an empty base tool set (no Bash,
   no Write) and only the scoped tools you hand them.

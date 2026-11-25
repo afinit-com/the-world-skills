@@ -15,7 +15,8 @@ model decides whether something may start:
   dependencies   depends_on, all must be done            (task.ready)
   conflicts      writes exclusive, reads shared          (task.conflicts)
   concurrency    a count checked before each start
-  retries        attempts vs retry_budget                (task.record_attempt)
+  retries        attempts vs retry_budget                (task.record_attempt, and
+                 _execute for a run that ended ok but did not verify)
   timeout        lease_until, set at claim               (task.reclaim_expired)
   rate limit     one 429 stops STARTING work, never drops what is queued
 
@@ -47,11 +48,14 @@ if TYPE_CHECKING:
 
 SCHEDULER_INTERVAL_S = 2
 DEFAULT_MAX_CONCURRENT = 2
+# How many tool names one run-log entry lists. `tool_calls` beside it is the full count,
+# so a longer run is visibly cut rather than quietly short.
+RUN_LOG_TOOLS_MAX = 200
 
 # The completion contract for a plain agent run, and the kit's existing one: a run is
-# complete when it finished AND left an artifact. spawn.enforce_completion already
-# decides that (exit-0 with nothing written comes back "blocked"), so the predicate reads
-# the attempt this scheduler recorded rather than re-deriving it.
+# complete when it finished AND left what its agent promised. For a writes_report agent
+# that is a file (spawn.enforce_completion already turns exit-0 with nothing written into
+# "blocked"); an agent that promised no file is complete when its run ended ok.
 AGENT_RUN_TYPE = tasks.AGENT_RUN_TYPE
 
 
@@ -62,11 +66,17 @@ def _last_attempt(home, task_id: str) -> dict | None:
     )
 
 
-def agent_run_completion(home):
+def agent_run_completion(home, agent_by_name=None):
     """Finished, and left something behind. Checks the task's work/ directly rather than
     trusting the recorded outcome — "exit-0 is not completion" applied to the artifact
     itself, which is what this predicate could not do while agents still wrote to
-    logs/<agent>/ and the scheduler had only an attempt event to read."""
+    logs/<agent>/ and the scheduler had only an attempt event to read.
+
+    `agent_by_name` is how the predicate learns what the agent promised. Only an agent
+    with writes_report owes a file. Asking one of every agent sent a posts-only agent (a
+    reminder, a job whose effect is in another system) back to the queue after each ok
+    run, and it ran again on every pass. An agent the lookup does not know is held to
+    the file, the stricter reading."""
 
     def predicate(task: "Task") -> tasks.Verdict:
         last = _last_attempt(home, task.id)
@@ -90,13 +100,20 @@ def agent_run_completion(home):
             return tasks.Verdict.done(
                 f"{task.agent} 실행 완료 · 산출물 {', '.join(elsewhere[:5])}"
             )
+        agent = agent_by_name(task.agent) if agent_by_name else None
+        if agent is not None and not getattr(agent, "writes_report", True):
+            return tasks.Verdict.done(
+                f"{task.agent} 실행 완료 · 산출물을 약속하지 않은 에이전트 (writes_report=False)"
+            )
         return tasks.Verdict.pending("실행은 끝났으나 산출물이 없음")
 
     return predicate
 
 
-def default_task_type(home) -> "TaskType":
-    return tasks.TaskType(AGENT_RUN_TYPE, completion=agent_run_completion(home))
+def default_task_type(home, agent_by_name=None) -> "TaskType":
+    return tasks.TaskType(
+        AGENT_RUN_TYPE, completion=agent_run_completion(home, agent_by_name)
+    )
 
 
 class Scheduler:
@@ -121,7 +138,9 @@ class Scheduler:
 
     def task_type_for(self, record: "Task") -> "TaskType":
         registry = getattr(self.harness, "task_types", {})
-        return registry.get(record.type) or default_task_type(self.harness.home)
+        return registry.get(record.type) or default_task_type(
+            self.harness.home, self.harness.agent_by_name
+        )
 
     # --- run side ---
 
@@ -178,11 +197,20 @@ class Scheduler:
         # `tasks/{task}/work` from here, and the runners pass the same id to the guard
         # hooks as WORLD_TASK — one id, two enforcement layers, neither of them the agent.
         token = set_current_task(record.id)
+        # Which tools the run called, in order. A mention turn shows this in its thread
+        # (ToolTrail); a queued run had no record at all, so a run that did the work and
+        # one that read its instructions and stopped left the same "ok" line.
+        used: list[str] = []
+
+        async def on_tool(name: str, _tool_input: dict) -> None:
+            used.append(name)
+
         try:
             # state goes along so a mutates:true agent's worktree is recorded where the
             # sweep and the keep/remove buttons look (spawn.py refuses the run without it).
             result = await run_agent_oneshot(
-                self.harness, agent, self._prompt(record, agent), state=self.state
+                self.harness, agent, self._prompt(record, agent), state=self.state,
+                on_tool=on_tool,
             )
         except asyncio.CancelledError:
             tasks.append_event(home, record.id, "cancelled")
@@ -213,6 +241,7 @@ class Scheduler:
             "task": record.id, "agent": agent.name, "status": result.status,
             "duration_s": round(result.duration_s, 1), "cost_usd": round(result.cost_usd, 4),
             "input_tokens": result.input_tokens, "output_tokens": result.output_tokens,
+            "tools": used[:RUN_LOG_TOOLS_MAX], "tool_calls": len(used),
         })
         tasks.record_attempt(
             home, record, outcome=result.status, summary=result.result_text[:500],
@@ -228,10 +257,28 @@ class Scheduler:
             tasks.transition(home, fresh, "verifying", reason="run finished")
             verdict = tasks.verify(home, fresh, self.task_type_for(fresh))
             if verdict.state != "done":
-                tasks.transition(home, fresh, "queued", reason="completion not met")
+                self._requeue_unverified(fresh, verdict)
             fresh = tasks.read(home, fresh.id) or fresh
         await self._announce(fresh, result, agent)
         save_state(self.harness, self.state)
+
+    def _requeue_unverified(self, record: "Task", verdict) -> None:
+        """A run ended ok and the completion contract still says no. Try again while the
+        retry budget lasts, then stop and ask a human.
+
+        record_attempt spends budget on every attempt but only blocks on a failed one,
+        so a run that kept ending ok without verifying was requeued on every pass with
+        nothing to stop it."""
+        home = self.harness.home
+        if record.retries_left() > 0:
+            tasks.transition(home, record, "queued", reason="completion not met")
+            return
+        why = "; ".join(str(e) for e in verdict.evidence)[:300]
+        tasks.transition(
+            home, record, "blocked",
+            reason=f"retry budget spent ({record.retry_budget}), completion not met: {why}",
+        )
+        self.harness.log(f"{record.id} blocked: ran ok {record.attempts}x without verifying")
 
     async def _announce(self, record: "Task", result, agent) -> None:
         """Post the task to Slack, once, when it reaches a state a human should see.
@@ -245,7 +292,8 @@ class Scheduler:
         What is worth announcing is decided by the completion contract and the task's
         state, not by an agent choosing which directory to write to. `done` means the
         contract was met; `blocked` means a human is needed. A run that neither finished
-        nor blocked is still in progress and says nothing.
+        nor blocked is still in progress and says nothing. The one opt-out is
+        Agent.quiet_done, for a `done` run with no thread of its own.
 
         Once per task, keyed on the "announced" event rather than on `record.thread`: a
         task started from a conversation already carries that conversation's thread, and
@@ -259,6 +307,13 @@ class Scheduler:
             return
         listener = self.listener
         if not (listener and getattr(listener, "enabled", False)):
+            return
+        if record.status == "done" and not record.thread and getattr(agent, "quiet_done", False):
+            # Agent.quiet_done: the run was its own announcement. Said in the record and
+            # the log, so a missing card is a decision someone can find, not a gap.
+            tasks.append_event(self.harness.home, record.id, "announce_skipped",
+                               reason="quiet_done")
+            self.harness.log(f"{record.id} done, no card posted (quiet_done)")
             return
         persona = self.harness.persona_for_agent(agent.name)
         try:

@@ -136,10 +136,23 @@ def verify_plan(harness) -> str:
             slack = harness.slack
             out += [f"- home channel: {_env(slack.channel_env, slack.channel)}",
                     f"- approver: {_env(slack.approver_env, slack.approver)}"]
+            if slack.approvers_env:
+                extra = [a for a in slack.approvers if a != slack.approver]
+                out.append("- more approvers, whose click also counts: "
+                           f"{_env(slack.approvers_env, ', '.join(extra))}")
             if slack.co_approver_env:
                 out.append("- co-approver, whose decision also counts (a bot one answers "
                            f"with a message, not a button): "
                            f"{_env(slack.co_approver_env, slack.co_approver)}")
+            if getattr(slack, "driver_env", None):
+                out.append("- driver bot, whose @-mention is answered like a person's "
+                           f"and which can never approve: {_env(slack.driver_env, slack.driver)}")
+            if getattr(slack, "guest_channels", ()):
+                out.append("- guest channels, where a mention is answered in its own thread: "
+                           f"{_env(slack.guest_channels_env, ', '.join(slack.guest_channels))}")
+            if getattr(slack, "guest_bots", ()):
+                out.append("- guest bots, heard under the driver's rules and never approvers: "
+                           f"{_env(slack.guest_bots_env, ', '.join(slack.guest_bots))}")
             if not slack.channel:
                 out.append("- the channel is not set, so this step cannot run yet")
         out.append(f"- [ ] {main.display} (`{main.key}`) answers a mention in the thread")

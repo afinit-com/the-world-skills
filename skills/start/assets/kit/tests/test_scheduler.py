@@ -14,10 +14,11 @@ from world.process import task as tasks
 from world.types import Agent, PollTrigger, RunResult, Schedule, ScheduleTrigger, Signal
 
 
-def _harness(*names: str, limit: int = 2) -> SimpleNamespace:
+def _harness(*names: str, limit: int = 2, writes_report: bool = False) -> SimpleNamespace:
     home = Path(tempfile.mkdtemp())
     (home / "logs").mkdir()
-    agents = [Agent(name, PollTrigger(lambda *_: None)) for name in names]
+    agents = [Agent(name, PollTrigger(lambda *_: None), writes_report=writes_report)
+              for name in names]
     return SimpleNamespace(
         home=home,
         logs_dir=home / "logs",
@@ -163,7 +164,7 @@ class OutcomeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_an_ok_run_that_writes_nothing_is_not_done(self) -> None:
         """exit-0 is not completion, now checked against the artifact itself."""
-        harness = _harness("watch")
+        harness = _harness("watch", writes_report=True)
         state = _state()
         made = _queue(harness, "watch")
         await self._run_one(harness, state, RunResult("ok", "아무것도 안 씀"))
@@ -243,6 +244,119 @@ class OutcomeTests(unittest.IsolatedAsyncioTestCase):
             await scheduler.drain()
             await scheduler.drain_inflight()
         self.assertEqual([], fired)
+
+
+class OkWithoutArtifactTests(unittest.IsolatedAsyncioTestCase):
+    """An ok run that left no file. Whether that is finished depends on what the agent
+    promised, and either way the queue must not run it without end."""
+
+    async def _passes(self, harness, state, result: RunResult, passes: int = 6) -> int:
+        runs = AsyncMock(return_value=result)
+        scheduler = _scheduler(harness, state)
+        with (
+            patch.object(sched, "run_agent_oneshot", new=runs),
+            patch.object(sched, "save_state"),
+        ):
+            for _ in range(passes):
+                await scheduler.drain()
+                await scheduler.drain_inflight()
+        return runs.await_count
+
+    async def test_an_agent_that_promised_no_file_runs_once_and_is_done(self) -> None:
+        # A reminder that only posts, or a job whose effect is elsewhere: there is
+        # nothing to find under work/, and asking for it re-ran the agent every pass.
+        harness = _harness("reminder")
+        made = _queue(harness, "reminder")
+        runs = await self._passes(harness, _state(), RunResult("ok", "posted"))
+
+        final = tasks.read(harness.home, made.id)
+        self.assertEqual(1, runs)
+        self.assertEqual("done", final.status)
+        self.assertEqual(1, final.attempts)
+        # Still reached through verify(), never assigned.
+        self.assertIn("verify", [e["kind"] for e in tasks.read_events(harness.home, made.id)])
+
+    async def test_a_report_agent_without_its_file_stops_at_the_retry_budget(self) -> None:
+        harness = _harness("watch", writes_report=True)
+        made = _queue(harness, "watch", retry_budget=2)
+        runs = await self._passes(harness, _state(), RunResult("ok", "wrote nothing"))
+
+        final = tasks.read(harness.home, made.id)
+        self.assertEqual(2, runs)
+        self.assertEqual("blocked", final.status)
+        self.assertEqual(2, final.attempts)
+
+    async def test_a_task_type_that_never_verifies_stops_at_the_retry_budget(self) -> None:
+        harness = _harness("migrate")
+        harness.task_types = {"migration": tasks.TaskType(
+            "migration", completion=lambda _task: tasks.Verdict.pending("not merged yet"))}
+        made = tasks.create(
+            harness.home, type="migration", title="migrate", slug="migrate",
+            agent="migrate", body="run", retry_budget=3,
+        )
+        runs = await self._passes(harness, _state(), RunResult("ok", "opened a PR"))
+
+        final = tasks.read(harness.home, made.id)
+        self.assertEqual(3, runs)
+        self.assertEqual("blocked", final.status)
+        reasons = [e.get("reason", "") for e in tasks.read_events(harness.home, made.id)
+                   if e.get("kind") == "transition" and e.get("to") == "blocked"]
+        self.assertTrue(reasons and "not merged yet" in reasons[-1], reasons)
+
+    async def test_an_unknown_agent_name_still_needs_a_file(self) -> None:
+        # The completion cannot see what an unregistered agent promised, so it keeps
+        # the stricter reading.
+        harness = _harness("watch")
+        predicate = sched.default_task_type(harness.home).completion
+        made = _queue(harness, "watch")
+        tasks.record_attempt(harness.home, made, outcome="ok")
+        self.assertEqual("pending", predicate(made).state)
+
+
+class RunLogToolsTests(unittest.IsolatedAsyncioTestCase):
+    """A queued run's log entry says which tools it called."""
+
+    async def _entry(self, calls: list[str], status: str = "ok") -> dict:
+        harness = _harness("reminder")
+        _queue(harness, "reminder")
+
+        async def run(_harness_, _agent, _prompt, *, on_tool=None, **_kwargs):
+            for name in calls:
+                await on_tool(name, {"q": "x"})
+            return RunResult(status, "posted")
+
+        scheduler = _scheduler(harness, _state())
+        with (
+            patch.object(sched, "run_agent_oneshot", new=run),
+            patch.object(sched, "append_run_log") as logged,
+            patch.object(sched, "save_state"),
+        ):
+            await scheduler.drain()
+            await scheduler.drain_inflight()
+        logged.assert_called_once()
+        return logged.call_args.args[1]
+
+    async def test_the_entry_lists_the_tools_in_call_order(self) -> None:
+        entry = await self._entry(["mcp__world__post_message", "Read", "mcp__world__post_message"])
+        self.assertEqual(
+            ["mcp__world__post_message", "Read", "mcp__world__post_message"], entry["tools"])
+        self.assertEqual(3, entry["tool_calls"])
+        self.assertEqual("reminder", entry["agent"])
+
+    async def test_a_run_that_called_nothing_says_so(self) -> None:
+        entry = await self._entry([])
+        self.assertEqual([], entry["tools"])
+        self.assertEqual(0, entry["tool_calls"])
+
+    async def test_a_failed_run_still_records_what_it_called(self) -> None:
+        entry = await self._entry(["Read"], status="blocked")
+        self.assertEqual(["Read"], entry["tools"])
+        self.assertEqual("blocked", entry["status"])
+
+    async def test_a_long_run_lists_the_first_names_and_counts_them_all(self) -> None:
+        entry = await self._entry(["Read"] * (sched.RUN_LOG_TOOLS_MAX + 5))
+        self.assertEqual(sched.RUN_LOG_TOOLS_MAX, len(entry["tools"]))
+        self.assertEqual(sched.RUN_LOG_TOOLS_MAX + 5, entry["tool_calls"])
 
 
 class EnqueueTests(unittest.IsolatedAsyncioTestCase):
@@ -508,3 +622,66 @@ class AnnounceTests(unittest.IsolatedAsyncioTestCase):
                         produces=_producing(harness.home, made.id))
         self.assertEqual("done", tasks.read(harness.home, made.id).status)
         self.assertEqual("", tasks.read(harness.home, made.id).thread)
+
+
+class QuietDoneTests(unittest.IsolatedAsyncioTestCase):
+    """Agent.quiet_done: a run that is its own announcement posts no card when done."""
+
+    # The same fake listener and run loop, without inheriting AnnounceTests' tests.
+    _listener = AnnounceTests._listener
+    _run = AnnounceTests._run
+
+    def _harness(self, *, quiet: bool, writes_report: bool = False):
+        harness = _harness("reminder", writes_report=writes_report)
+        harness.agents[0].quiet_done = quiet
+        harness.persona_for_agent = lambda _n: SimpleNamespace(key="main")
+        logs: list[str] = []
+        harness.log = logs.append
+        return harness, logs
+
+    async def test_by_default_a_done_run_still_posts_its_card(self) -> None:
+        self.assertFalse(Agent("reminder", PollTrigger(lambda *_: None)).quiet_done)
+        harness, _logs = self._harness(quiet=False)
+        made = _queue(harness, "reminder")
+        listener, posted = self._listener()
+        await self._run(harness, _state(), RunResult("ok", "posted the reminder"), listener)
+        self.assertEqual([(made.id, "done")], [(a, b) for a, b, _ in posted])
+
+    async def test_a_quiet_agents_done_run_posts_nothing_and_says_so_in_the_record(self) -> None:
+        harness, logs = self._harness(quiet=True)
+        made = _queue(harness, "reminder")
+        listener, posted = self._listener()
+        await self._run(harness, _state(), RunResult("ok", "posted the reminder"), listener)
+
+        self.assertEqual([], posted)
+        final = tasks.read(harness.home, made.id)
+        self.assertEqual("done", final.status)
+        self.assertEqual("", final.thread)
+        events = tasks.read_events(harness.home, made.id)
+        skipped = [e for e in events if e["kind"] == "announce_skipped"]
+        self.assertEqual(["quiet_done"], [e["reason"] for e in skipped])
+        self.assertNotIn("announced", [e["kind"] for e in events])
+        self.assertTrue(any(made.id in line and "quiet_done" in line for line in logs), logs)
+
+    async def test_a_quiet_agents_blocked_run_still_posts(self) -> None:
+        harness, _logs = self._harness(quiet=True)
+        _queue(harness, "reminder", retry_budget=1)
+        listener, posted = self._listener()
+        await self._run(harness, _state(), RunResult("blocked", "permission denials"), listener)
+        self.assertEqual(["blocked"], [status for _id, status, _r in posted])
+
+    async def test_a_quiet_agent_that_never_verifies_still_posts_when_it_blocks(self) -> None:
+        harness, _logs = self._harness(quiet=True, writes_report=True)
+        _queue(harness, "reminder", retry_budget=1)
+        listener, posted = self._listener()
+        await self._run(harness, _state(), RunResult("ok", "wrote nothing"), listener)
+        self.assertEqual(["blocked"], [status for _id, status, _r in posted])
+
+    async def test_a_quiet_agent_still_answers_a_task_asked_for_in_a_thread(self) -> None:
+        harness, _logs = self._harness(quiet=True)
+        made = _queue(harness, "reminder")
+        made.thread = "1699999999.0001"
+        tasks.save(harness.home, made)
+        listener, posted = self._listener()
+        await self._run(harness, _state(), RunResult("ok", "posted the reminder"), listener)
+        self.assertEqual([(made.id, "done")], [(a, b) for a, b, _ in posted])

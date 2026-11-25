@@ -24,7 +24,14 @@ hop, and any handoff released past the cap, gets one line in its prompt saying s
 handoff is parked in the thread's `pending_hop` and the approver is asked whether it may go
 through (approvals.post_hop_buttons); with no addressee configured there is no one
 to ask, so the thread just gets the stop notice. Foreign bots (not one of ours)
-are ignored entirely.
+are ignored entirely, with two configured exceptions, each exactly one bot ID: the
+co_approver, and the driver (SlackConfig.driver_env, see _dispatch_driver). Neither
+opens the door to bots in general. SlackConfig.guest_bots_env names further bots that
+get the driver's rules and nothing more.
+
+Guest channels (SlackConfig.guest_channels_env, see _dispatch_guest) are the one place
+besides the home channel where a mention is answered in its own thread. The thread's
+channel is recorded on its state record and read back by PostingMixin.channel_of.
 
 🔒 If you ever revisit that last rule: Slack does NOT deliver `app_mention` for a
 bot-authored message. Only `message` arrives, with bot_id set and no subtype
@@ -32,7 +39,9 @@ bot-authored message. Only `message` arrives, with bot_id set and no subtype
 reused for foreign bots — the proof of address has to be MENTION_RE finding one of
 our user_ids in the text. An attempt to accept foreign bots was built and reverted
 (the consumer stopped needing it); this is the part of it worth
-keeping, because it is a Slack fact, not a design choice.
+keeping, because it is a Slack fact, not a design choice. The driver path is built on
+it: a driver's message counts only when its text mentions one of our identities, and
+the event type is never consulted.
 
 Deliberately not implemented:
   - Session-per-thread (ClaudeSDKClient + session_id resume) — every mention
@@ -65,7 +74,7 @@ from slack_sdk.web.async_client import AsyncWebClient
 from .approvals import ApprovalMixin
 from .as_human import normalize_message
 from .mentions import MentionMixin
-from .post import PostingMixin
+from .post import PostingMixin, remember_channel
 from .rules import (  # noqa: F401 — APPROVAL_MARKER re-exported
     APPROVAL_MARKER,
     LAST_HOP_NOTE,
@@ -103,6 +112,8 @@ class SlackListener(PostingMixin, ApprovalMixin, MentionMixin):
             }
         self.user_to_identity: dict[str, str] = {}
         self._seen_msg_ts: dict[str, float] = {}
+        # msg ts -> guest channel, for a mention that arrived there (channel_of).
+        self._guest_ts: dict[str, str] = {}
 
     @property
     def enabled(self) -> bool:
@@ -128,6 +139,8 @@ class SlackListener(PostingMixin, ApprovalMixin, MentionMixin):
             self.identities[main_key]["user_id"] = self.bot_user_id
         self.user_to_identity[self.bot_user_id] = main_key
         await self._join_home_channel()
+        for guest in self.harness.slack.guest_channels:
+            await self._join_channel(guest)
         for key, ident in self.identities.items():
             if key == main_key:
                 continue
@@ -150,9 +163,18 @@ class SlackListener(PostingMixin, ApprovalMixin, MentionMixin):
         await self.socket.connect()
         self.ready.set()
         slack = self.harness.slack
-        approver = ("set" if slack.approver or slack.co_approver
+        approver = ("set" if slack.approvers or slack.co_approver
                     else f"NOT SET ({slack.approver_env}) — every approval click is refused")
         self.harness.log(f"slack listener connected on {slack.channel}, approver {approver}")
+        driver = getattr(slack, "driver", None)
+        if driver and driver in (*slack.approvers, slack.co_approver):
+            self.harness.log(
+                f"⚠️  {slack.driver_env} names an ID that is also an approver. The driver "
+                "bot never approves, so that ID's decisions are refused; use two IDs.")
+        if set(getattr(slack, "guest_bots", ())) & {*slack.approvers, slack.co_approver}:
+            self.harness.log(
+                f"⚠️  {slack.guest_bots_env} names an ID that is also an approver. A guest "
+                "bot never approves, so that ID's decisions are refused; use two IDs.")
         if "process" in self.state:
             self.state["process"]["channel"] = f"slack: connected on {slack.channel}"
             self.save_state()
@@ -172,8 +194,11 @@ class SlackListener(PostingMixin, ApprovalMixin, MentionMixin):
         """Enter the dedicated channel without an invite (channels:join). Already a
         member is fine; a private channel cannot be joined this way and needs
         `/invite @<bot>` once, which is what the log line says."""
+        await self._join_channel(self.harness.slack.channel)
+
+    async def _join_channel(self, channel: str) -> None:
         try:
-            await self.web.conversations_join(channel=self.harness.slack.channel)
+            await self.web.conversations_join(channel=channel)
         except Exception as exc:  # noqa: BLE001 — a failed join must not stop the listener
             code = ""
             response = getattr(exc, "response", None)
@@ -182,7 +207,7 @@ class SlackListener(PostingMixin, ApprovalMixin, MentionMixin):
             hint = ("invite it once with /invite in that channel"
                     if code in ("method_not_supported_for_channel_type", "missing_scope")
                     else "check the channel id")
-            self.harness.log(f"slack: could not join {self.harness.slack.channel} "
+            self.harness.log(f"slack: could not join {channel} "
                              f"({code or exc!r}) — {hint}")
 
     # --- socket-mode dispatch --------------------------------------------------
@@ -229,6 +254,51 @@ class SlackListener(PostingMixin, ApprovalMixin, MentionMixin):
         co = self.harness.slack.co_approver
         return bool(co and author == co and mentioned)
 
+    async def _dispatch_driver(
+        self, thread_ts: str, text: str, event: dict, msg_ts: str, mentioned: list[str]
+    ) -> None:
+        """A message from the trusted driver bot (SlackConfig.driver_env).
+
+        Answered like a person's mention: the ordinary mention turn, with the same
+        tools and the same approval gates. What differs from a person is everything
+        that would let a bot keep itself going:
+
+          - it must @-mention one of our identities every time, in a tracked thread
+            too. A bot's message arrives as `message`, never `app_mention` (see the
+            module docstring), so finding our user id in the text is the only proof
+            it was talking to us.
+          - it spends the thread's bot-hop budget instead of resetting it. Past
+            MAX_BOT_HOPS the thread gets the stop notice once and waits for a person.
+          - it is never an approver (SlackConfig.is_approver), so it cannot answer the
+            approval its own request raised.
+          - it is answered here even when escalate_human_mentions hands people to the
+            face: that rule is about who a person talks to, and a probe is asking
+            whether THIS harness answers.
+
+        A guest bot (SlackConfig.guest_bots_env) gets exactly this path. Reached from
+        the home channel and from a guest channel (_dispatch_guest); _on_request returns
+        for a relay channel before this runs.
+        """
+        if not mentioned:
+            return
+        meta = self.state["threads"].get(thread_ts) or {}
+        if meta.get("bot_hops", 0) >= MAX_BOT_HOPS:
+            if not meta.get("hop_limit_notified"):
+                meta["hop_limit_notified"] = True
+                self._mark_handled(msg_ts)
+                self.save_state()
+                ph = self.harness.approval_phrases
+                addressee = self.harness.slack.addressee
+                await self.post(
+                    ph.hop_limit.format(
+                        n=MAX_BOT_HOPS,
+                        who=f"<@{addressee}>" if addressee else ph.hop_limit_human),
+                    thread_ts=thread_ts,
+                )
+            return
+        self._mark_handled(msg_ts)
+        await self._handle_mention(thread_ts, text, event, mentioned[0], bot_hop=True)
+
     async def _dispatch_human(
         self, thread_ts: str, text: str, event: dict, etype: str, msg_ts: str,
         author: str, mentioned: list[str],
@@ -265,6 +335,87 @@ class SlackListener(PostingMixin, ApprovalMixin, MentionMixin):
         # else: this delivery is not actionable (a plain channel message in a thread
         # we don't follow). Leave msg_ts unmarked — its app_mention sibling may still
         # be in flight, and it is the one that matters.
+
+    def _channel_kind(self, channel: str | None) -> str | None:
+        """"home", "guest", "relay", or None for a channel that is none of ours.
+
+        Home wins over both listings of the same channel, so a dedicated channel that
+        is also listed as a relay does not bounce every mention through the relay path.
+        A guest listing wins over a relay listing, because it is the wider grant."""
+        slack = self.harness.slack
+        if channel == slack.channel:
+            return "home"
+        if channel in getattr(slack, "guest_channels", ()):
+            return "guest"
+        if channel in slack.relay_channels:
+            return "relay"
+        return None
+
+    def _is_trusted_bot(self, author: str, *, simulated: bool = False) -> bool:
+        """The driver or a guest bot (SlackConfig.trusted_bots), posting as itself.
+        One of our own identities is never one, and neither is a simulated person."""
+        slack = self.harness.slack
+        trusted = getattr(slack, "trusted_bots", None)
+        if trusted is None:  # a stand-in config that only knows the driver
+            trusted = (getattr(slack, "driver", None),)
+        return (bool(author) and not simulated and author in trusted
+                and author not in self.user_to_identity)
+
+    async def _dispatch_guest(
+        self, channel: str, thread_ts: str, text: str, event: dict, msg_ts: str,
+        author: str, author_identity: str | None, mentioned: list[str],
+        *, is_bot: bool, simulated: bool,
+    ) -> None:
+        """A message in a guest channel (SlackConfig.guest_channels_env).
+
+        The channel belongs to other people and usually to another bot, so the harness
+        is a guest in it: it answers when it is @-mentioned, in that thread, and is
+        otherwise silent. What differs from the home channel:
+
+          - a mention is required EVERY time, from a person too, in a thread we already
+            answered in as well. The other party in such a thread is often another bot
+            talking to the same person, and answering every follow-up would have two
+            bots replying to one message.
+          - a person's message in a thread of ours, without a mention, is not answered;
+            it only resets the thread's bot-hop budget, as a person speaking does at home.
+          - the only foreign bots heard are the driver and the guest bots, under the
+            driver's rules (_dispatch_driver). Our own identities are not routed here:
+            there are no bot-to-bot handoffs in someone else's channel.
+          - an approver's typed decision counts only in a thread we answered in here.
+            Their other messages in the channel are not ours to read.
+
+        The mention turn, its tools and its approval gate are the home channel's. The
+        thread record gets the channel (_handle_mention), and every post, reaction and
+        approval card for the thread follows it (PostingMixin.channel_of).
+        """
+        slack = self.harness.slack
+        meta = self.state["threads"].get(thread_ts) or {}
+        ours = meta.get("channel") == channel
+        if ours and not simulated and slack.is_approver(author):
+            self._mark_handled(msg_ts)  # before the await, as in _on_request
+            if await self.on_approver_message(thread_ts, text, event):
+                return
+            self._unmark_handled(msg_ts)
+        if author_identity is not None:
+            return
+        trusted_bot = self._is_trusted_bot(author, simulated=simulated)
+        if is_bot and not trusted_bot:
+            return
+        if not mentioned:
+            if ours and not trusted_bot and any(
+                    k in meta for k in ("bot_hops", "hop_limit_notified", "pending_hop")):
+                for key in ("bot_hops", "hop_limit_notified", "pending_hop"):
+                    meta.pop(key, None)
+                self.save_state()
+            return
+        remember_channel(self, msg_ts, channel)
+        if trusted_bot:
+            await self._dispatch_driver(thread_ts, text, event, msg_ts, mentioned)
+        else:
+            # Either delivery of a person's mention may arrive first (app_mention or
+            # message); our id in the text is the proof, so both are treated as one.
+            await self._dispatch_human(
+                thread_ts, text, event, "app_mention", msg_ts, author, mentioned)
 
     async def _dispatch_bot_hop(
         self, thread_ts: str, text: str, event: dict, author_identity: str, mentioned: list[str]
@@ -331,15 +482,12 @@ class SlackListener(PostingMixin, ApprovalMixin, MentionMixin):
         event = req.payload.get("event", {})
         etype = event.get("type")
         channel = event.get("channel")
-        home_channel = self.harness.slack.channel
-        # A channel is a relay only if it isn't home — if someone lists the dedicated
-        # channel in relay_channels too, home behavior wins rather than every mention
-        # bouncing through the relay path.
-        is_relay_channel = channel != home_channel and channel in self.harness.slack.relay_channels
-        if channel != home_channel and not is_relay_channel:
-            return  # dedicated-channel guard — neither ours nor a configured relay channel
-        if etype not in ("app_mention", "message") or event.get("subtype"):
+        # The dedicated-channel guard: None is a channel that is not ours, not a guest
+        # and not a relay channel.
+        kind = self._channel_kind(channel)
+        if kind is None or etype not in ("app_mention", "message") or event.get("subtype"):
             return
+        is_guest_channel, is_relay_channel = kind == "guest", kind == "relay"
         normalized = normalize_message(self, event)
         if normalized is None:
             return
@@ -377,6 +525,12 @@ class SlackListener(PostingMixin, ApprovalMixin, MentionMixin):
             self.user_to_identity[u] for u in MENTION_RE.findall(text) if u in self.user_to_identity
         ]
 
+        if is_guest_channel:
+            await self._dispatch_guest(
+                channel, thread_ts, text, event, msg_ts, author, author_identity, mentioned,
+                is_bot=is_bot, simulated=simulated)
+            return
+
         # An approver's DECISION, delivered as a message rather than a button click.
         # This must run before the human/bot split below: the co_approver this harness
         # addresses every ask to is a relay BOT, which (a) cannot click a Block Kit
@@ -404,6 +558,15 @@ class SlackListener(PostingMixin, ApprovalMixin, MentionMixin):
             # reaches every `return False` before its first await), and whichever delivery
             # actually dispatches will mark it again.
             self._unmark_handled(msg_ts)
+
+        # The driver is recognised by its ID, before the human/bot split: whether or not
+        # Slack marked the message as a bot's, it gets the driver's rules and never a
+        # person's (which would reset the hop budget it is meant to spend). One of our
+        # own identities is never the driver.
+        # A guest bot (SlackConfig.guest_bots_env) is recognised the same way.
+        if self._is_trusted_bot(author, simulated=simulated):
+            await self._dispatch_driver(thread_ts, text, event, msg_ts, mentioned)
+            return
 
         if not is_bot:
             # Bot-authored mentions arrive as message events, never app_mention.

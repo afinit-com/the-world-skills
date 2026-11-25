@@ -21,7 +21,7 @@ import json
 import time
 from typing import TYPE_CHECKING
 
-from .heartbeat import write_heartbeat
+from .heartbeat import BOARD_KINDS, REPORT_KINDS, on_board, write_heartbeat
 
 if TYPE_CHECKING:
     from ..harness import Harness
@@ -32,7 +32,7 @@ def default_state(harness: "Harness") -> dict:
     return {
         "agents": {agent.name: {} for agent in harness.agents}
         | {"worktree-sweep": {"last_run": 0}},
-        "recent_reports": [],   # [{ts, agent, summary}], most recent last
+        "recent_reports": [],   # [{ts, agent, summary, kind}], most recent last
         "rate_limited_until": 0,
         # thread_ts -> {slug, worktree, branch, created, last_message_ts, origin,
         # retries, session_id, identity} — threads are the unit of work; surviving
@@ -97,9 +97,23 @@ def save_state(harness: "Harness", state: dict) -> None:
     write_heartbeat(harness, state)
 
 
-def record_report(state: dict, agent: str, summary: str, limit: int = 20) -> None:
-    state["recent_reports"].append({"ts": time.time(), "agent": agent, "summary": summary})
-    state["recent_reports"] = state["recent_reports"][-limit:]
+def record_report(state: dict, agent: str, summary: str, limit: int = 20, *,
+                  kind: str = "run") -> None:
+    """Add one entry to recent_reports, which the next runs' prompts read as context.
+
+    `kind` says where it is shown (heartbeat.BOARD_KINDS); the default is the quiet one, so
+    a caller has to say when something belongs on the committed board.
+
+    The board's entries and the routine ones are each kept to their own last `limit`.
+    One shared window would let routine runs push a report out, and the board would
+    then change because of runs it does not even show."""
+    if kind not in REPORT_KINDS:
+        raise ValueError(f"record_report kind must be one of {REPORT_KINDS}, got {kind!r}")
+    entries = state["recent_reports"]
+    entries.append({"ts": time.time(), "agent": agent, "summary": summary, "kind": kind})
+    keep = {id(e) for e in [e for e in entries if on_board(e)][-limit:]}
+    keep |= {id(e) for e in [e for e in entries if not on_board(e)][-limit:]}
+    state["recent_reports"] = [e for e in entries if id(e) in keep]
 
 
 record_finding = record_report  # the name before 0.2.7

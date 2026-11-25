@@ -376,7 +376,12 @@ async def sync_with_origin(harness: "Harness", state: dict, listener) -> None:
         "to merge/rebase directly."
     )
     harness.log(msg)
-    record_report(state, "origin-sync", msg)
+    last = next((e for e in reversed(state.get("recent_reports", []))
+                 if e.get("agent") == "origin-sync"), None)
+    if last is None or last.get("summary") != msg:
+        # Once per distinct divergence. This runs every tick, and recording the same
+        # notice again only gave it a new timestamp, which rewrote HEARTBEAT.md.
+        record_report(state, "origin-sync", msg, kind="notice")
     if listener and listener.enabled:
         await listener.post(msg)
 

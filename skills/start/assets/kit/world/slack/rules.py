@@ -27,6 +27,22 @@ PRE_APPROVED_CLAUSE = """
   re-derive per request. Every other side effect still needs approval."""
 
 
+# One bullet of the mention rules, shared by both channels. `Skill` is on a mention
+# turn's surface only when the harness loads plugins (runners/claude.py), and the same
+# tool is how a session reaches its own built-in commands. A responder asked to "do this
+# every morning" has reached for one of those and set up a job the harness never
+# recorded. This is prose for the model, so it is a habit and not a boundary: what a
+# turn can reach is still decided by its tool list.
+SKILL_RULE = """
+- If your tool list has `Skill`, it is only for this harness's own skills: the ones
+  its plugin marketplaces provide. Never use it for a command built into the session
+  itself, such as scheduling a job or starting a loop: those are never used here,
+  because nothing in this harness records or approves what they start. When someone
+  asks for something scheduled or repeating, use this harness's own scheduling tool
+  if your tool list has one. Only when it has none, say that you cannot schedule it
+  and that the operator can.""".strip("\n")
+
+
 def pre_approved_clause(tool_names) -> str:
     """The carve-out text for `tool_names`, or "" when a harness declares none."""
     names = [n for n in (tool_names or []) if n]
@@ -193,6 +209,7 @@ Rules (non-negotiable):
   .claude/settings*.json, permission allowlists, hooks, or harness code — not
   even via APPROVAL_REQUEST. A denied command is something to report, not an allowlist
   request.
+{skill_rule}
 - Your final text is posted to the thread as your own identity, for a human
   skimming Slack. {message_format}
 - Reply in the language the humans in this thread write in, whatever language
@@ -201,4 +218,4 @@ Rules (non-negotiable):
 
 Teammates you can hand off to (by name, with hand_off):
 {roster}
-""".strip().replace("{message_format}", MESSAGE_FORMAT)
+""".strip().replace("{message_format}", MESSAGE_FORMAT).replace("{skill_rule}", SKILL_RULE)

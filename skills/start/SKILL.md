@@ -331,7 +331,10 @@ differ. Put the main persona in its own folder too, and the values a person will
 A poll `check(state, now)` is non-LLM and returns `Signal(prompt=..., on_done=...)` to
 spawn or `None` to stay idle; per-worker bookkeeping lives in `state["agents"][name]` so it
 survives restarts, and `on_done` runs only after a verified-complete run.
-`ScheduleTrigger(Schedule.daily(9, 0, "Asia/Seoul"))` is the wall-clock alternative. On a
+`ScheduleTrigger(Schedule.daily(9, 0, "Asia/Seoul"))` is the wall-clock alternative;
+`weekdays=range(5)` keeps it to Monday through Friday, and
+`AnySchedule(Schedule.daily(9, ...), Schedule.daily(18, ...))` runs one worker at several
+times. On a
 harness's first start it adopts the current occurrence as already done and waits for the
 next one, so a dry run is not a first real run and the report should say when that is.
 A scheduled or polled run is announced as a card whose headline is the task title: the
@@ -352,6 +355,10 @@ worker whose prompt opens with an instruction to the model a `title=` a person c
   and always shows `"result"`; the harness warns at startup.
   Selection uses artifacts and modification times (mtime), so preserved mtimes or clock
   changes can select an older report or cause `"result"` fallback.
+
+`Agent(quiet_done=True)` posts no card for a run that ends done. Use it for a worker
+whose run is its own announcement (it posts a reminder, it writes to another system); a
+blocked run still gets its card.
 
 Every mode keeps the 300-character excerpt and mention handling. A `file` excerpt also
 masks common token shapes, `token=`-style values and secret env values, but it quotes

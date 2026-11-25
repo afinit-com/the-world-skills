@@ -15,7 +15,9 @@ from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
     ResultMessage,
+    ToolResultBlock,
     ToolUseBlock,
+    UserMessage,
     create_sdk_mcp_server,
     query,
 )
@@ -23,7 +25,7 @@ from claude_agent_sdk import (
     tool as claude_tool,
 )
 
-from .base import ToolCallback
+from .base import ToolCallback, ToolDoneCallback
 from ..context import current_task
 from ..env import sdk_env
 from ..tools.spec import ToolSpec
@@ -161,9 +163,14 @@ async def _consume_stream(
     prompt: str,
     options: ClaudeAgentOptions,
     on_tool: ToolCallback | None,
+    on_tool_done: ToolDoneCallback | None = None,
 ) -> tuple[ResultMessage | None, bool]:
     result_msg: ResultMessage | None = None
     saw_rate_limit = False
+    # tool_use id -> the call's position among the on_tool calls. A result names the
+    # call it answers by id; the callback gets the position.
+    open_calls: dict[str, int] = {}
+    started = 0
     async for message in query(prompt=prompt, options=options):
         if isinstance(message, AssistantMessage):
             if message.error == "rate_limit":
@@ -171,7 +178,19 @@ async def _consume_stream(
             if on_tool:
                 for block in message.content:
                     if isinstance(block, ToolUseBlock):
+                        block_id = getattr(block, "id", None)
+                        if block_id:
+                            open_calls[block_id] = started
+                        started += 1
                         await on_tool(block.name, block.input or {})
+        elif isinstance(message, UserMessage) and on_tool_done:
+            # A tool's result comes back as a user message holding ToolResultBlocks.
+            blocks = message.content if isinstance(message.content, list) else []
+            for block in blocks:
+                if isinstance(block, ToolResultBlock):
+                    number = open_calls.pop(block.tool_use_id, None)
+                    if number is not None:
+                        await on_tool_done(number, not block.is_error)
         if isinstance(message, ResultMessage):
             result_msg = message
     return result_msg, saw_rate_limit
@@ -193,6 +212,7 @@ class ClaudeRunner:
         *,
         on_tool: ToolCallback | None = None,
         cwd: str | None = None,
+        on_tool_done: ToolDoneCallback | None = None,
     ) -> RunResult:
         if os.environ.get("ANTHROPIC_API_KEY"):
             return RunResult(
@@ -206,7 +226,8 @@ class ClaudeRunner:
         started = time.time()
         try:
             result_msg, saw_rate_limit = await asyncio.wait_for(
-                _consume_stream(prompt, options, on_tool), timeout=self.timeout_s
+                _consume_stream(prompt, options, on_tool, on_tool_done),
+                timeout=self.timeout_s,
             )
         except asyncio.TimeoutError:
             return RunResult(

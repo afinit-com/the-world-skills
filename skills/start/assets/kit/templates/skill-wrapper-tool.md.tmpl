@@ -72,7 +72,9 @@ in the table. In this kit (`world/runners/claude.py`):
 - When nothing resolves, `Skill` stays disallowed. An unsynced marketplace, a name missing
   from its `marketplace.json`, or a missing source directory is logged by name; an empty
   `enabled` list shows only in the sync summary, as `0/0 enabled plugin(s) resolved`. An
-  SDK without plugin support logs that the setting was ignored.
+  SDK without plugin support logs that the setting was ignored. With
+  `SlackConfig(sync_log_channel_env=...)` each sync's summary (sha, resolved count, what
+  failed) is also posted to that channel; it is off unless set.
 - A plugin is loaded whole: its own hooks and MCP servers come with it and run, and
   `strict_mcp_config` does not block them. That is the one full-trust exception to "a
   capability is a `ToolSpec`", so only a registry you trust to run code as you.

@@ -20,7 +20,7 @@ from .state import save_state
 from .task import read as read_task
 from .task import task_work_dir
 from ..context import current_task, reset_current_worktree, set_current_worktree
-from ..runners.base import ToolCallback
+from ..runners.base import ToolCallback, ToolDoneCallback, reports_tool_done
 from ..types import MESSAGE_FORMAT, Agent, RunResult, voice_clause
 
 if TYPE_CHECKING:
@@ -117,11 +117,15 @@ async def run_agent_oneshot(
     dry_run: bool = False,
     on_tool: ToolCallback | None = None,
     state: dict | None = None,
+    on_tool_done: ToolDoneCallback | None = None,
 ) -> RunResult:
     """Run one agent through its harness runner and verify real completion.
 
     `state` is needed only by a mutates:true agent, whose worktree is recorded there so
     the sweep and the keep/remove buttons can reach it. Without it such a run refuses.
+
+    `on_tool_done` reaches the runner only when it takes one (runners.base.
+    reports_tool_done). It is display timing, so a runner without it is not an error.
     """
 
     if dry_run:
@@ -160,7 +164,10 @@ async def run_agent_oneshot(
         # `cwd` is passed only when there is one. A runner that does not take it fails
         # with a TypeError — loud, and still not in the main checkout — instead of
         # silently spawning at git_root, which is what ignoring it would amount to.
-        result = await harness.agent_runner().run(agent, prompt, on_tool=on_tool, **run_kwargs)
+        runner = harness.agent_runner()
+        if on_tool_done is not None and reports_tool_done(runner):
+            run_kwargs["on_tool_done"] = on_tool_done
+        result = await runner.run(agent, prompt, on_tool=on_tool, **run_kwargs)
     finally:
         if worktree_token is not None:
             reset_current_worktree(worktree_token)

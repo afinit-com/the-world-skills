@@ -77,6 +77,7 @@ from .tools import RunEvent, ToolResult, ToolSpec  # noqa: E402
 from .types import (  # noqa: E402
     Agent,
     Button,
+    AnySchedule,
     ApprovalPhrases,
     DiscordConfig,
     MentionTrigger,
@@ -97,6 +98,7 @@ __all__ = [
     "load_harness_env",
     "looks_like_decision",
     "Agent",
+    "AnySchedule",
     "Button",
     "ApprovalPhrases",
     "DiscordConfig",

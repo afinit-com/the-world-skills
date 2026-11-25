@@ -118,7 +118,7 @@ class MutatesWorktreeTests(unittest.IsolatedAsyncioTestCase):
 
         seen = []
 
-        async def capture(_prompt, options, _on_tool):
+        async def capture(_prompt, options, _on_tool, _on_tool_done=None):
             seen.append(options.cwd)
             return None, False
 

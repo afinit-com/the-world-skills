@@ -31,7 +31,7 @@ Every recipe follows the rules in `docs/philosophy.md`:
   exception there stops the remaining agents' checks for that tick. A failure is written
   to the agent's state as `last_error` and the check stays idle. `heartbeat_fields`
   should include `last_polled`, so a poll that keeps failing shows up as stale in
-  `HEARTBEAT.md`.
+  `STATUS.md`'s agent pulse.
 
 Tokens come from `env/harness.env` (`<PROJECT>_LINEAR_API_KEY` and so on) and are read
 when a request is made. No recipe puts a token in a tool result, a prompt, a log line, or

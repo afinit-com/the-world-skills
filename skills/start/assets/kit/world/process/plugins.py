@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -125,19 +126,69 @@ def plugin_configs(harness: "Harness") -> list[dict]:
     return configs
 
 
-async def sync_all(harness: "Harness") -> None:
+# `https://user:token@host/…` in a clone URL comes back in git's own error text.
+_URL_USERINFO = re.compile(r"://[^/@\s]+@")
+
+
+@dataclasses.dataclass(frozen=True)
+class SyncSummary:
+    """What one marketplace sync came to. `sha` is None when the clone or fetch failed
+    (the last good clone, if any, is still in place). `errors` holds every line the sync
+    logged about this marketplace, with URL credentials removed, because a summary may
+    be posted to a channel (Harness._post_sync_summary)."""
+
+    marketplace: str
+    sha: str | None
+    resolved: int
+    enabled: int
+    errors: tuple[str, ...] = ()
+
+    @property
+    def ok(self) -> bool:
+        return self.sha is not None and self.resolved == self.enabled and not self.errors
+
+    def line(self) -> str:
+        return (f"{self.marketplace} @ {self.sha or '??'} — "
+                f"{self.resolved}/{self.enabled} enabled plugin(s) resolved")
+
+
+class _LogTap:
+    """The harness, with the lines it logs also kept. sync_marketplace and
+    resolve_enabled say what went wrong only through harness.log, and a summary needs
+    those words too."""
+
+    def __init__(self, harness: "Harness") -> None:
+        self._harness = harness
+        self.lines: list[str] = []
+
+    def log(self, text: str) -> None:
+        self.lines.append(text)
+        self._harness.log(text)
+
+    def __getattr__(self, name: str):
+        return getattr(self._harness, name)
+
+
+async def sync_all(harness: "Harness") -> list[SyncSummary]:
     """Sync every configured marketplace and log a one-line summary each. Called once at
-    startup and again on the refresh tick_task."""
+    startup and again on the refresh tick_task. Returns one SyncSummary per marketplace,
+    in order, so the caller can report them somewhere other than the log."""
     if not harness.plugins:
-        return
+        return []
     if not sdk_supports_plugins():
         harness.log(
             "plugin: this claude-agent-sdk has no ClaudeAgentOptions.plugins field — "
             "marketplaces will sync but agents cannot load them; upgrade the SDK"
         )
+    summaries: list[SyncSummary] = []
     for mp in harness.plugins:
-        sha = await sync_marketplace(harness, mp)
-        n = len(resolve_enabled(harness, mp))
-        harness.log(
-            f"plugin: {mp.name} @ {sha or '??'} — {n}/{len(mp.enabled)} enabled plugin(s) resolved"
+        tap = _LogTap(harness)
+        sha = await sync_marketplace(tap, mp)
+        resolved = len(resolve_enabled(tap, mp))
+        summary = SyncSummary(
+            marketplace=mp.name, sha=sha, resolved=resolved, enabled=len(mp.enabled),
+            errors=tuple(_URL_USERINFO.sub("://[redacted]@", line) for line in tap.lines),
         )
+        harness.log(f"plugin: {summary.line()}")
+        summaries.append(summary)
+    return summaries

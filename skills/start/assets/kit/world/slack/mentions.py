@@ -20,6 +20,7 @@ from ..channels.base import task_card_lines
 from .as_human import normalize_message, safe_text
 from .blocks import context as context_block
 from .blocks import divider, fields, header, quiet_broadcasts, section, text_blocks
+from .post import note_guest_thread, thread_channel
 from .rules import RULES_TEMPLATE, pre_approved_clause, slack_mrkdwn, split_approval_request
 from .run_footer import footer_context, run_fields
 from .ui import EMOJI_DONE, EMOJI_ERROR, EMOJI_QUEUED, EMOJI_WORKING, ToolTrail
@@ -28,6 +29,7 @@ from ..env import redact
 from ..process import task
 from ..process.spawn import run_agent_oneshot
 from ..process.state import pending_approvals_snippet, record_result_usage
+from ..runners.base import reports_tool_done
 from ..toolkit import make_approval_gated, make_handoff_tool, make_mention_tool
 from ..types import Agent, MentionTrigger, RunResult, voice_clause
 
@@ -432,7 +434,7 @@ class MentionMixin:
             return ""
         try:
             resp = await self.web.conversations_replies(
-                channel=channel or self.harness.slack.channel, ts=thread_ts, limit=max(limit, 30)
+                channel=channel or thread_channel(self, thread_ts), ts=thread_ts, limit=max(limit, 30)
             )
         except Exception:  # noqa: BLE001 — context seed only, never fatal
             return ""
@@ -702,6 +704,7 @@ class MentionMixin:
         *,
         tools: list,
         on_tool=None,
+        on_tool_done=None,
     ) -> MentionTurn:
         """Spawn the ad-hoc mention agent, bank what the call cost, and split its reply.
 
@@ -735,7 +738,10 @@ class MentionMixin:
             # can then reach the harness's installed plugin skills. Poll agents stay opt-in.
             allow_plugins=self.harness.mention_plugins and bool(self.harness.plugins),
         )
-        result = await run_agent_oneshot(self.harness, mention_agent, safe_text(prompt), on_tool=on_tool)
+        result = await run_agent_oneshot(
+            self.harness, mention_agent, safe_text(prompt),
+            on_tool=on_tool, on_tool_done=on_tool_done,
+        )
         if record_result_usage(self.state, identity, result):
             self.save_state()
         reply, approval_summary = split_approval_request(result.result_text)
@@ -743,13 +749,15 @@ class MentionMixin:
 
     async def _handle_mention(
         self, thread_ts: str, text: str, event: dict, identity: str | None = None,
-        *, note: str = "",
+        *, note: str = "", bot_hop: bool = False,
     ) -> None:
         """identity is the bot persona this turn answers as — the mentioned
         sub-persona for a bot-to-bot hop, or whatever a human addressed/the
         thread's existing owner. Falls back to main_persona for anything
         unrecognized (e.g. a stale identity key after a WORLD.md edit).
-        note goes into the prompt as-is (see _build_prompt)."""
+        note goes into the prompt as-is (see _build_prompt).
+        bot_hop counts this turn against the thread's bot-hop budget, here because
+        this is where a new thread's record is made (listener._dispatch_driver)."""
         identity = identity if identity in self.harness.personas else self.harness.main_persona.key
         persona = self.harness.personas[identity]
         msg_ts = event.get("ts", "")
@@ -760,7 +768,10 @@ class MentionMixin:
             "persona": identity,
             "created": time.time(),
         })
+        note_guest_thread(self, meta, event)
         meta["last_message_ts"] = time.time()
+        if bot_hop:
+            meta["bot_hops"] = meta.get("bot_hops", 0) + 1
         self.save_state()
         phrases = self.harness.status_phrases_for(identity)
         await self._react(msg_ts, add=EMOJI_QUEUED, identity=identity)  # 👀 queued
@@ -805,9 +816,14 @@ class MentionMixin:
         """The run-and-post half of _handle_mention."""
         await self._react(msg_ts, add=EMOJI_WORKING, remove=EMOJI_QUEUED, identity=identity)  # 🤔
         await self._set_thread_status(thread_ts, phrases.thinking, identity=identity)
-        trail = ToolTrail(self, identity, thread_ts, msg_ts, phrases)
+        # Only a runner that reports when a call returns can time one; with any other
+        # the trail keeps its untimed behaviour instead of waiting on a signal that
+        # never comes.
+        timed = reports_tool_done(self.harness.agent_runner())
+        trail = ToolTrail(self, identity, thread_ts, msg_ts, phrases, timed=timed)
         turn = await self._run_mention_turn(
-            identity, persona, prompt, tools=tools, on_tool=trail.tool
+            identity, persona, prompt, tools=tools, on_tool=trail.tool,
+            on_tool_done=trail.tool_done if timed else None,
         )
 
         ok = turn.result.status == "ok"
@@ -863,10 +879,13 @@ class MentionMixin:
         msg_ts = event.get("ts", "")
         # Track the thread so a follow-up human reply (no fresh @mention) still escalates
         # instead of falling through as untracked chatter.
-        self.state["threads"].setdefault(
+        meta = self.state["threads"].setdefault(
             thread_ts,
             {"slug": thread_ts, "origin": "escalated", "persona": main, "created": time.time()},
-        )["last_message_ts"] = time.time()
+        )
+        # In a guest channel the hand-off is posted in that thread, like any other reply.
+        note_guest_thread(self, meta, event)
+        meta["last_message_ts"] = time.time()
         self.save_state()
         await self._react(msg_ts, add=EMOJI_QUEUED, identity=main)  # 👀
         author = event.get("user", "")

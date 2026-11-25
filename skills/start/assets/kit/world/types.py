@@ -13,7 +13,7 @@ import os
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path, PureWindowsPath
-from typing import Any, Awaitable, Callable, Union
+from typing import Any, Awaitable, Callable, Iterable, Union
 from zoneinfo import ZoneInfo
 
 
@@ -58,6 +58,8 @@ class Schedule:
 
     This is NOT an interval ('every 6h' is a tick_task or a poll cooldown). It is
     'every day at 18:00 Asia/Seoul', 'every Monday 09:00', 'the 1st of each month 08:00'.
+    A daily schedule may name its days: `Schedule.daily(9, 0, tz, weekdays=range(5))` is
+    Monday to Friday. Several times for one agent is AnySchedule.
 
     The safety property the whole thing exists for: dedup is by OCCURRENCE, not interval.
     `previous_occurrence(now)` returns the most recent scheduled datetime <= now; the
@@ -76,10 +78,28 @@ class Schedule:
     weekday: int | None = None      # weekly: 0=Mon … 6=Sun (matches datetime.weekday())
     day: int | None = None          # monthly: 1..31, clamped to the month's last day
     tz: str = "UTC"                 # IANA name, e.g. "Asia/Seoul" (no dep — stdlib zoneinfo)
+    weekdays: tuple[int, ...] = ()  # daily only: the days it runs, 0=Mon … 6=Sun, read in
+                                    # `tz`. () is every day.
+
+    def __post_init__(self) -> None:
+        days = tuple(sorted(set(self.weekdays)))
+        if days and self.kind != "daily":
+            raise ValueError(f"weekdays belongs to a daily schedule, not {self.kind!r}")
+        if any(not isinstance(d, int) or not 0 <= d <= 6 for d in days):
+            raise ValueError(f"weekdays are 0 (Mon) to 6 (Sun), got {self.weekdays!r}")
+        object.__setattr__(self, "weekdays", days)
 
     @classmethod
-    def daily(cls, hour: int, minute: int = 0, tz: str = "UTC") -> "Schedule":
-        return cls("daily", hour, minute, tz=tz)
+    def daily(cls, hour: int, minute: int = 0, tz: str = "UTC", *,
+              weekdays: Iterable[int] | None = None) -> "Schedule":
+        if weekdays is None:
+            return cls("daily", hour, minute, tz=tz)
+        days = tuple(weekdays)
+        if not days:
+            # None means every day. An empty list is a schedule that never runs, and
+            # reading it as "every day" would hide whatever produced the empty list.
+            raise ValueError("weekdays is empty: leave it out to run every day")
+        return cls("daily", hour, minute, tz=tz, weekdays=days)
 
     @classmethod
     def weekly(cls, weekday: int, hour: int, minute: int = 0, tz: str = "UTC") -> "Schedule":
@@ -96,6 +116,8 @@ class Schedule:
         if self.kind == "daily":
             cand = local.replace(hour=self.hour, minute=self.minute, second=0, microsecond=0)
             if cand > local:
+                cand -= timedelta(days=1)
+            while self.weekdays and cand.weekday() not in self.weekdays:
                 cand -= timedelta(days=1)
             return cand
         if self.kind == "weekly":
@@ -119,7 +141,16 @@ class Schedule:
         Display only (STATUS.md, dry-run) — firing is decided by previous_occurrence."""
         prev = self.previous_occurrence(now)
         if self.kind == "daily":
-            return prev + timedelta(days=1)
+            if not self.weekdays:
+                return prev + timedelta(days=1)
+            # Not from `prev`: on a Sunday that is Friday, and Friday + 1 day is behind us.
+            local = now.astimezone(ZoneInfo(self.tz))
+            cand = local.replace(hour=self.hour, minute=self.minute, second=0, microsecond=0)
+            if cand <= local:
+                cand += timedelta(days=1)
+            while cand.weekday() not in self.weekdays:
+                cand += timedelta(days=1)
+            return cand
         if self.kind == "weekly":
             return prev + timedelta(days=7)
         y, m = (prev.year, prev.month + 1) if prev.month < 12 else (prev.year + 1, 1)
@@ -133,7 +164,57 @@ class Schedule:
             return f"weekly {calendar.day_abbr[self.weekday or 0]} {at}"
         if self.kind == "monthly":
             return f"monthly day {self.day or 1} {at}"
+        if self.weekdays:
+            return f"{self.kind} {self.weekday_text(calendar.day_abbr, '-', ',')} {at}"
         return f"{self.kind} {at}"
+
+    def weekday_text(self, names, span: str, sep: str) -> str:
+        """The weekdays as text: neighbouring days as first-last ("Mon-Fri"), anything
+        else listed ("Mon,Wed,Fri"). `names` is indexed 0=Mon … 6=Sun."""
+        days = self.weekdays
+        if len(days) >= 2 and days[-1] - days[0] == len(days) - 1:
+            return f"{names[days[0]]}{span}{names[days[-1]]}"
+        return sep.join(names[d] for d in days)
+
+
+@dataclass(frozen=True, init=False)
+class AnySchedule:
+    """One agent, several times: `AnySchedule(Schedule.daily(9, 0, tz), Schedule.daily(18,
+    0, tz))`. It is due whenever any of its parts is, so the most recent occurrence is
+    the latest of theirs and the next one the earliest.
+
+    Dedup stays by occurrence, exactly as for one Schedule: each time fires once, and
+    downtime across several of them catches up with a single run for the latest. The
+    parts may differ in kind, weekdays and time zone; occurrences are compared as
+    instants. There is no `tz` here because the parts need not share one. A datetime
+    this returns carries the zone of the part it came from.
+    """
+
+    parts: tuple[Schedule, ...]
+
+    def __init__(self, *parts: "Schedule | AnySchedule") -> None:
+        flat: list[Schedule] = []
+        for part in parts:
+            if isinstance(part, AnySchedule):
+                flat.extend(part.parts)
+            elif isinstance(part, Schedule):
+                flat.append(part)
+            else:
+                raise TypeError(f"AnySchedule takes Schedule values, got {part!r}")
+        if not flat:
+            raise ValueError("AnySchedule needs at least one Schedule")
+        object.__setattr__(self, "parts", tuple(flat))
+
+    def previous_occurrence(self, now: datetime) -> datetime:
+        """Most recent scheduled datetime <= `now` across every part."""
+        return max(part.previous_occurrence(now) for part in self.parts)
+
+    def next_occurrence(self, now: datetime) -> datetime:
+        """First scheduled datetime strictly after `now` across every part."""
+        return min(part.next_occurrence(now) for part in self.parts)
+
+    def describe(self) -> str:
+        return " + ".join(part.describe() for part in self.parts)
 
 
 @dataclass
@@ -146,7 +227,7 @@ class ScheduleTrigger:
     from the agent's prompt_file). Override it to say what the scheduled run should do.
     `title` is the card headline, as on Signal; empty means the prompt's first line."""
 
-    schedule: Schedule
+    schedule: Schedule | AnySchedule
     prompt: str = "정기 실행 시각입니다. 표준 지침(prompt.md)에 따라 이번 회차를 수행하세요."
     title: str = ""
 
@@ -204,6 +285,11 @@ class ApprovalPhrases:
     resolved_approved: str = "✅ 승인됨 — <@{who}>"
     resolved_rejected: str = "❌ 거부됨 — <@{who}>"
     not_approver: str = "<@{who}> 이 버튼은 승인권자({valid})만 누를 수 있어요."
+    # Appended to {valid} when SlackConfig.approvers_env adds people: they are counted,
+    # never @-mentioned, so a wrong click does not page the whole list.
+    more_approvers: str = " 외 {n}명"
+    # {valid} when nobody can be named (no primary approver, only the list).
+    approver_count: str = "등록된 {n}명"
     # Slack is connected but no approver is configured: nobody's click counts, so the
     # operator is told what to set instead of a stranger being told off.
     no_approver: str = (
@@ -489,9 +575,10 @@ class Agent:
                                     # lane).
     task_type: str = ""             # name of the TaskType whose completion predicate
                                     # decides when this agent's work is DONE. Empty →
-                                    # "agent-run": finished and left an artifact, which
-                                    # is the contract spawn.enforce_completion already
-                                    # applies. Set it when finishing means something the
+                                    # "agent-run": the run ended ok and, for a
+                                    # writes_report agent, left a file under work/ (the
+                                    # contract spawn.enforce_completion already applies).
+                                    # Set it when finishing means something the
                                     # harness must go and check (a DDL task is not done
                                     # because a PR opened).
     task_allowed: bool = False      # may this agent spawn sub-agents? default False —
@@ -522,6 +609,14 @@ class Agent:
     announce_file: str = ""         # announce="file" only: the report to show, a path
                                     # or glob relative to the task's work/ ("briefing.md",
                                     # "reports/*.md"). Empty → the first .md, then .txt.
+    quiet_done: bool = False        # True → a polled or scheduled run that ends `done`
+                                    # posts no task card. For an agent whose run is its
+                                    # own announcement (it posts a reminder, it writes
+                                    # to another system), where the card only repeats
+                                    # it. A blocked run still posts, since a human is
+                                    # needed, and so does a task asked for in a thread,
+                                    # where someone is waiting. The task record and the
+                                    # run log are written either way.
 
     def __post_init__(self) -> None:
         if self.announce not in ("result", "evidence", "file"):
@@ -569,6 +664,16 @@ class SlackConfig:
     # slack_approvals.decision_from_text recognizes. Both paths grant the same
     # thing; do not "fix" the button gate by assuming every approver can click.
     co_approver_env: str | None = None
+    # More HUMAN approvers: the name of an env var holding comma-separated Slack user
+    # IDs, each honored exactly like approver_env. A second explicit widening of the
+    # single-approver invariant, off unless set, for a team where one person being away
+    # must not stall every outward action.
+    #
+    # It widens ACCEPT only. Every ask still pings one addressee (`addressee`), and the
+    # "only approvers can click" notice names that one and counts the rest, so a list
+    # of ten is never paged. A bot's id here gains nothing: a bot cannot click, and its
+    # typed decision is believed only with a relay signature (approval_text.py).
+    approvers_env: str | None = None
     # Comma-separated channel IDs (env var name) beyond the dedicated channel
     # where the harness should still react to an app_mention — e.g. a sibling
     # sibling harness's own channel, once that harness starts @-mentioning US
@@ -593,6 +698,43 @@ class SlackConfig:
     # Opt in to human plaintext in the dedicated channel only. Relay channels
     # still require a mention, and bot messages retain the existing hop rules.
     respond_to_channel_messages: bool = False
+    # A trusted DRIVER bot: the name of an env var holding one bot's Slack user ID.
+    # When that bot @-mentions one of this harness's identities in the home channel,
+    # the mention is answered as a person's would be: same turn, same tools, same
+    # approval gates. For an end-to-end probe (does a mention still get an answer?) and
+    # for another system's bot asking this harness for something.
+    #
+    # It is the one foreign bot besides the co_approver that is heard, and it gets
+    # less than the co_approver does. It can NEVER approve: is_approver refuses this
+    # ID even when it is also listed as an approver, so a gated tool still waits for a
+    # human. Its mentions spend the per-thread bot-hop budget instead of resetting it,
+    # so two bots cannot keep each other going. Heard in the home channel and in guest
+    # channels (guest_channels_env), never in a relay channel.
+    driver_env: str | None = None
+    # GUEST channels: the name of an env var holding comma-separated channel IDs,
+    # beyond the home channel, where a mention of this harness is answered IN PLACE,
+    # in the thread it was made in. The approval card for that turn is posted in the
+    # same thread. Unlike a relay channel, nothing is moved to the home channel.
+    #
+    # The harness never tails a guest channel. Every message there must @-mention one
+    # of its identities to be answered, in a thread it already answered in too, because
+    # the channel belongs to other people and other bots. A person's message in such a
+    # thread, without a mention, only resets the thread's bot-hop budget. The one
+    # exception is an approver's typed decision in a thread that has a pending ask.
+    # The bot has to be a member of each guest channel.
+    guest_channels_env: str | None = None
+    # GUEST bots: the name of an env var holding comma-separated bot user IDs that are
+    # heard under the driver's rules, in the home channel and in guest channels. For
+    # another system's bot that hands a person's request to this harness by mentioning
+    # it. Like the driver, a guest bot must @-mention one of our identities every time,
+    # spends the per-thread bot-hop budget, and can NEVER approve: is_approver refuses
+    # these IDs wherever else they are listed, so a gated tool still waits for a human.
+    guest_bots_env: str | None = None
+    # Name of an env var holding a channel ID that gets one message per plugin
+    # marketplace sync (startup and each refresh): sha, how many enabled plugins
+    # resolved, and what went wrong. None, the default, posts nothing; the same lines
+    # are in the log either way. The bot must be in that channel.
+    sync_log_channel_env: str | None = None
 
     @property
     def bot_token(self) -> str | None:
@@ -615,11 +757,45 @@ class SlackConfig:
         return os.environ.get(self.co_approver_env) if self.co_approver_env else None
 
     @property
+    def driver(self) -> str | None:
+        return (os.environ.get(self.driver_env) or None) if self.driver_env else None
+
+    @property
+    def guest_channels(self) -> tuple[str, ...]:
+        raw = os.environ.get(self.guest_channels_env, "") if self.guest_channels_env else ""
+        return tuple(dict.fromkeys(c.strip() for c in raw.split(",") if c.strip()))
+
+    @property
+    def guest_bots(self) -> tuple[str, ...]:
+        raw = os.environ.get(self.guest_bots_env, "") if self.guest_bots_env else ""
+        return tuple(dict.fromkeys(b.strip() for b in raw.split(",") if b.strip()))
+
+    @property
+    def trusted_bots(self) -> tuple[str, ...]:
+        """The foreign bots whose mention is answered like a person's: the driver and
+        the guest bots. None of them can approve (is_approver)."""
+        return tuple(dict.fromkeys(b for b in (self.driver, *self.guest_bots) if b))
+
+    @property
+    def approvers(self) -> tuple[str, ...]:
+        """Every human whose decision counts: the primary approver first, then the IDs
+        in approvers_env, without duplicates. The co_approver is not in here."""
+        extra = os.environ.get(self.approvers_env, "") if self.approvers_env else ""
+        ids = [self.approver or "", *(part.strip() for part in extra.split(","))]
+        return tuple(dict.fromkeys(i for i in ids if i))
+
+    @property
     def relay_channels(self) -> list[str]:
         if not self.relay_channels_env:
             return []
         raw = os.environ.get(self.relay_channels_env, "")
         return [c.strip() for c in raw.split(",") if c.strip()]
+
+    @property
+    def sync_log_channel(self) -> str | None:
+        if not self.sync_log_channel_env:
+            return None
+        return os.environ.get(self.sync_log_channel_env) or None
 
     @property
     def escalate_to(self) -> str | None:
@@ -641,16 +817,21 @@ class SlackConfig:
         pinged the human directly while the buttons pinged the relay).
 
         This is the ASK side only. The ACCEPT side is `is_approver`, which stays
-        broader on purpose — a decision from either identity counts, whichever
-        one we happened to address.
+        broader on purpose — a decision from either identity, or from anyone in
+        `approvers`, counts, whichever one we happened to address.
         """
         return self.co_approver or self.approver
 
     def is_approver(self, slack_id: str) -> bool:
-        """True for the primary approver OR the co-approver (if configured).
-        The one check every approve/deny click must pass — see
-        listener.py's _on_interactive."""
-        return bool(slack_id) and slack_id in (self.approver, self.co_approver)
+        """True for the primary approver, anyone in approvers_env, or the co-approver.
+        The one check every approve/deny click and typed decision must pass — see
+        approvals.py's _on_interactive and listener.py's _on_request.
+
+        Never true for the driver bot or a guest bot, whatever else its ID is listed as:
+        the bot that can ask for work must not be able to approve it."""
+        if not slack_id or slack_id in self.trusted_bots:
+            return False
+        return slack_id in (*self.approvers, self.co_approver)
 
 
 @dataclass

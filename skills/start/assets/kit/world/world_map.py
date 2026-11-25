@@ -47,16 +47,23 @@ def _tool_group(label: str, tools) -> dict:
     }
 
 
+def _runs_at(sched) -> str:
+    at = f"{sched.hour:02d}:{sched.minute:02d} ({sched.tz})"
+    if sched.kind == "weekly":
+        return f"매주 {'월화수목금토일'[sched.weekday or 0]}요일 {at}"
+    if sched.kind == "monthly":
+        return f"매월 {sched.day or 1}일 {at}"
+    if sched.weekdays:
+        return f"매주 {sched.weekday_text('월화수목금토일', '~', '·')}요일 {at}"
+    return f"매일 {at}"
+
+
 def _runs(trigger) -> str:
     """When the job runs, in the words STATUS.md uses, so the two pages agree."""
     if isinstance(trigger, ScheduleTrigger):
-        sched = trigger.schedule
-        at = f"{sched.hour:02d}:{sched.minute:02d} ({sched.tz})"
-        if sched.kind == "weekly":
-            return f"매주 {'월화수목금토일'[sched.weekday or 0]}요일 {at}"
-        if sched.kind == "monthly":
-            return f"매월 {sched.day or 1}일 {at}"
-        return f"매일 {at}"
+        # An AnySchedule has parts; a single Schedule is its own only part.
+        parts = getattr(trigger.schedule, "parts", (trigger.schedule,))
+        return " / ".join(_runs_at(sched) for sched in parts)
     if isinstance(trigger, MentionTrigger):
         return "멘션 또는 넘겨받을 때"
     if isinstance(trigger, PollTrigger):
