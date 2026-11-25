@@ -17,7 +17,7 @@ import json
 import time
 from typing import TYPE_CHECKING
 
-from .post import slack_call
+from .post import slack_call, thread_channel
 
 if TYPE_CHECKING:
     from .listener import SlackListener
@@ -257,7 +257,7 @@ class ToolTrail:
         )
         now = time.monotonic()
         web = self.listener._web_for(self.identity)
-        channel = self.listener.harness.slack.channel
+        channel = thread_channel(self.listener, self.thread_ts)
         if not web:
             return
         try:
@@ -316,7 +316,7 @@ class ToolTrail:
             self._head(ok), self.calls, marks=self._marks(), note=skill_only_note(self.calls),
         )
         web = self.listener._web_for(self.identity)
-        channel = self.listener.harness.slack.channel
+        channel = thread_channel(self.listener, self.thread_ts)
         if not web:
             return
         # a trail that fails to redraw is cosmetic; the turn it narrates is not

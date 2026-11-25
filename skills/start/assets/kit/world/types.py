@@ -708,8 +708,28 @@ class SlackConfig:
     # less than the co_approver does. It can NEVER approve: is_approver refuses this
     # ID even when it is also listed as an approver, so a gated tool still waits for a
     # human. Its mentions spend the per-thread bot-hop budget instead of resetting it,
-    # so two bots cannot keep each other going. Home channel only.
+    # so two bots cannot keep each other going. Heard in the home channel and in guest
+    # channels (guest_channels_env), never in a relay channel.
     driver_env: str | None = None
+    # GUEST channels: the name of an env var holding comma-separated channel IDs,
+    # beyond the home channel, where a mention of this harness is answered IN PLACE,
+    # in the thread it was made in. The approval card for that turn is posted in the
+    # same thread. Unlike a relay channel, nothing is moved to the home channel.
+    #
+    # The harness never tails a guest channel. Every message there must @-mention one
+    # of its identities to be answered, in a thread it already answered in too, because
+    # the channel belongs to other people and other bots. A person's message in such a
+    # thread, without a mention, only resets the thread's bot-hop budget. The one
+    # exception is an approver's typed decision in a thread that has a pending ask.
+    # The bot has to be a member of each guest channel.
+    guest_channels_env: str | None = None
+    # GUEST bots: the name of an env var holding comma-separated bot user IDs that are
+    # heard under the driver's rules, in the home channel and in guest channels. For
+    # another system's bot that hands a person's request to this harness by mentioning
+    # it. Like the driver, a guest bot must @-mention one of our identities every time,
+    # spends the per-thread bot-hop budget, and can NEVER approve: is_approver refuses
+    # these IDs wherever else they are listed, so a gated tool still waits for a human.
+    guest_bots_env: str | None = None
     # Name of an env var holding a channel ID that gets one message per plugin
     # marketplace sync (startup and each refresh): sha, how many enabled plugins
     # resolved, and what went wrong. None, the default, posts nothing; the same lines
@@ -739,6 +759,22 @@ class SlackConfig:
     @property
     def driver(self) -> str | None:
         return (os.environ.get(self.driver_env) or None) if self.driver_env else None
+
+    @property
+    def guest_channels(self) -> tuple[str, ...]:
+        raw = os.environ.get(self.guest_channels_env, "") if self.guest_channels_env else ""
+        return tuple(dict.fromkeys(c.strip() for c in raw.split(",") if c.strip()))
+
+    @property
+    def guest_bots(self) -> tuple[str, ...]:
+        raw = os.environ.get(self.guest_bots_env, "") if self.guest_bots_env else ""
+        return tuple(dict.fromkeys(b.strip() for b in raw.split(",") if b.strip()))
+
+    @property
+    def trusted_bots(self) -> tuple[str, ...]:
+        """The foreign bots whose mention is answered like a person's: the driver and
+        the guest bots. None of them can approve (is_approver)."""
+        return tuple(dict.fromkeys(b for b in (self.driver, *self.guest_bots) if b))
 
     @property
     def approvers(self) -> tuple[str, ...]:
@@ -791,9 +827,9 @@ class SlackConfig:
         The one check every approve/deny click and typed decision must pass — see
         approvals.py's _on_interactive and listener.py's _on_request.
 
-        Never true for the driver bot, whatever else its ID is listed as: the bot that
-        can ask for work must not be able to approve it."""
-        if not slack_id or slack_id == self.driver:
+        Never true for the driver bot or a guest bot, whatever else its ID is listed as:
+        the bot that can ask for work must not be able to approve it."""
+        if not slack_id or slack_id in self.trusted_bots:
             return False
         return slack_id in (*self.approvers, self.co_approver)
 

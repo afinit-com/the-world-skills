@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING
 
 from .approval_text import decision_from_text, relay_decision
 from .blocks import text_blocks
-from .post import slack_call
+from .post import slack_call, thread_channel
 from .rules import LAST_HOP_NOTE
 from ..process import approval_scope
 from ..process.ledger import LedgerFabricationError, append_ledger
@@ -108,13 +108,16 @@ class ApprovalMixin:
         channel; a cross-channel relay (_handle_relay_mention) points them at the
         origin channel's thread so the origin sees the decision too. They never
         move the approval GRANT: _on_interactive always keys that off the button
-        message's own thread, which is always in the dedicated channel and is the
-        thread whose gated write tools the grant unlocks."""
+        message's own thread, which is the thread whose gated write tools the grant
+        unlocks. The card is posted where that thread is (channel_of): the dedicated
+        channel, or the guest channel the thread was answered in."""
         if not self.web:
             return
         req_name = self.identities.get(requester, {}).get("display", requester)
         slack = self.harness.slack
-        value = f"{reply_channel or slack.channel}:{reply_thread_ts or thread_ts}|{requester}"
+        # Where this thread is: the home channel, or the guest channel it was asked in.
+        here = thread_channel(self, thread_ts)
+        value = f"{reply_channel or here}:{reply_thread_ts or thread_ts}|{requester}"
         main_key = self.harness.main_persona.key
         # SIM108 wants a ternary here. The ternary has nowhere to put these two comments,
         # and the routing rule they record is the whole reason this branch exists.
@@ -142,20 +145,20 @@ class ApprovalMixin:
                     and pending.get("requester") == requester
                     and pending.get("request_summary", pending.get("summary")) == summary
                     and pending.get("scope_hash", _hash) == _hash
-                    and pending.get("reply_channel", slack.channel) == (reply_channel or slack.channel)
+                    and pending.get("reply_channel", here) == (reply_channel or here)
                     and pending.get("reply_thread_ts", thread_ts) == (reply_thread_ts or thread_ts)
                     and pending.get("msg_ts")):
                 ts = pending["msg_ts"].replace(".", "")
                 # No preview: an unfurl of the card copies its buttons, and Slack keeps
                 # showing them after the card itself is answered (found live).
                 await self.post(
-                    f"대기 중인 승인 요청: <https://slack.com/archives/{slack.channel}/p{ts}|기존 승인 카드>",
+                    f"대기 중인 승인 요청: <https://slack.com/archives/{here}/p{ts}|기존 승인 카드>",
                     thread_ts=thread_ts, unfurl=False,
                 )
                 return
         ph = self.harness.approval_phrases
         resp = await slack_call(self.web, "chat_postMessage",
-            channel=slack.channel,
+            channel=here,
             thread_ts=thread_ts,
             text=ph.request_fallback.format(mention=mention, name=req_name, summary=summary),
             blocks=[
@@ -179,7 +182,7 @@ class ApprovalMixin:
             "summary": summary[:300],
             "request_summary": summary,
             "scope_hash": _hash,
-            "reply_channel": reply_channel or slack.channel,
+            "reply_channel": reply_channel or here,
             "reply_thread_ts": reply_thread_ts or thread_ts,
             "ts": time.time(),
         })
@@ -390,7 +393,7 @@ class ApprovalMixin:
         if not self.web:
             return
         await slack_call(self.web, "chat_postMessage",
-            channel=self.harness.slack.channel,
+            channel=thread_channel(self, thread_ts),
             thread_ts=thread_ts,
             text=f"워크트리 정리 확인: {path}",  # notification fallback
             blocks=[
@@ -451,7 +454,8 @@ class ApprovalMixin:
         kept.append({"type": "context", "elements": [{"type": "mrkdwn", "text": result_line}]})
         with contextlib.suppress(Exception):
             await slack_call(self.web, "chat_update",
-                channel=self.harness.slack.channel, ts=msg_ts, text=result_line, blocks=kept
+                channel=thread_channel(self, msg.get("thread_ts") or msg_ts), ts=msg_ts,
+                text=result_line, blocks=kept
             )
 
     async def post_hop_buttons(
@@ -482,7 +486,7 @@ class ApprovalMixin:
             n=n, mention=mention, from_name=from_name, to_name=to_name, summary=summary,
         )
         await slack_call(self.web, "chat_postMessage",
-            channel=self.harness.slack.channel,
+            channel=thread_channel(self, thread_ts),
             thread_ts=thread_ts,
             text=text,
             blocks=[
@@ -568,7 +572,7 @@ class ApprovalMixin:
             return
         try:
             await slack_call(self.web, "chat_postEphemeral",
-                channel=self.harness.slack.channel, user=clicker, thread_ts=thread_ts, text=text,
+                channel=thread_channel(self, thread_ts), user=clicker, thread_ts=thread_ts, text=text,
             )
         except Exception as exc:  # noqa: BLE001 — a courtesy note, never worth failing over
             self.harness.log(f"ephemeral note to {clicker} failed: {exc!r}")
@@ -620,7 +624,7 @@ class ApprovalMixin:
                 kept = [b for b in original if b.get("type") != "actions"]
                 kept.append({"type": "context", "elements": [{"type": "mrkdwn", "text": result_line}]})
                 await slack_call(self.web, "chat_update",
-                    channel=slack.channel, ts=msg_ts, text=result_line, blocks=kept
+                    channel=thread_channel(self, thread_ts), ts=msg_ts, text=result_line, blocks=kept
                 )
             except Exception:  # noqa: BLE001 — best-effort edit; fall back to a plain reply
                 await self.post(result_line, thread_ts=thread_ts)
@@ -788,7 +792,7 @@ class ApprovalMixin:
         # ANOTHER harness) has no gated tool waiting in OUR thread — the origin harness
         # runs the work — so resuming here would only generate noise in the dedicated
         # channel. On a denial there is no grant, so the resumed turn can only reply.
-        own_channel = not reply_channel or reply_channel == self.harness.slack.channel
+        own_channel = not reply_channel or reply_channel == thread_channel(self, thread_ts)
         meta = self.state.get("threads", {}).get(thread_ts)
         if own_channel and meta is not None:
             note = (

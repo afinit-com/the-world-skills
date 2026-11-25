@@ -20,6 +20,7 @@ from ..channels.base import task_card_lines
 from .as_human import normalize_message, safe_text
 from .blocks import context as context_block
 from .blocks import divider, fields, header, quiet_broadcasts, section, text_blocks
+from .post import note_guest_thread, thread_channel
 from .rules import RULES_TEMPLATE, pre_approved_clause, slack_mrkdwn, split_approval_request
 from .run_footer import footer_context, run_fields
 from .ui import EMOJI_DONE, EMOJI_ERROR, EMOJI_QUEUED, EMOJI_WORKING, ToolTrail
@@ -433,7 +434,7 @@ class MentionMixin:
             return ""
         try:
             resp = await self.web.conversations_replies(
-                channel=channel or self.harness.slack.channel, ts=thread_ts, limit=max(limit, 30)
+                channel=channel or thread_channel(self, thread_ts), ts=thread_ts, limit=max(limit, 30)
             )
         except Exception:  # noqa: BLE001 — context seed only, never fatal
             return ""
@@ -767,6 +768,7 @@ class MentionMixin:
             "persona": identity,
             "created": time.time(),
         })
+        note_guest_thread(self, meta, event)
         meta["last_message_ts"] = time.time()
         if bot_hop:
             meta["bot_hops"] = meta.get("bot_hops", 0) + 1
@@ -877,10 +879,13 @@ class MentionMixin:
         msg_ts = event.get("ts", "")
         # Track the thread so a follow-up human reply (no fresh @mention) still escalates
         # instead of falling through as untracked chatter.
-        self.state["threads"].setdefault(
+        meta = self.state["threads"].setdefault(
             thread_ts,
             {"slug": thread_ts, "origin": "escalated", "persona": main, "created": time.time()},
-        )["last_message_ts"] = time.time()
+        )
+        # In a guest channel the hand-off is posted in that thread, like any other reply.
+        note_guest_thread(self, meta, event)
+        meta["last_message_ts"] = time.time()
         self.save_state()
         await self._react(msg_ts, add=EMOJI_QUEUED, identity=main)  # 👀
         author = event.get("user", "")

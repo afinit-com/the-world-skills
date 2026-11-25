@@ -159,6 +159,9 @@ Codex 전용 설치는 `claude-agent-sdk`를 제외하며, 이를 `both`로 바�
   사람들도 승인할 수 있고, 승인 요청은 여전히 승인자 한 명에게만 갑니다. 신뢰하는 드라이버
   봇(`SlackConfig(driver_env=...)`, 종단 간 점검이나 다른 봇의 요청용)의 멘션은 전용
   채널에서 사람의 멘션처럼 답하되, 봇 간 홉 한도를 쓰고, 승인은 절대 할 수 없습니다.
+  `guest_bots_env`에 적은 봇들도 같은 규칙을 따르고, `guest_channels_env`에 적은 채널에서는
+  멘션을 받은 스레드에서 바로 답하며 승인 카드도 그 스레드에 올립니다. 둘 다 승인할 수 있는
+  사람을 바꾸지 않습니다.
 - **Claude 구독 과금만.** `ClaudeRunner`는 `ANTHROPIC_API_KEY`를 거부합니다. Codex 인증은
   별개이며 저장된 Codex CLI 로그인을 씁니다.
 - **exit-0 ≠ 완료.** `writes_report` 에이전트의 진짜 완료는 해당 태스크의 `work/` 아래에
