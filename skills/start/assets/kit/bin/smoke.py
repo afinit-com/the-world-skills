@@ -116,7 +116,7 @@ async def main() -> None:
     )
     last = due(datetime(2026, 7, 12, 17, 59, tzinfo=timezone.utc))          # adopt yesterday
     check("fires at 18:00:05", last < due(datetime(2026, 7, 12, 18, 0, 5, tzinfo=timezone.utc)))
-    last = datetime(2026, 7, 12, 18, 0, 5, tzinfo=timezone.utc).timestamp()  # on_done records
+    last = datetime(2026, 7, 12, 18, 0, 5, tzinfo=timezone.utc).timestamp()  # enqueue records
     check("no refire same day 20:00", not last < due(datetime(2026, 7, 12, 20, 0, tzinfo=timezone.utc)))
     check("no double-run after restart 22:00",
           not last < due(datetime(2026, 7, 12, 22, 0, tzinfo=timezone.utc)))

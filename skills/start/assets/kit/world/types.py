@@ -64,7 +64,7 @@ class Schedule:
     The safety property the whole thing exists for: dedup is by OCCURRENCE, not interval.
     `previous_occurrence(now)` returns the most recent scheduled datetime <= now; the
     orchestrator fires only when the agent's persisted `last_fired` predates that
-    occurrence, and records `last_fired` only after a verified-complete run. So a daily,
+    occurrence, and records `last_fired` when that occurrence's task is queued. So a daily,
     weekly, OR monthly job runs an occurrence exactly once — a restart at any hour cannot
     double-fire it (state.json holds last_fired), and downtime across an occurrence catches
     up with a single run for the latest missed one, never a storm. An interval scheme

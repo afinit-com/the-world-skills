@@ -11,9 +11,10 @@ scheduler.py; what stays here is the part that was always cheap. A tick now neve
 a model, so it cannot be the thing that blocks.
 
 Required behaviors:
-  - blocked backoff: a blocked agent's trigger stays armed (on_done not called,
+  - blocked backoff: a blocked agent's poll check stays armed (on_done not called,
     so the run is never silently lost) but refires at most hourly — a structurally
-    blocked agent once burned ~10min per tick forever.
+    blocked agent once burned ~10min per tick forever. A scheduled occurrence is
+    consumed when its task is queued (_due_signal), so it does not refire.
   - one open task per agent: a poll condition stays true until the work lands, so
     without a duplicate guard the queue fills with copies of one ask.
   - tick-level crash isolation: any exception inside one tick is logged and the
@@ -125,6 +126,8 @@ def _apply_agent_result(harness: "Harness", state: dict, agent, agent_state: dic
         # other ok run is routine and is shown in STATUS.md (heartbeat.BOARD_KINDS).
         kind = "report" if getattr(agent, "writes_report", False) else "run"
         record_report(state, agent.name, result.result_text[:300], kind=kind)
+        # Whatever blocked an earlier attempt is over; the backoff has nothing left to wait for.
+        agent_state.pop("blocked_until", None)
         harness.log(f"{agent.name} done in {result.duration_s:.0f}s")
     elif result.status == "blocked":
         agent_state["blocked_until"] = now + BLOCKED_BACKOFF_SECONDS
@@ -141,14 +144,26 @@ def _previous_occurrence_ts(agent, now: float) -> float:
     ).timestamp()
 
 
+def _occurrence_key(agent, due_ts: float) -> str:
+    """What a scheduled task is stamped with (origin.source_hash) so it can be found by
+    the occurrence it was made for. The task's creation time cannot stand in for it: a
+    tick reads the clock, then fetches, and a catch-up for one occurrence can be
+    written after the next has come due."""
+    return f"occurrence:{agent.name}:{int(due_ts)}"
+
+
 def _due_signal(agent, agent_state: dict, now: float):
     """A ScheduleTrigger's due-check — the wall-clock cron equivalent of a poll check(),
     and deliberately READ-ONLY (a dry-run runs this and must mutate nothing, or it rewrites
     HEARTBEAT.md; see run_tick).
 
     Dedup is by OCCURRENCE and restart-safe: fire only when `last_fired` predates the most
-    recent scheduled time (Schedule.previous_occurrence), and record `last_fired` ONLY in
-    on_done — a verified-complete run, the same rule poll checks follow (never on exit-0).
+    recent scheduled time (Schedule.previous_occurrence). `last_fired` is recorded by
+    _enqueue_due_agent when the occurrence's task is queued, not when its run succeeds:
+    from then on the task is the occurrence, and its retry budget decides how often it
+    is tried. Recording it in on_done left the occurrence due for as long as the run
+    took or failed, so it fired on every tick, and a retry that succeeded after its
+    Signal was gone never recorded it at all and the occurrence ran twice.
     Because last_fired lives in state.json, a restart at any hour can't re-fire an occurrence
     already recorded — daily, weekly, and monthly alike. The first-sight adoption (so a fresh
     schedule waits for its NEXT time instead of catching up one already passed) happens once
@@ -156,11 +171,7 @@ def _due_signal(agent, agent_state: dict, now: float):
     due_ts = _previous_occurrence_ts(agent, now)
     if agent_state.get("last_fired", 0) >= due_ts:
         return None
-
-    def on_done(_result) -> None:
-        agent_state["last_fired"] = now
-
-    return Signal(prompt=agent.trigger.prompt, on_done=on_done, title=agent.trigger.title)
+    return Signal(prompt=agent.trigger.prompt, title=agent.trigger.title)
 
 
 def _signal_title(signal: Signal) -> str:
@@ -209,6 +220,19 @@ async def _enqueue_due_agent(harness: "Harness", state: dict, agent, now: float,
     if signal is None:
         return False
 
+    origin = tasks.Origin(kind=origin_kind, by=agent.name)
+    if origin_kind == "schedule":
+        origin.source_hash = _occurrence_key(agent, _previous_occurrence_ts(agent, now))
+        taken = tasks.find_by_source_hash(harness.home, origin.source_hash)
+        if taken is not None and not dry_run:
+            # A task for this very occurrence exists and `last_fired` does not say so:
+            # the process died after the task file was written and before state.json
+            # was. Record it now, whatever state the task is in, or the occurrence is
+            # queued a second time.
+            agent_state["last_fired"] = now
+            harness.log(f"{agent.name}: {taken.id} already covers this occurrence — recorded")
+            return False
+
     open_task = tasks.has_open_task(harness.home, agent.name)
     if open_task is not None:
         harness.log(f"{agent.name} fired again while {open_task.id} is {open_task.status} — skipped")
@@ -227,9 +251,11 @@ async def _enqueue_due_agent(harness: "Harness", state: dict, agent, now: float,
         slug=tasks.slugify(agent.name),
         agent=agent.name,
         body=signal.prompt,
-        origin=tasks.Origin(kind=origin_kind, by=agent.name),
+        origin=origin,
     )
     scheduler.remember_signal(record.id, signal)
+    if origin_kind == "schedule":
+        agent_state["last_fired"] = now
     harness.log(f"queued {record.id} for {agent.name}")
     return True
 
