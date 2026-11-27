@@ -109,6 +109,12 @@ def _build_options(
     git_root. Project and local settings — the guard hooks among them — are read from
     wherever the session starts, which is why worktrees.run_worktree refuses a worktree
     whose committed copy is missing the hook registry.
+
+    The "user" source stays out. It would load the operator's ~/.claude/CLAUDE.md and
+    ~/.claude/settings.json (their hooks, permissions, env) into every fleet turn, and
+    those are written for the operator's own interactive sessions, not for these bots.
+    Login does not depend on it: the CLI finds its credentials in the keychain or the
+    config dir whatever --setting-sources says, and plugins arrive as --plugin-dir.
     """
 
     mcp_servers: dict = {}
@@ -141,7 +147,7 @@ def _build_options(
         cwd=str(cwd or harness.git_root),
         model=agent.model or harness.model,
         permission_mode="acceptEdits",
-        setting_sources=["user", "project", "local"],
+        setting_sources=["project", "local"],
         strict_mcp_config=True,
         # The SDK merges this onto os.environ, so sdk_env() blanks every harness
         # secret explicitly — the CLI, its Bash and its plugin MCP servers never see them.

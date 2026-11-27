@@ -76,6 +76,13 @@ class ClaudeAdapterContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(options.strict_mcp_config)
         self.assertIn("Bash", options.disallowed_tools)
 
+    def test_settings_come_from_the_project_never_the_operators_home(self):
+        # "user" would load the operator's ~/.claude/CLAUDE.md and settings into every
+        # fleet turn. Project and local carry the guard hooks and stay.
+        agent = Agent("watch", PollTrigger(lambda *_: None))
+        options = self.adapter._build_options(self.harness(), agent)
+        self.assertEqual(options.setting_sources, ["project", "local"])
+
     def test_toolspec_converts_to_in_process_mcp_tool(self):
         @tool("probe", "Probe", {"value": str})
         async def probe(_args):
