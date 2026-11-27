@@ -16,7 +16,9 @@ model decides whether something may start:
   conflicts      writes exclusive, reads shared          (task.conflicts)
   concurrency    a count checked before each start
   retries        attempts vs retry_budget                (task.record_attempt, and
-                 _execute for a run that ended ok but did not verify)
+                 _execute for a run that ended ok but did not verify); a failed
+                 attempt goes back to the queue and waits (retry_backoff_s, or
+                 BLOCKED_BACKOFF_SECONDS after a blocked run)
   timeout        lease_until, set at claim               (task.reclaim_expired)
   rate limit     one 429 stops STARTING work, never drops what is queued
 
@@ -36,11 +38,16 @@ from typing import TYPE_CHECKING
 from . import task as tasks
 from . import worktrees
 from .ledger import recent_rejections_snippet
-from .orchestrator import RATE_LIMIT_BACKOFF_SECONDS, _apply_agent_result, append_run_log
+from .orchestrator import (
+    BLOCKED_BACKOFF_SECONDS,
+    RATE_LIMIT_BACKOFF_SECONDS,
+    _apply_agent_result,
+    append_run_log,
+)
 from .spawn import compose_prompt, run_agent_oneshot
 from .state import record_result_usage, save_state
 from ..context import reset_current_task, set_current_task
-from ..types import Signal
+from ..types import RunResult, Signal
 
 if TYPE_CHECKING:
     from .task import Task, TaskType
@@ -48,6 +55,14 @@ if TYPE_CHECKING:
 
 SCHEDULER_INTERVAL_S = 2
 DEFAULT_MAX_CONCURRENT = 2
+# How long a task waits after its first failed attempt before it may start again.
+# Whatever broke the run (a provider that would not initialize, a dropped network) is
+# rarely gone two seconds later, and an immediate retry spends the whole budget inside
+# one outage. Each later failure waits three times longer (retry_backoff_s): with the
+# default budget of 3 that is attempts at 0, 5 and 20 minutes. A scheduled occurrence
+# is consumed when its task is queued, so these attempts are all it gets.
+RETRY_BACKOFF_SECONDS = 300
+RETRY_BACKOFF_MAX_SECONDS = 3600
 # How many tool names one run-log entry lists. `tool_calls` beside it is the full count,
 # so a longer run is visibly cut rather than quietly short.
 RUN_LOG_TOOLS_MAX = 200
@@ -57,6 +72,28 @@ RUN_LOG_TOOLS_MAX = 200
 # that is a file (spawn.enforce_completion already turns exit-0 with nothing written into
 # "blocked"); an agent that promised no file is complete when its run ended ok.
 AGENT_RUN_TYPE = tasks.AGENT_RUN_TYPE
+
+
+def retry_backoff_s(attempts: int) -> int:
+    """The wait after the `attempts`-th failed attempt."""
+    grown = RETRY_BACKOFF_SECONDS * 3 ** min(max(attempts, 1) - 1, 10)
+    return min(grown, RETRY_BACKOFF_MAX_SECONDS)
+
+
+def _recorded_retry_at(home, task_id: str) -> float:
+    """When a requeued task may start again, read back from its own record. The wait is
+    written on the transition that requeued it, so it outlives the process: a harness
+    started once a minute otherwise spends a whole retry budget in as many minutes."""
+    last = next(
+        (e for e in reversed(tasks.read_events(home, task_id)) if e.get("kind") == "transition"),
+        None,
+    )
+    if last is None or last.get("to") != "queued":
+        return 0.0
+    try:
+        return float(last.get("retry_at") or 0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _last_attempt(home, task_id: str) -> dict | None:
@@ -127,9 +164,13 @@ class Scheduler:
         self._inflight: dict[str, asyncio.Task] = {}
         # task_id -> the Signal whose on_done records "this occurrence is handled".
         # In memory only: a closure cannot be written to task.md. A restart therefore
-        # loses it and the trigger may fire again — exactly what a restart mid-run does
+        # loses it and a poll check may fire again — exactly what a restart mid-run does
         # today, so this is not a new hole, but it is why on_done must stay idempotent.
+        # Kept until the task stops being retried, so the attempt that succeeds finds it.
         self._signals: dict[str, Signal] = {}
+        # task_id -> earliest time it may start. A cache of what the task's own record
+        # says (_recorded_retry_at), so drain does not reread events on every pass.
+        self._retry_after: dict[str, float] = {}
 
     # --- enqueue side (called from the tick) ---
 
@@ -160,6 +201,7 @@ class Scheduler:
 
         for recovered in tasks.reclaim_expired(home, now):
             self.harness.log(f"{recovered.id} lease expired while running — requeued")
+        self._forget_settled()
 
         if now < self.state.get("rate_limited_until", 0):
             return 0
@@ -169,6 +211,10 @@ class Scheduler:
         for candidate in tasks.list_tasks(home, status="queued"):
             if self.in_flight >= self.limit:
                 break
+            if candidate.id not in self._retry_after:
+                self._retry_after[candidate.id] = _recorded_retry_at(home, candidate.id)
+            if now < self._retry_after[candidate.id]:
+                continue
             allowed, why = tasks.ready(home, candidate, running)
             if not allowed:
                 continue
@@ -179,11 +225,23 @@ class Scheduler:
                     reason=f"no registered agent named '{candidate.agent}'",
                 )
                 continue
+            self._retry_after.pop(candidate.id, None)
             claimed = tasks.claim(home, candidate, self.task_type_for(candidate), now=now)
             running.append(claimed)
             self._start(claimed, agent)
             started += 1
         return started
+
+    def _forget_settled(self) -> None:
+        """Drop what is held for tasks that are no longer open. A task a human dropped or
+        blocked while it waited out a backoff is never claimed again, and claiming is
+        the only other place these entries go."""
+        if not (self._signals or self._retry_after):
+            return
+        still_open = {t.id for t in tasks.list_tasks(self.harness.home, status=tasks.OPEN_STATUSES)}
+        for held in (self._signals, self._retry_after):
+            for task_id in [tid for tid in held if tid not in still_open]:
+                del held[task_id]
 
     def _start(self, record: "Task", agent) -> None:
         runner = asyncio.create_task(self._execute(record, agent), name=f"task:{record.id}")
@@ -218,9 +276,11 @@ class Scheduler:
                 tasks.transition(home, record, "queued", reason="cancelled")
             raise
         except Exception as exc:  # noqa: BLE001 — one task's crash must not stop the queue
+            # A crash is an errored attempt and takes the same road from here. Returning
+            # early skipped the announcement, so a task that crashed through its budget
+            # ended `blocked` with nobody told.
             self.harness.log(f"{record.id} crashed: {exc!r}")
-            tasks.record_attempt(home, record, outcome="error", summary=repr(exc)[:500])
-            return
+            result = RunResult("error", repr(exc)[:500])
         finally:
             reset_current_task(token)
 
@@ -247,8 +307,11 @@ class Scheduler:
             home, record, outcome=result.status, summary=result.result_text[:500],
             artifacts=list(result.artifacts),
         )
-
-        signal = self._signals.pop(record.id, None) or Signal(prompt=record.body)
+        signal = self._signals.get(record.id) or Signal(prompt=record.body)
+        if result.status == "ok":
+            self._signals.pop(record.id, None)
+        else:
+            self._release_failed(record, result.status)
         agent_state = self.state["agents"].setdefault(agent.name, {})
         _apply_agent_result(self.harness, self.state, agent, agent_state, signal, result, now)
 
@@ -261,6 +324,31 @@ class Scheduler:
             fresh = tasks.read(home, fresh.id) or fresh
         await self._announce(fresh, result, agent)
         save_state(self.harness, self.state)
+
+    def _release_failed(self, record: "Task", outcome: str) -> None:
+        """A failed attempt gives its task back instead of holding it `running`.
+
+        record_attempt blocks the task once the budget is spent and otherwise leaves it
+        as it was. Left `running` with nothing running it, the task sat until its lease
+        expired, half an hour by default, and that expiry was the only retry there was.
+
+        A `blocked` run waits BLOCKED_BACKOFF_SECONDS, the hour its log line promises: it
+        ran to the end and left its work undone, which a few minutes rarely changes."""
+        if record.status != "running":
+            self._signals.pop(record.id, None)
+            return
+        wait = BLOCKED_BACKOFF_SECONDS if outcome == "blocked" else retry_backoff_s(record.attempts)
+        retry_at = time.time() + wait
+        self._retry_after[record.id] = retry_at
+        tasks.transition(
+            self.harness.home, record, "queued",
+            reason=f"attempt {record.attempts} ended {outcome}, retry in {wait}s",
+            retry_at=retry_at,
+        )
+        self.harness.log(
+            f"{record.id} attempt {record.attempts} ended {outcome} — retry in {wait}s "
+            f"({record.retries_left()} left)"
+        )
 
     def _requeue_unverified(self, record: "Task", verdict) -> None:
         """A run ended ok and the completion contract still says no. Try again while the

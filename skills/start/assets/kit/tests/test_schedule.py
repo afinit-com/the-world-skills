@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
+import tempfile
 import unittest
 from datetime import datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
 
 from world import AnySchedule, Schedule, ScheduleTrigger
-from world.process import heartbeat
+from world.process import heartbeat, orchestrator
+from world.process import task as tasks
 from world.process.orchestrator import _due_signal
 from world.types import Agent
 from world.world_map import _runs
@@ -144,21 +148,28 @@ class AnyScheduleTests(unittest.TestCase):
         agent = Agent("digest", ScheduleTrigger(self.twice))
         state = {"last_fired": utc(2026, 7, 13, 8, 0).timestamp()}
 
-        morning = _due_signal(agent, state, utc(2026, 7, 13, 9, 0, 3).timestamp())
-        self.assertIsNotNone(morning)
-        morning.on_done(None)
-        self.assertIsNone(_due_signal(agent, state, utc(2026, 7, 13, 17, 59).timestamp()))
+        harness = SimpleNamespace(home=Path(tempfile.mkdtemp()), log=lambda _text: None)
+        scheduler = SimpleNamespace(remember_signal=lambda *_: None)
+        finished = tasks.TaskType("t", completion=lambda _task: tasks.Verdict.done("ran"))
+        root = {"agents": {"digest": state}}
 
-        evening = _due_signal(agent, state, utc(2026, 7, 13, 18, 0, 3).timestamp())
-        self.assertIsNotNone(evening)
-        evening.on_done(None)
-        self.assertIsNone(_due_signal(agent, state, utc(2026, 7, 13, 23, 0).timestamp()))
+        def fires(at: float) -> bool:
+            # Through the tick's own path, so this also checks who records the occurrence.
+            queued = asyncio.run(orchestrator._enqueue_due_agent(
+                harness, root, agent, at, dry_run=False, scheduler=scheduler))
+            for made in tasks.list_tasks(harness.home, status="queued"):
+                tasks.verify(harness.home, made, finished)
+            return queued
+
+        self.assertTrue(fires(utc(2026, 7, 13, 9, 0, 3).timestamp()))
+        self.assertFalse(fires(utc(2026, 7, 13, 17, 59).timestamp()))
+
+        self.assertTrue(fires(utc(2026, 7, 13, 18, 0, 3).timestamp()))
+        self.assertFalse(fires(utc(2026, 7, 13, 23, 0).timestamp()))
 
         # Down across three occurrences: one run for the latest, not three.
-        late = _due_signal(agent, state, utc(2026, 7, 15, 10, 0).timestamp())
-        self.assertIsNotNone(late)
-        late.on_done(None)
-        self.assertIsNone(_due_signal(agent, state, utc(2026, 7, 15, 10, 1).timestamp()))
+        self.assertTrue(fires(utc(2026, 7, 15, 10, 0).timestamp()))
+        self.assertFalse(fires(utc(2026, 7, 15, 10, 1).timestamp()))
 
 
 class ScheduleDisplayTests(unittest.TestCase):

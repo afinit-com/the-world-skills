@@ -22,6 +22,7 @@ the provider is started, so the boundary is the kit's, not a tool's (see its doc
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import subprocess
 import time
@@ -54,14 +55,44 @@ def short_ts(thread_ts: str) -> str:
     return thread_ts.replace(".", "")[-6:]
 
 
+GIT_LOCAL_TIMEOUT_S = 60
+# A git command that talks to a remote. It runs at the top of every tick, so a remote
+# that stops answering must cost well under one tick (60s by default); a one-branch
+# fetch that is going to finish does so in a few seconds.
+GIT_NETWORK_TIMEOUT_S = 30
+_NETWORK_SUBCOMMANDS = frozenset({"fetch", "pull", "push", "ls-remote", "clone"})
+# What timeout(1) exits with. Any non-zero value sends callers down their failure path.
+GIT_TIMEOUT_RETURNCODE = 124
+
+
 def _git(harness: "Harness", *args: str, cwd: str | None = None) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        ["git", *args],
-        cwd=cwd or str(harness.git_root),
-        capture_output=True,
-        text=True, encoding="utf-8", errors="replace",
-        timeout=60,
-    )
+    """Run git and always return a result. A command that outlives its timeout comes back
+    as a failed process: every caller reads returncode, and none expected an exception.
+    A fetch that timed out once raised through sync_with_origin and took the whole tick
+    with it."""
+    cmd = ["git", *args]
+    # The subcommand is the first word after an optional `-C <path>`, the only global
+    # option this module passes. Matching any argument would catch a branch named "push".
+    subcommand = args[2] if args[:1] == ("-C",) and len(args) > 2 else (args[0] if args else "")
+    timeout = GIT_NETWORK_TIMEOUT_S if subcommand in _NETWORK_SUBCOMMANDS else GIT_LOCAL_TIMEOUT_S
+    try:
+        return subprocess.run(
+            cmd,
+            cwd=cwd or str(harness.git_root),
+            capture_output=True,
+            text=True, encoding="utf-8", errors="replace",
+            timeout=timeout,
+            # Nobody is at this terminal: a credential prompt would wait out the timeout.
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        )
+    except subprocess.TimeoutExpired:
+        said = f"{' '.join(cmd)} timed out after {timeout}s"
+        # Logged here because several callers read returncode as a yes or no and say
+        # nothing more; the line is how anyone learns the answer was really "no reply".
+        log = getattr(harness, "log", None)
+        if log:
+            log(f"⚠️  {said}")
+        return subprocess.CompletedProcess(cmd, GIT_TIMEOUT_RETURNCODE, stdout="", stderr=said)
 
 
 async def create_worktree(
@@ -155,6 +186,11 @@ async def run_worktree(
             "never reclaim it — call run_agent_oneshot(..., state=state)"
         )
     probe = await asyncio.to_thread(_git, harness, "rev-parse", "--show-prefix")
+    if probe.returncode == GIT_TIMEOUT_RETURNCODE:
+        raise WorktreeRefusedError(
+            f"could not check git_root {harness.git_root}: {probe.stderr.strip()[:150]}. "
+            "Nothing was created; the next attempt asks again"
+        )
     if probe.returncode != 0:
         raise WorktreeRefusedError(
             f"git_root {harness.git_root} is not inside a git repository, so there is "
@@ -237,8 +273,12 @@ def _is_clean(harness: "Harness", path: str) -> bool:
     return proc.returncode == 0 and not proc.stdout.strip()
 
 
-def branch_exists(harness: "Harness", branch: str) -> bool:
+def branch_exists(harness: "Harness", branch: str) -> bool | None:
+    """None when git did not answer in time: the caller reports what happened to a
+    branch, and "unknown" must not come out as "deleted"."""
     proc = _git(harness, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}")
+    if proc.returncode == GIT_TIMEOUT_RETURNCODE:
+        return None
     return proc.returncode == 0
 
 
@@ -442,6 +482,7 @@ async def sweep(harness: "Harness", state: dict, now: float, ui) -> None:
                 harness.log(
                     f"sweep: removed {path} after unanswered confirmation"
                     + (f" (branch {branch} kept — unmerged)" if kept else "")
+                    + (f" (could not check whether branch {branch} remains)" if kept is None else "")
                 )
                 worktrees.pop(path)
                 if notify and thread_ts:
@@ -453,6 +494,12 @@ async def sweep(harness: "Harness", state: dict, now: float, ui) -> None:
                         else f"Branch `{branch}` was deleted — everything on it was "
                         f"already merged into {harness.default_branch}."
                     )
+                    if kept is None:
+                        fate = (
+                            f"Could not check whether branch `{branch}` is still there (git "
+                            "did not answer). It is deleted only if everything on it was "
+                            f"already merged: `git branch --list {branch}` shows which."
+                        )
                     await notify(
                         thread_ts,
                         f"🧹 No reply for 3 days — removed worktree `{path}`. {fate}",

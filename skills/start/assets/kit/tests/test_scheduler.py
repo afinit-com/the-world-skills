@@ -685,3 +685,296 @@ class QuietDoneTests(unittest.IsolatedAsyncioTestCase):
         listener, posted = self._listener()
         await self._run(harness, _state(), RunResult("ok", "posted the reminder"), listener)
         self.assertEqual([(made.id, "done")], [(a, b) for a, b, _ in posted])
+
+
+class FailedScheduledRunTests(unittest.IsolatedAsyncioTestCase):
+    """One scheduled slot is one run. When a scheduled agent's first attempt fails, its
+    task must not stay `running` until the lease expires, the schedule must not fire
+    again on every tick in between, and the slot must not be queued a second time once
+    the retry succeeds."""
+
+    SLOT = datetime(2026, 7, 13, 9, 0, tzinfo=timezone.utc).timestamp()  # a Monday
+
+    def _daily(self):
+        harness, state = _harness("daily-digest"), _state()
+        agent = harness.agents[0]
+        agent.trigger = ScheduleTrigger(
+            Schedule.daily(9, 0, "UTC", weekdays=(0, 1, 2, 3, 4)), prompt="정기 실행")
+        state["agents"]["daily-digest"] = {"last_fired": self.SLOT - 86400}
+        harness.logged = []
+        harness.log = harness.logged.append
+        return harness, state, agent
+
+    async def _tick(self, harness, state, agent, scheduler, at: float) -> bool:
+        from world.process import orchestrator
+
+        return await orchestrator._enqueue_due_agent(
+            harness, state, agent, at, dry_run=False, scheduler=scheduler)
+
+    async def _pass(self, scheduler, at: float) -> None:
+        with patch.object(sched.time, "time", return_value=at):
+            await scheduler.drain()
+            await scheduler.drain_inflight()
+
+    async def test_a_queued_slot_is_consumed_and_does_not_fire_again(self) -> None:
+        harness, state, agent = self._daily()
+        scheduler = _scheduler(harness, state)
+        late = self.SLOT + 3600  # the first tick after the slot came an hour late
+
+        self.assertTrue(await self._tick(harness, state, agent, scheduler, late))
+        self.assertEqual(late, state["agents"]["daily-digest"]["last_fired"])
+        self.assertFalse(await self._tick(harness, state, agent, scheduler, late + 60))
+        self.assertFalse(any("fired again" in line for line in harness.logged), harness.logged)
+        self.assertEqual(1, len(tasks.list_tasks(harness.home)))
+
+    async def test_an_errored_run_releases_its_task_and_waits_out_the_backoff(self) -> None:
+        harness, state = _harness("daily-digest"), _state()
+        made = _queue(harness, "daily-digest")
+        runs = AsyncMock(return_value=RunResult("error", "timeout"))
+        scheduler = _scheduler(harness, state)
+        start = 1_000_000.0
+        with patch.object(sched, "run_agent_oneshot", new=runs), patch.object(sched, "save_state"):
+            await self._pass(scheduler, start)
+            self.assertEqual("queued", tasks.read(harness.home, made.id).status)
+            await self._pass(scheduler, start + sched.RETRY_BACKOFF_SECONDS - 1)
+            self.assertEqual(1, runs.await_count)
+            await self._pass(scheduler, start + sched.RETRY_BACKOFF_SECONDS + 1)
+            self.assertEqual(2, runs.await_count)
+
+    async def test_a_crashed_run_releases_its_task_too(self) -> None:
+        harness, state = _harness("daily-digest"), _state()
+        made = _queue(harness, "daily-digest")
+        scheduler = _scheduler(harness, state)
+        with (
+            patch.object(sched, "run_agent_oneshot", new=AsyncMock(side_effect=RuntimeError("boom"))),
+            patch.object(sched, "save_state"),
+        ):
+            await self._pass(scheduler, 1_000_000.0)
+        self.assertEqual("queued", tasks.read(harness.home, made.id).status)
+
+    async def test_failed_attempts_stop_at_the_retry_budget(self) -> None:
+        harness, state = _harness("daily-digest"), _state()
+        made = _queue(harness, "daily-digest", retry_budget=2)
+        runs = AsyncMock(return_value=RunResult("error", "timeout"))
+        scheduler = _scheduler(harness, state)
+        with patch.object(sched, "run_agent_oneshot", new=runs), patch.object(sched, "save_state"):
+            for n in range(5):
+                await self._pass(scheduler, 1_000_000.0 + n * (sched.RETRY_BACKOFF_SECONDS + 1))
+        self.assertEqual(2, runs.await_count)
+        self.assertEqual("blocked", tasks.read(harness.home, made.id).status)
+
+    async def test_a_retry_that_succeeds_is_the_same_run_not_a_second_one(self) -> None:
+        harness, state, agent = self._daily()
+        scheduler = _scheduler(harness, state)
+        results = [RunResult("error", "timeout"), RunResult("ok", "posted")]
+        runs = AsyncMock(side_effect=results)
+        late = self.SLOT + 3600
+        retry_at = late + sched.RETRY_BACKOFF_SECONDS + 1
+
+        with patch.object(sched, "run_agent_oneshot", new=runs), patch.object(sched, "save_state"):
+            self.assertTrue(await self._tick(harness, state, agent, scheduler, late))
+            await self._pass(scheduler, late)
+            await self._pass(scheduler, retry_at)
+            self.assertFalse(await self._tick(harness, state, agent, scheduler, retry_at + 60))
+            await self._pass(scheduler, retry_at + 62)
+
+        [only] = tasks.list_tasks(harness.home)
+        self.assertEqual("done", only.status)
+        self.assertEqual(2, runs.await_count)
+
+    async def test_a_poll_signal_survives_a_failed_attempt(self) -> None:
+        # The Signal was dropped at the first attempt whatever its outcome, so the retry
+        # that succeeded had no on_done to call and the check fired for the same item again.
+        harness, state = _harness("watch"), _state()
+        made = _queue(harness, "watch")
+        handled = []
+        scheduler = _scheduler(harness, state)
+        scheduler.remember_signal(made.id, Signal("work", on_done=lambda _r: handled.append(1)))
+        runs = AsyncMock(side_effect=[RunResult("error", "timeout"), RunResult("ok", "posted")])
+        with patch.object(sched, "run_agent_oneshot", new=runs), patch.object(sched, "save_state"):
+            await self._pass(scheduler, 1_000_000.0)
+            await self._pass(scheduler, 1_000_000.0 + sched.RETRY_BACKOFF_SECONDS + 1)
+        self.assertEqual([1], handled)
+
+
+class RetryPolicyTests(unittest.IsolatedAsyncioTestCase):
+    """How a failed attempt is retried. A scheduled occurrence is consumed when it is
+    queued, so its task's retries are all the chances it gets: they have to outlast a
+    short outage, respect what a `blocked` run was promised, and end where a human
+    hears about it."""
+
+    T0 = 1_000_000.0
+
+    async def _pass(self, scheduler, at: float) -> None:
+        with patch.object(sched.time, "time", return_value=at):
+            await scheduler.drain()
+            await scheduler.drain_inflight()
+
+    async def test_each_failed_attempt_waits_longer_than_the_last(self) -> None:
+        first, second = sched.retry_backoff_s(1), sched.retry_backoff_s(2)
+        self.assertEqual(sched.RETRY_BACKOFF_SECONDS, first)
+        self.assertGreater(second, first)
+        self.assertEqual(sched.RETRY_BACKOFF_MAX_SECONDS, sched.retry_backoff_s(50))
+
+        harness, state = _harness("daily-digest"), _state()
+        _queue(harness, "daily-digest")
+        runs = AsyncMock(return_value=RunResult("error", "timeout"))
+        scheduler = _scheduler(harness, state)
+        with patch.object(sched, "run_agent_oneshot", new=runs), patch.object(sched, "save_state"):
+            await self._pass(scheduler, self.T0)
+            second_at = self.T0 + first + 1
+            await self._pass(scheduler, second_at)
+            self.assertEqual(2, runs.await_count)
+            await self._pass(scheduler, second_at + first + 1)
+            self.assertEqual(2, runs.await_count)
+            await self._pass(scheduler, second_at + second + 1)
+            self.assertEqual(3, runs.await_count)
+
+    async def test_a_blocked_run_waits_the_hour_its_log_line_promises(self) -> None:
+        from world.process.orchestrator import BLOCKED_BACKOFF_SECONDS
+
+        harness, state = _harness("watch"), _state()
+        made = _queue(harness, "watch")
+        runs = AsyncMock(return_value=RunResult("blocked", "nothing written"))
+        scheduler = _scheduler(harness, state)
+        with patch.object(sched, "run_agent_oneshot", new=runs), patch.object(sched, "save_state"):
+            await self._pass(scheduler, self.T0)
+            self.assertEqual("queued", tasks.read(harness.home, made.id).status)
+            await self._pass(scheduler, self.T0 + BLOCKED_BACKOFF_SECONDS - 1)
+            self.assertEqual(1, runs.await_count)
+            await self._pass(scheduler, self.T0 + BLOCKED_BACKOFF_SECONDS + 1)
+            self.assertEqual(2, runs.await_count)
+
+    async def test_a_task_that_crashes_out_of_its_budget_is_announced(self) -> None:
+        harness, state = _harness("daily-digest"), _state()
+        harness.persona_for_agent = lambda _name: None
+        made = _queue(harness, "daily-digest", retry_budget=1)
+        listener = SimpleNamespace(enabled=True, announce_task=AsyncMock(return_value="111.222"))
+        scheduler = sched.Scheduler(harness, state, listener)
+        with (
+            patch.object(sched, "run_agent_oneshot", new=AsyncMock(side_effect=RuntimeError("boom"))),
+            patch.object(sched, "save_state"),
+        ):
+            await self._pass(scheduler, self.T0)
+        self.assertEqual("blocked", tasks.read(harness.home, made.id).status)
+        self.assertEqual(1, listener.announce_task.await_count)
+        result = listener.announce_task.await_args.args[1]
+        self.assertEqual("error", result.status)
+        self.assertIn("boom", result.result_text)
+
+    async def test_a_retry_that_succeeds_lifts_the_blocked_backoff(self) -> None:
+        harness, state = _harness("watch"), _state()
+        _queue(harness, "watch")
+        runs = AsyncMock(side_effect=[RunResult("blocked", "denied"), RunResult("ok", "posted")])
+        scheduler = _scheduler(harness, state)
+        with patch.object(sched, "run_agent_oneshot", new=runs), patch.object(sched, "save_state"):
+            await self._pass(scheduler, self.T0)
+            self.assertIn("blocked_until", state["agents"]["watch"])
+            await self._pass(scheduler, self.T0 + 2 * 3600)
+        self.assertNotIn("blocked_until", state["agents"]["watch"])
+
+    async def test_the_wait_survives_a_restart(self) -> None:
+        # The deadline was held in memory only, so a harness started once a minute
+        # (--once) spent its whole budget in as many minutes.
+        from world.process.orchestrator import BLOCKED_BACKOFF_SECONDS
+
+        for outcome, wait in (("error", sched.retry_backoff_s(1)), ("blocked", BLOCKED_BACKOFF_SECONDS)):
+            with self.subTest(outcome=outcome):
+                harness, state = _harness("daily-digest"), _state()
+                _queue(harness, "daily-digest")
+                runs = AsyncMock(return_value=RunResult(outcome, "timeout"))
+                with patch.object(sched, "run_agent_oneshot", new=runs), patch.object(sched, "save_state"):
+                    await self._pass(_scheduler(harness, state), self.T0)
+                    await self._pass(_scheduler(harness, state), self.T0 + 60)
+                    await self._pass(_scheduler(harness, state), self.T0 + wait - 1)
+                    self.assertEqual(1, runs.await_count)
+                    await self._pass(_scheduler(harness, state), self.T0 + wait + 1)
+                    self.assertEqual(2, runs.await_count)
+
+    async def test_a_task_dropped_during_its_backoff_leaves_nothing_behind(self) -> None:
+        harness, state = _harness("watch"), _state()
+        made = _queue(harness, "watch")
+        scheduler = _scheduler(harness, state)
+        scheduler.remember_signal(made.id, Signal("work"))
+        runs = AsyncMock(return_value=RunResult("error", "timeout"))
+        with patch.object(sched, "run_agent_oneshot", new=runs), patch.object(sched, "save_state"):
+            await self._pass(scheduler, self.T0)
+            self.assertIn(made.id, scheduler._retry_after)
+            tasks.transition(harness.home, tasks.read(harness.home, made.id), "dropped")
+            await self._pass(scheduler, self.T0 + 1)
+        self.assertEqual({}, scheduler._retry_after)
+        self.assertEqual({}, scheduler._signals)
+
+
+class OccurrenceIdentityTests(unittest.IsolatedAsyncioTestCase):
+    """A task knows which occurrence it was made for. state.json is written after the
+    tick and the task file at once, so a process killed between the two comes back with
+    `last_fired` stale; the task is then the only record that the occurrence was taken,
+    and it has to say which one."""
+
+    NINE = datetime(2026, 7, 14, 9, 0, tzinfo=timezone.utc).timestamp()   # a Tuesday's slot
+    STALE = NINE - 3 * 86400
+
+    def _daily(self):
+        harness, state = _harness("daily-digest"), _state()
+        agent = harness.agents[0]
+        agent.trigger = ScheduleTrigger(Schedule.daily(9, 0, "UTC"), prompt="정기 실행")
+        state["agents"]["daily-digest"] = {"last_fired": self.STALE}
+        return harness, state, agent
+
+    async def _tick(self, harness, state, agent, at: float) -> bool:
+        from world.process import orchestrator
+
+        return await orchestrator._enqueue_due_agent(
+            harness, state, agent, at, dry_run=False, scheduler=_scheduler(harness, state))
+
+    def _finish(self, harness) -> None:
+        done = tasks.TaskType("t", completion=lambda _task: tasks.Verdict.done("ran"))
+        for made in tasks.list_tasks(harness.home, status=tasks.OPEN_STATUSES):
+            tasks.verify(harness.home, made, done)
+
+    async def test_an_open_task_for_this_occurrence_records_it(self) -> None:
+        harness, state, agent = self._daily()
+        slot = state["agents"]["daily-digest"]
+        self.assertTrue(await self._tick(harness, state, agent, self.NINE + 10))
+        slot["last_fired"] = self.STALE   # the write that never reached state.json
+
+        self.assertFalse(await self._tick(harness, state, agent, self.NINE + 70))
+        self.assertEqual(self.NINE + 70, slot["last_fired"])
+        self._finish(harness)
+        self.assertFalse(await self._tick(harness, state, agent, self.NINE + 130))
+        self.assertEqual(1, len(tasks.list_tasks(harness.home)))
+
+    async def test_a_finished_task_for_this_occurrence_records_it_too(self) -> None:
+        # After a restart the queue can drain before the first tick gets to its triggers.
+        harness, state, agent = self._daily()
+        slot = state["agents"]["daily-digest"]
+        self.assertTrue(await self._tick(harness, state, agent, self.NINE + 10))
+        slot["last_fired"] = self.STALE
+        self._finish(harness)
+
+        self.assertFalse(await self._tick(harness, state, agent, self.NINE + 70))
+        self.assertEqual(self.NINE + 70, slot["last_fired"])
+        self.assertEqual(1, len(tasks.list_tasks(harness.home)))
+
+    async def test_a_catch_up_queued_late_does_not_take_the_next_occurrence(self) -> None:
+        # The tick reads the clock, then fetches. A catch-up for yesterday that started
+        # just before 09:00 is written just after it, and must still count as yesterday's.
+        harness, state, agent = self._daily()
+        slot = state["agents"]["daily-digest"]
+        self.assertTrue(await self._tick(harness, state, agent, self.NINE - 5))
+
+        self.assertFalse(await self._tick(harness, state, agent, self.NINE + 60))
+        self.assertEqual(self.NINE - 5, slot["last_fired"])
+        self._finish(harness)
+        self.assertTrue(await self._tick(harness, state, agent, self.NINE + 120))
+        self.assertEqual(2, len(tasks.list_tasks(harness.home)))
+
+    async def test_a_task_with_no_occurrence_on_it_leaves_this_one_due(self) -> None:
+        harness, state, agent = self._daily()
+        tasks.create(
+            harness.home, type=tasks.AGENT_RUN_TYPE, title="earlier", slug="daily-digest",
+            agent="daily-digest", body="정기 실행", origin=tasks.Origin(kind="schedule", by="daily-digest"),
+        )
+        self.assertFalse(await self._tick(harness, state, agent, self.NINE + 60))
+        self.assertEqual(self.STALE, state["agents"]["daily-digest"]["last_fired"])
